@@ -7,9 +7,10 @@
 $ErrorActionPreference = 'Continue'
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-Add-Type @"
+Add-Type -ReferencedAssemblies System.Windows.Forms @"
 using System;
 using System.Threading;
+using System.Windows.Forms;
 using System.Runtime.InteropServices;
 public class MouseDriver {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
@@ -35,7 +36,7 @@ public class MouseDriver {
     mouse_event(MOUSEEVENTF_MOVE, unchecked((uint)dx), unchecked((uint)dy), 0, MAGIC_EXTRA);
   }
 
-  public static void StartDragThread(int startX, int startY, int sw, int sh, string logPath, Action onDone) {
+  public static void StartDragThread(int startX, int startY, int sw, int sh, string logPath, Form form) {
     Thread t = new Thread(() => {
       try {
         Thread.Sleep(600);
@@ -45,26 +46,46 @@ public class MouseDriver {
         System.IO.File.AppendAllText(logPath, "[Thread] LEFTDOWN at (" + startX + "," + startY + ")\r\n");
         Thread.Sleep(150);
 
-        // Move smoothly rightwards using relative mouse deltas so both primary edge
-        // crossing and secondary screen center-warping work identically to physical hardware
-        int totalSteps = (sw - startX + 120) / 4;
-        for (int i = 0; i < totalSteps; i++) {
-          MoveRel(4, 0);
-          Thread.Sleep(12);
+        // 1. Move across primary screen into the 36px activation zone and into the 8px sentinel bar (sw - 4)
+        for (int x = startX; x <= sw - 4; x += 8) {
+          MoveAbs(x, startY, sw, sh);
+          Thread.Sleep(15);
         }
 
-        Thread.Sleep(300);
+        // Pause inside the 8px sentinel bar [sw-8..sw-2] so OLE dispatches IDropTarget::DragEnter
+        MoveAbs(sw - 4, startY, sw, sh);
+        Thread.Sleep(200);
+
+        // 2. Step into the 1px jump zone (sw - 1) until Server switches and warps cursor to screen center
         POINT p;
+        for (int i = 0; i < 20; i++) {
+          GetCursorPos(out p);
+          if (p.X < sw - 100) {
+            System.IO.File.AppendAllText(logPath, "[Thread] Detected screen switch warp to center (" + p.X + "," + p.Y + ") at iter " + i + "\r\n");
+            break;
+          }
+          MoveAbs(sw - 1, startY, sw, sh);
+          Thread.Sleep(30);
+        }
+
+        // 3. Move slightly on the client screen using relative deltas, then release left mouse button
+        for (int i = 0; i < 6; i++) {
+          MoveRel(12, 4);
+          Thread.Sleep(25);
+        }
+        Thread.Sleep(200);
         GetCursorPos(out p);
-        System.IO.File.AppendAllText(logPath, "[Thread] After edge crossing cursor=(" + p.X + "," + p.Y + "), releasing LEFTUP\r\n");
+        System.IO.File.AppendAllText(logPath, "[Thread] Releasing LEFTUP on client, cursor=(" + p.X + "," + p.Y + ")\r\n");
         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, MAGIC_EXTRA);
         Thread.Sleep(500);
       } catch (Exception ex) {
         System.IO.File.AppendAllText(logPath, "[Thread] Error: " + ex.Message + "\r\n");
       } finally {
-        if (onDone != null) {
-          onDone();
-        }
+        try {
+          if (form != null && !form.IsDisposed) {
+            form.BeginInvoke(new MethodInvoker(form.Close));
+          }
+        } catch {}
       }
     });
     t.IsBackground = true;
@@ -203,10 +224,7 @@ $script:safety.Add_Tick({
 
 $script:f.Add_Shown({
   $script:safety.Start()
-  $doneAction = [Action]{
-    $script:f.BeginInvoke([Action]{ $script:f.Close() }) | Out-Null
-  }
-  [MouseDriver]::StartDragThread(200, 200, $sw, $sh, $testLog, $doneAction)
+  [MouseDriver]::StartDragThread(200, 200, $sw, $sh, $testLog, $script:f)
 })
 
 [System.Windows.Forms.Application]::Run($script:f)
