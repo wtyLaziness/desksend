@@ -149,6 +149,56 @@ public:
   }
 };
 
+// 仅含 CF_HDROP 的最小 IDataObject,用于自检
+class MemDataObject : public IDataObject
+{
+public:
+  explicit MemDataObject(HGLOBAL hg) : m_hg(hg) {}
+  ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+  ULONG STDMETHODCALLTYPE Release() override { return 1; }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override
+  {
+    if (riid == IID_IUnknown || riid == IID_IDataObject) {
+      *ppv = static_cast<IDataObject *>(this);
+      return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+  }
+  HRESULT STDMETHODCALLTYPE GetData(FORMATETC *f, STGMEDIUM *m) override
+  {
+    if (f->cfFormat != CF_HDROP || !(f->tymed & TYMED_HGLOBAL))
+      return DV_E_FORMATETC;
+    SIZE_T sz = GlobalSize(m_hg);
+    HGLOBAL copy = GlobalAlloc(GHND, sz);
+    memcpy(GlobalLock(copy), GlobalLock(m_hg), sz);
+    GlobalUnlock(copy);
+    GlobalUnlock(m_hg);
+    m->tymed = TYMED_HGLOBAL;
+    m->hGlobal = copy;
+    m->pUnkForRelease = nullptr;
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC *, STGMEDIUM *) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC *f) override
+  {
+    return f->cfFormat == CF_HDROP ? S_OK : DV_E_FORMATETC;
+  }
+  HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC *, FORMATETC *) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE SetData(FORMATETC *, STGMEDIUM *, BOOL) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD, IEnumFORMATETC **e) override
+  {
+    FORMATETC f = {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    return SHCreateStdEnumFmtEtc(1, &f, e);
+  }
+  HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC *, DWORD, IAdviseSink *, DWORD *) override { return OLE_E_ADVISENOTSUPPORTED; }
+  HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
+  HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA **) override { return OLE_E_ADVISENOTSUPPORTED; }
+
+private:
+  HGLOBAL m_hg;
+};
+
 // 自检: 不依赖真实鼠标输入,验证
 // 1) RegisterDragDrop 成功且 OLE 已记录该窗口的 DropTarget
 // 2) 窗口在 alpha=1 时仍能被命中测试(WindowFromPoint)
@@ -196,18 +246,45 @@ static int runSelfTest(HWND hwnd, DropTarget &target, HRESULT regHr, int x, int 
     pidlOk &= SUCCEEDED(SHParseDisplayName(paths[i]->c_str(), nullptr, &pidls[i], 0, nullptr));
   check(pidlOk, L"构造 3 个 PIDL");
 
+  // 测试 A: Shell 数据对象(规范用法: 父目录 PIDL + 子项 PIDL)
+  PIDLIST_ABSOLUTE parentPidl = nullptr;
+  SHParseDisplayName(dir.c_str(), nullptr, &parentPidl, 0, nullptr);
+  PCUITEMID_CHILD children[3] = {};
+  for (int i = 0; i < 3; ++i)
+    children[i] = ILFindLastID(pidls[i]);
   IDataObject *obj = nullptr;
-  HRESULT hr = SHCreateDataObject(nullptr, 3, (PCUITEMID_CHILD_ARRAY)pidls, nullptr, IID_IDataObject, (void **)&obj);
-  check(SUCCEEDED(hr) && obj, L"SHCreateDataObject");
+  HRESULT hr = SHCreateDataObject(parentPidl, 3, children, nullptr, IID_IDataObject, (void **)&obj);
+  check(SUCCEEDED(hr) && obj, L"A: SHCreateDataObject(parent+children)");
   if (obj) {
     POINTL p = {pt.x, pt.y};
     DWORD eff = DROPEFFECT_COPY | DROPEFFECT_MOVE;
-    check(target.DragEnter(obj, MK_LBUTTON, p, &eff) == S_OK && eff == DROPEFFECT_COPY, L"DragEnter 返回 COPY");
+    check(target.DragEnter(obj, MK_LBUTTON, p, &eff) == S_OK && eff == DROPEFFECT_COPY, L"A: DragEnter 返回 COPY");
     int n = dumpFiles(obj);
-    check(n == 3, L"解析出 3 个文件/文件夹");
-    check(target.Drop(obj, MK_LBUTTON, p, &eff) == S_OK, L"Drop 返回 S_OK");
+    check(n == 3, L"A: Shell 数据对象解析出 3 项");
+    check(target.Drop(obj, MK_LBUTTON, p, &eff) == S_OK, L"A: Drop 返回 S_OK");
     obj->Release();
   }
+
+  // 测试 B: 自建 CF_HDROP 数据对象(仅验证解析逻辑)
+  {
+    std::wstring list;
+    for (auto *s : paths) {
+      list += *s;
+      list.push_back(L'\0');
+    }
+    list.push_back(L'\0');
+    size_t bytes = sizeof(DROPFILES) + list.size() * sizeof(wchar_t);
+    HGLOBAL hg = GlobalAlloc(GHND, bytes);
+    DROPFILES *df = static_cast<DROPFILES *>(GlobalLock(hg));
+    df->pFiles = sizeof(DROPFILES);
+    df->fWide = TRUE;
+    memcpy(reinterpret_cast<BYTE *>(df) + sizeof(DROPFILES), list.data(), list.size() * sizeof(wchar_t));
+    GlobalUnlock(hg);
+    MemDataObject mem(hg);
+    int n = dumpFiles(&mem);
+    check(n == 3, L"B: 自建 CF_HDROP 解析出 3 项");
+  }
+  CoTaskMemFree(parentPidl);
   for (auto &p : pidls)
     if (p)
       CoTaskMemFree(p);
