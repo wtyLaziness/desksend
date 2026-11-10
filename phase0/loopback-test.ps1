@@ -1,6 +1,6 @@
 ﻿param(
   [string]$DeskflowDir,
-  [string]$SentinelExe,
+  [string]$LocalSendCliExe = "",
   [string]$OutDir,
   [string]$DisableLock = 'false'
 )
@@ -22,42 +22,49 @@ public class MouseDriver {
   public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
   public const uint MOUSEEVENTF_LEFTUP = 0x0004;
   public const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+  public static readonly UIntPtr MAGIC_EXTRA = new UIntPtr(0x44534B53);
 
   public static void MoveAbs(int x, int y, int sw, int sh) {
     uint dx = (uint)((x * 65535) / (sw - 1));
     uint dy = (uint)((y * 65535) / (sh - 1));
     SetCursorPos(x, y);
-    mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, dx, dy, 0, UIntPtr.Zero);
+    mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, dx, dy, 0, MAGIC_EXTRA);
   }
 
-  public static void StartDragThread(int startX, int startY, int sw, int sh, string logPath) {
+  public static void MoveRel(int dx, int dy) {
+    mouse_event(MOUSEEVENTF_MOVE, unchecked((uint)dx), unchecked((uint)dy), 0, MAGIC_EXTRA);
+  }
+
+  public static void StartDragThread(int startX, int startY, int sw, int sh, string logPath, Action onDone) {
     Thread t = new Thread(() => {
       try {
-        Thread.Sleep(500);
+        Thread.Sleep(600);
         MoveAbs(startX, startY, sw, sh);
         Thread.Sleep(200);
-        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, MAGIC_EXTRA);
         System.IO.File.AppendAllText(logPath, "[Thread] LEFTDOWN at (" + startX + "," + startY + ")\r\n");
-        Thread.Sleep(100);
-        for (int x = startX; x <= sw - 1; x += 8) {
-          MoveAbs(x, startY, sw, sh);
-          Thread.Sleep(15);
+        Thread.Sleep(150);
+
+        // Move smoothly rightwards using relative mouse deltas so both primary edge
+        // crossing and secondary screen center-warping work identically to physical hardware
+        int totalSteps = (sw - startX + 120) / 4;
+        for (int i = 0; i < totalSteps; i++) {
+          MoveRel(4, 0);
+          Thread.Sleep(12);
         }
-        // 在最右边缘停留并继续向右移动触发越界后在 client 上移动并松开左键
-        for (int i = 0; i < 15; i++) {
-          MoveAbs(sw - 1, startY, sw, sh);
-          Thread.Sleep(25);
-        }
-        for (int i = 1; i <= 10; i++) {
-          MoveAbs(sw / 2 + i * 10, startY + i * 5, sw, sh);
-          Thread.Sleep(25);
-        }
+
+        Thread.Sleep(300);
         POINT p;
         GetCursorPos(out p);
-        System.IO.File.AppendAllText(logPath, "[Thread] After edge move cursor=(" + p.X + "," + p.Y + "), releasing LEFTUP\r\n");
-        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+        System.IO.File.AppendAllText(logPath, "[Thread] After edge crossing cursor=(" + p.X + "," + p.Y + "), releasing LEFTUP\r\n");
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, MAGIC_EXTRA);
+        Thread.Sleep(500);
       } catch (Exception ex) {
         System.IO.File.AppendAllText(logPath, "[Thread] Error: " + ex.Message + "\r\n");
+      } finally {
+        if (onDone != null) {
+          onDone();
+        }
       }
     });
     t.IsBackground = true;
@@ -74,6 +81,23 @@ function Log($m) {
   Write-Host $l
   Add-Content $testLog $l
 }
+
+if ($LocalSendCliExe -and (Test-Path $LocalSendCliExe)) {
+  Copy-Item $LocalSendCliExe (Join-Path $DeskflowDir 'localsend-cli.exe') -Force
+  Log "Copied localsend-cli.exe into $DeskflowDir"
+}
+
+$rxCfg = "$script:out\rx_cfg"
+$txCfg = "$script:out\tx_cfg"
+$dropDest = "$script:out\drop_dest"
+New-Item -ItemType Directory -Force $rxCfg, $txCfg, $dropDest | Out-Null
+
+$env:DESKSEND_RECEIVER_PORT = "53318"
+$env:DESKSEND_TARGET_PORT = "53318"
+$env:DESKSEND_SENDER_PORT = "53319"
+$env:DESKSEND_RECEIVER_CONFIG_HOME = $rxCfg
+$env:DESKSEND_SENDER_CONFIG_HOME = $txCfg
+$env:DESKSEND_DEFAULT_DROP_DIR = $dropDest
 
 @"
 section: links
@@ -131,19 +155,24 @@ $core = Join-Path $DeskflowDir 'deskflow-core.exe'
 $srv = Start-Process $core -ArgumentList 'server','--new-instance','-s',"$script:out\server.conf" -PassThru -WindowStyle Hidden -RedirectStandardOutput "$script:out\server.stdout" -RedirectStandardError "$script:out\server.stderr"
 Start-Sleep 3
 $cli = Start-Process $core -ArgumentList 'client','--new-instance','-s',"$script:out\client.conf" -PassThru -WindowStyle Hidden -RedirectStandardOutput "$script:out\client.stdout" -RedirectStandardError "$script:out\client.stderr"
-Start-Sleep 5
-Log "server alive=$(-not $srv.HasExited) client alive=$(-not $cli.HasExited) DisableLock=$DisableLock"
 
-$sentry = Start-Process $SentinelExe -ArgumentList 'right','8' -WorkingDirectory $script:out -PassThru -WindowStyle Hidden
-Start-Sleep 2
+# Wait for client connection and headless LocalSend receiver readiness
+for ($i = 0; $i -lt 30; $i++) {
+  if ((Test-Path "$script:out\client.log") -and ((Get-Content "$script:out\client.log" -Raw) -match "LOCALSEND_RECEIVER_READY")) {
+    break
+  }
+  Start-Sleep -Milliseconds 500
+}
+
 $sw = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width
 $sh = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height
-Log "screen=${sw}x${sh} sentinel alive=$(-not $sentry.HasExited)"
+Log "server alive=$(-not $srv.HasExited) client alive=$(-not $cli.HasExited) DisableLock=$DisableLock screen=${sw}x${sh}"
 
 $tmp = Join-Path $env:TEMP 'dd_test'
+Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $tmp | Out-Null
-'hello1' | Set-Content "$tmp\one.txt"
-'hello2' | Set-Content "$tmp\two.txt"
+'desksend-payload-1' | Set-Content "$tmp\one.txt" -NoNewline
+'desksend-payload-2' | Set-Content "$tmp\two.txt" -NoNewline
 $script:files = [string[]]@("$tmp\one.txt","$tmp\two.txt")
 
 $script:f = New-Object System.Windows.Forms.Form
@@ -162,31 +191,58 @@ $script:lbl.Add_MouseDown({
   $d.SetData([System.Windows.Forms.DataFormats]::FileDrop, $script:files)
   $r = $script:lbl.DoDragDrop($d, [System.Windows.Forms.DragDropEffects]::Copy -bor [System.Windows.Forms.DragDropEffects]::Move)
   Log "DoDragDrop returned: $r"
-  $script:f.BeginInvoke([Action]{ $script:f.Close() }) | Out-Null
 })
 
 $script:safety = New-Object System.Windows.Forms.Timer
-$script:safety.Interval = 15000
+$script:safety.Interval = 20000
 $script:safety.Add_Tick({
   Log "Safety timeout reached"
-  [MouseDriver]::mouse_event([MouseDriver]::MOUSEEVENTF_LEFTUP, 0, 0, 0, [UIntPtr]::Zero)
+  [MouseDriver]::mouse_event([MouseDriver]::MOUSEEVENTF_LEFTUP, 0, 0, 0, [MouseDriver]::MAGIC_EXTRA)
   $script:f.Close()
 })
 
 $script:f.Add_Shown({
   $script:safety.Start()
-  [MouseDriver]::StartDragThread(200, 200, $sw, $sh, $testLog)
+  $doneAction = [Action]{
+    $script:f.BeginInvoke([Action]{ $script:f.Close() }) | Out-Null
+  }
+  [MouseDriver]::StartDragThread(200, 200, $sw, $sh, $testLog, $doneAction)
 })
 
 [System.Windows.Forms.Application]::Run($script:f)
 
-Start-Sleep 2
-Stop-Process $sentry,$cli,$srv -Force -ErrorAction SilentlyContinue
+Log "Waiting up to 15s for transferred files to arrive in $dropDest ..."
+$transferred = $false
+for ($i = 0; $i -lt 30; $i++) {
+  if ((Test-Path "$dropDest\one.txt") -and (Test-Path "$dropDest\two.txt")) {
+    $transferred = $true
+    break
+  }
+  Start-Sleep -Milliseconds 500
+}
+
+Stop-Process $cli,$srv -Force -ErrorAction SilentlyContinue
+Get-Process localsend-cli -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep 1
 
-foreach ($n in 'test.log','sentinel.log','server.log','client.log','server.stderr','client.stderr') {
+foreach ($n in 'test.log','server.log','client.log','server.stderr','client.stderr') {
   Write-Host "=============== $n ==============="
   if (Test-Path "$script:out\$n") {
-    Get-Content "$script:out\$n" -Encoding UTF8 | Select-Object -Last 60
+    Get-Content "$script:out\$n" -Encoding UTF8 | Select-Object -Last 80
   }
 }
+
+Write-Host "=============== Dropped Files in $dropDest ==============="
+Get-ChildItem $dropDest -ErrorAction SilentlyContinue | ForEach-Object {
+  Write-Host ("{0} ({1} bytes): {2}" -f $_.Name, $_.Length, (Get-Content $_.FullName -Raw))
+}
+
+if (-not $transferred) {
+  throw "E2E DeskSend file transfer FAILED: files did not arrive in $dropDest"
+}
+$c1 = Get-Content "$dropDest\one.txt" -Raw
+$c2 = Get-Content "$dropDest\two.txt" -Raw
+if ($c1 -ne 'desksend-payload-1' -or $c2 -ne 'desksend-payload-2') {
+  throw "Transferred file content mismatch: c1='$c1' c2='$c2'"
+}
+Log "E2E DeskSend cross-screen drag-and-drop file transfer PASSED!"

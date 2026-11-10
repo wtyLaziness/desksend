@@ -9,10 +9,6 @@ permissions:
 jobs:
   loopback:
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        disable_lock: ["false", "true"]
     steps:
       - uses: actions/checkout@v4
       - name: Download latest artifacts
@@ -20,16 +16,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $dfRun = gh run list --workflow deskflow-win --status success --limit 1 --json databaseId -q '.[0].databaseId'
-          $snRun = gh run list --workflow phase0-sentinel --status success --limit 1 --json databaseId -q '.[0].databaseId'
+          $lsRun = gh run list --workflow localsend-cli-win --status success --limit 1 --json databaseId -q '.[0].databaseId'
+          Write-Host "Downloading deskflow-win ($dfRun) and localsend-cli-win ($lsRun)"
           gh run download $dfRun -n deskflow-win-x64 -D df
-          gh run download $snRun -n sentinel-win-x64 -D sn
+          gh run download $lsRun -n localsend-cli-win-x64 -D ls
           Expand-Archive (Get-ChildItem df\*.zip).FullName -DestinationPath df -Force
-      - name: Loopback drag test (disableLockToComputer=${{ matrix.disable_lock }})
+      - name: Full E2E DeskSend drag-and-drop file transfer test (disableLockToComputer=false)
         run: |
           $dfDir = (Get-ChildItem df -Directory | Select-Object -First 1).FullName
-          pwsh -STA -NoProfile -File ./phase0/loopback-test.ps1 -DeskflowDir $dfDir -SentinelExe "$PWD\sn\sentinel.exe" -OutDir "$PWD\out" -DisableLock "${{ matrix.disable_lock }}"
+          pwsh -STA -NoProfile -File ./phase0/loopback-test.ps1 -DeskflowDir $dfDir -LocalSendCliExe "$PWD\ls\localsend-cli.exe" -OutDir "$PWD\out" -DisableLock "false"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: loopback-out-disablelock-${{ matrix.disable_lock }}
+          name: desksend-e2e-logs
           path: out/
