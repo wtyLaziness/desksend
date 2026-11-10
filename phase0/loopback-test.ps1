@@ -72,10 +72,6 @@ function Log($m) {
 }
 
 @"
-section: screens
-	host:
-	client:
-end
 section: links
 	host:
 		right = client
@@ -99,8 +95,12 @@ externalConfig=true
 externalConfigFile=$layout
 disableLockToComputer=$DisableLock
 enableSwitchDelay=false
+[computer_host]
+name=host
+[computer_client]
+name=client
 [log]
-level=DEBUG1
+level=DEBUG
 toFile=true
 file=$(("$script:out\server.log") -replace '\\','/')
 "@ | Set-Content "$script:out\server.conf" -Encoding ASCII
@@ -116,7 +116,7 @@ remoteHost=127.0.0.1
 tlsEnabled=false
 checkPeerFingerprints=false
 [log]
-level=DEBUG1
+level=DEBUG
 toFile=true
 file=$(("$script:out\client.log") -replace '\\','/')
 "@ | Set-Content "$script:out\client.conf" -Encoding ASCII
