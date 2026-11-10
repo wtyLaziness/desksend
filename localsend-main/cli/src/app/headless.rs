@@ -12,11 +12,15 @@ use crate::storage::Repository;
 use crate::ui::{Category, Ui};
 use crate::util;
 use localsend::discovery::{DiscoveryEvent, DiscoveryHandle};
-use localsend::http::server::v2::{PrepareUploadDecisionV2, ServerEventV2};
+use localsend::http::server::common::save::FileUploadTarget;
+use localsend::http::server::v2::{PrepareUploadDecisionV2, ServerEventV2, SessionEndReasonV2};
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 pub(super) async fn run(
     mut storage: Repository,
@@ -236,3 +240,166 @@ fn render_progress(ui: &mut Ui, send: &mut Option<SendState>) {
         width,
     )));
 }
+
+fn is_ip_allowed(ip: &IpAddr, allow_spec: Option<&str>, paired_contains: bool) -> bool {
+    if paired_contains {
+        return true;
+    }
+    let Some(spec) = allow_spec.map(str::trim).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    if spec == "*" {
+        return true;
+    }
+    let canonical = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(*v6)),
+        IpAddr::V4(v4) => IpAddr::V4(*v4),
+    };
+    spec.split(',').map(str::trim).any(|item| {
+        if item == "*" {
+            return true;
+        }
+        if let Ok(allowed_ip) = item.parse::<IpAddr>() {
+            let allowed_canonical = match allowed_ip {
+                IpAddr::V6(v6) => v6
+                    .to_ipv4_mapped()
+                    .map(IpAddr::V4)
+                    .unwrap_or(IpAddr::V6(v6)),
+                IpAddr::V4(v4) => IpAddr::V4(v4),
+            };
+            if canonical == allowed_canonical {
+                return true;
+            }
+            if canonical.is_loopback() && allowed_canonical.is_loopback() {
+                return true;
+            }
+        }
+        false
+    })
+}
+
+/// Runs the CLI in headless receive mode (no TTY/raw mode required).
+pub(super) async fn run_receive(
+    storage: Repository,
+    auto_accept_from: Option<String>,
+) -> anyhow::Result<()> {
+    let identity = storage.identity.clone();
+    let (events_tx, mut events_rx) = mpsc::channel::<AppEvent>(64);
+    let Network {
+        server,
+        server_stop_tx,
+        server_tx: _,
+        mut server_rx,
+        discovery,
+        mut discovery_rx,
+        discovery_stop_tx,
+    } = start_network(&identity).await?;
+
+    println!("LOCALSEND_RECEIVER_READY port={} dest={}", identity.port, storage.destination.display());
+
+    let mut active_sessions: HashSet<String> = HashSet::new();
+    let mut file_paths: HashMap<(String, String), PathBuf> = HashMap::new();
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+            Some(event) = server_rx.recv() => {
+                match event {
+                    ServerEventV2::Register { ip, info } => {
+                        discovery::device_confirmed(
+                            &discovery,
+                            &storage.identity.fingerprint,
+                            ip.to_string(),
+                            info,
+                        );
+                    }
+                    ServerEventV2::PrepareUpload {
+                        session_id,
+                        ip,
+                        info,
+                        cert_fingerprint,
+                        files,
+                        decision_tx,
+                    } => {
+                        let fp = cert_fingerprint.unwrap_or_else(|| info.fingerprint.clone());
+                        let paired = storage.paired.contains(&fp);
+                        if is_ip_allowed(&ip, auto_accept_from.as_deref(), paired) {
+                            let ids: HashSet<String> = files.keys().cloned().collect();
+                            if decision_tx.send(PrepareUploadDecisionV2::Accept(ids)).is_ok() {
+                                println!("RECEIVE_SESSION_STARTED:{}:{}:{}", session_id, ip, files.len());
+                                active_sessions.insert(session_id);
+                            }
+                        } else {
+                            let _ = decision_tx.send(PrepareUploadDecisionV2::Decline);
+                            println!("RECEIVE_DECLINED:{}", ip);
+                        }
+                    }
+                    ServerEventV2::FileUpload {
+                        session_id,
+                        file_id,
+                        file,
+                        target_tx,
+                    } => {
+                        if !active_sessions.contains(&session_id) {
+                            continue;
+                        }
+                        let path = util::unique_path(&storage.destination, &file.file_name);
+                        file_paths.insert((session_id.clone(), file_id.clone()), path.clone());
+                        let (result_tx, result_rx) = oneshot::channel::<Result<(), String>>();
+                        let events_tx = events_tx.clone();
+                        tokio::spawn(async move {
+                            let result = match result_rx.await {
+                                Ok(r) => r,
+                                Err(_) => Err("Upload aborted".to_string()),
+                            };
+                            let _ = events_tx
+                                .send(AppEvent::ReceiveFileResult {
+                                    session_id,
+                                    file_id,
+                                    result,
+                                })
+                                .await;
+                        });
+                        let _ = target_tx.send(FileUploadTarget::Path {
+                            path,
+                            result_tx,
+                            progress_tx: None,
+                        });
+                    }
+                    ServerEventV2::SessionEnd { session_id, reason } => {
+                        active_sessions.remove(&session_id);
+                        match reason {
+                            SessionEndReasonV2::Finished => {
+                                println!("RECEIVE_SESSION_FINISHED:{}", session_id);
+                            }
+                            SessionEndReasonV2::Cancelled => {
+                                println!("RECEIVE_SESSION_CANCELLED:{}", session_id);
+                            }
+                        }
+                    }
+                    ServerEventV2::PrepareUploadAborted { session_id } => {
+                        active_sessions.remove(&session_id);
+                    }
+                    ServerEventV2::CancelReceived { .. } | ServerEventV2::ListenerFailed { .. } => {}
+                }
+            }
+            Some(event) = events_rx.recv() => {
+                if let AppEvent::ReceiveFileResult { session_id, file_id, result } = event {
+                    if let Some(path) = file_paths.remove(&(session_id, file_id)) {
+                        match result {
+                            Ok(()) => println!("RECEIVED_FILE:{}", path.display()),
+                            Err(err) => println!("RECEIVE_FILE_FAILED:{}:{}", path.display(), err),
+                        }
+                    }
+                }
+            }
+            Some(_disc) = discovery_rx.recv() => {}
+        }
+    }
+
+    stop_network(&server, Some(server_stop_tx), &discovery, discovery_stop_tx).await;
+    Ok(())
+}
+

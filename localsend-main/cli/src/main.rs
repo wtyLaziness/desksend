@@ -28,6 +28,12 @@ pub enum Command {
         #[arg(value_name = "PATH", required_unless_present = "text", num_args = 1..)]
         paths: Vec<PathBuf>,
     },
+    /// Run in headless receive mode without requiring an interactive terminal
+    Receive {
+        /// Automatically accept incoming transfers from this IP (comma-separated, or `*` for any)
+        #[arg(long, value_name = "IP")]
+        auto_accept_from: Option<String>,
+    },
 }
 
 /// LocalSend CLI

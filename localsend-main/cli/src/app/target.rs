@@ -1,33 +1,42 @@
 use localsend::discovery::{HttpChannel, StatefulDevice};
 use localsend::model::discovery::ProtocolType;
 use localsend::multicast::DEFAULT_PORT;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum TargetSelector {
     Alias(String),
     Ip(IpAddr),
+    IpPort(IpAddr, u16),
 }
 
 impl TargetSelector {
     pub(super) fn parse(value: &str) -> anyhow::Result<Self> {
         let value = value.trim();
         anyhow::ensure!(!value.is_empty(), "Destination cannot be empty");
-        Ok(match value.parse::<IpAddr>() {
-            Ok(ip) => Self::Ip(ip),
-            Err(_) => Self::Alias(value.to_string()),
-        })
+        if let Ok(ip) = value.parse::<IpAddr>() {
+            return Ok(Self::Ip(ip));
+        }
+        if let Ok(addr) = value.parse::<SocketAddr>() {
+            return Ok(Self::IpPort(addr.ip(), addr.port()));
+        }
+        Ok(Self::Alias(value.to_string()))
     }
 
     pub(super) fn direct_channel(&self) -> Option<HttpChannel> {
-        let Self::Ip(ip) = self else {
-            return None;
-        };
-        Some(HttpChannel {
-            host: ip.to_string(),
-            port: DEFAULT_PORT,
-            protocol: ProtocolType::Https,
-        })
+        match self {
+            Self::Ip(ip) => Some(HttpChannel {
+                host: ip.to_string(),
+                port: DEFAULT_PORT,
+                protocol: ProtocolType::Https,
+            }),
+            Self::IpPort(ip, port) => Some(HttpChannel {
+                host: ip.to_string(),
+                port: *port,
+                protocol: ProtocolType::Https,
+            }),
+            Self::Alias(_) => None,
+        }
     }
 
     pub(super) fn resolve(&self, devices: &[StatefulDevice]) -> Result<String, String> {
@@ -57,6 +66,17 @@ impl TargetSelector {
                         == Some(*ip)
                 })
             }),
+            Self::IpPort(ip, port) => device.get_ranked_channels().into_iter().any(|channel| {
+                channel.http().is_some_and(|http| {
+                    http.port == *port
+                        && http
+                            .host
+                            .split('%')
+                            .next()
+                            .and_then(|host| host.parse::<IpAddr>().ok())
+                            == Some(*ip)
+                })
+            }),
         }
     }
 }
@@ -66,6 +86,7 @@ impl std::fmt::Display for TargetSelector {
         match self {
             Self::Alias(alias) => write!(formatter, "alias {alias:?}"),
             Self::Ip(ip) => write!(formatter, "IP address {ip}"),
+            Self::IpPort(ip, port) => write!(formatter, "address {ip}:{port}"),
         }
     }
 }

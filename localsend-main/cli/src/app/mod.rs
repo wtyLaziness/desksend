@@ -75,6 +75,10 @@ pub enum AppEvent {
 }
 
 pub async fn run(args: Args) -> anyhow::Result<()> {
+    if let Some(Command::Receive { auto_accept_from }) = &args.command {
+        let storage = storage::Repository::load(&args)?;
+        return headless::run_receive(storage, auto_accept_from.clone()).await;
+    }
     let (payload, target) = match &args.command {
         Some(Command::Send { to, text, paths }) => {
             let payload = match text {
@@ -86,6 +90,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 to.as_deref().map(TargetSelector::parse).transpose()?,
             )
         }
+        Some(Command::Receive { .. }) => unreachable!(),
         None => (Payload::Files(Vec::new()), None),
     };
     if let Payload::Files(paths) = &payload {
