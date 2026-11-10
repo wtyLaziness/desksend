@@ -7,22 +7,23 @@
 $ErrorActionPreference = 'Continue'
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-Add-Type -ReferencedAssemblies System.Windows.Forms @"
+Add-Type @"
 using System;
 using System.Threading;
-using System.Windows.Forms;
 using System.Runtime.InteropServices;
 public class MouseDriver {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
   public struct POINT { public int X; public int Y; }
 
   public const uint MOUSEEVENTF_MOVE = 0x0001;
   public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
   public const uint MOUSEEVENTF_LEFTUP = 0x0004;
   public const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+  public const uint WM_CLOSE = 0x0010;
   public static readonly UIntPtr MAGIC_EXTRA = new UIntPtr(0x44534B53);
 
   public static void MoveAbs(int x, int y, int sw, int sh) {
@@ -36,7 +37,7 @@ public class MouseDriver {
     mouse_event(MOUSEEVENTF_MOVE, unchecked((uint)dx), unchecked((uint)dy), 0, MAGIC_EXTRA);
   }
 
-  public static void StartDragThread(int startX, int startY, int sw, int sh, string logPath, Form form) {
+  public static void StartDragThread(int startX, int startY, int sw, int sh, string logPath, IntPtr formHwnd) {
     Thread t = new Thread(() => {
       try {
         Thread.Sleep(600);
@@ -81,11 +82,9 @@ public class MouseDriver {
       } catch (Exception ex) {
         System.IO.File.AppendAllText(logPath, "[Thread] Error: " + ex.Message + "\r\n");
       } finally {
-        try {
-          if (form != null && !form.IsDisposed) {
-            form.BeginInvoke(new MethodInvoker(form.Close));
-          }
-        } catch {}
+        if (formHwnd != IntPtr.Zero) {
+          PostMessage(formHwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+        }
       }
     });
     t.IsBackground = true;
@@ -224,7 +223,7 @@ $script:safety.Add_Tick({
 
 $script:f.Add_Shown({
   $script:safety.Start()
-  [MouseDriver]::StartDragThread(200, 200, $sw, $sh, $testLog, $script:f)
+  [MouseDriver]::StartDragThread(200, 200, $sw, $sh, $testLog, $script:f.Handle)
 })
 
 [System.Windows.Forms.Application]::Run($script:f)
