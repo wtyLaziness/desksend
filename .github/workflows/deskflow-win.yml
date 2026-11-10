@@ -1,0 +1,38 @@
+name: deskflow-win
+on:
+  workflow_dispatch:
+  push:
+    paths: ["deskflow-master/**", ".github/workflows/deskflow-win.yml"]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.*"
+          arch: win64_msvc2022_64
+          cache: true
+      - name: Configure
+        working-directory: deskflow-master
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_INSTALLER=ON -DBUILD_TESTS=ON
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+      - name: Build
+        working-directory: deskflow-master
+        run: cmake --build build
+      - name: Package
+        working-directory: deskflow-master
+        run: cmake --build build --target package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deskflow-win-x64
+          path: |
+            deskflow-master/build/*.zip
+            deskflow-master/build/*.msi
+          if-no-files-found: error
