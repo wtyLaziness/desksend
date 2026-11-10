@@ -1,0 +1,89 @@
+/*
+ * Deskflow -- mouse and keyboard sharing utility
+ * SPDX-FileCopyrightText: (C) 2026 Deskflow Developers
+ * SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
+ */
+
+#pragma once
+
+#include <cstdint>
+#include <mutex>
+#include <string>
+#include <vector>
+
+class BaseClientProxy;
+class QProcess;
+
+namespace deskflow {
+
+class FileDropBridge
+{
+public:
+  static FileDropBridge &instance();
+
+  FileDropBridge(const FileDropBridge &) = delete;
+  FileDropBridge &operator=(const FileDropBridge &) = delete;
+
+  // --- Server-side (source computer) hooks ---
+  void updatePrimaryShape(int32_t x, int32_t y, int32_t w, int32_t h);
+  void shutdownSentinels();
+
+  // Called on primary mouse motion; shows edge sentinel when dragging near an active border
+  void onPrimaryMouseMove(
+      int32_t x, int32_t y, int32_t ax, int32_t ay, int32_t aw, int32_t ah, uint32_t activeSides
+  );
+
+  // True when the edge sentinel has just captured CF_HDROP files while LBUTTON is held
+  bool hasPendingDragFiles() const;
+
+  // Called by sentinel DropTarget::DragEnter or by tests
+  void setPendingDragFiles(std::vector<std::string> files);
+
+  // Called when Server::switchComputer leaves primary to a remote client
+  void onLeavePrimary(BaseClientProxy *dstClient);
+
+  // Called when Server::switchComputer returns back to primary (cancels unreleased drag)
+  void onReturnToPrimary();
+
+  // Cancels any active drag session (e.g., on Esc key)
+  void cancelActiveDrag();
+
+  // Called when Server::onMouseUp(kButtonLeft) fires on a secondary computer
+  void onSecondaryLeftMouseUp(BaseClientProxy *activeClient, int32_t x, int32_t y);
+
+  // --- Client-side (destination computer) hooks ---
+  void startReceiver(const std::string &serverHost);
+  void stopReceiver();
+  void onClientReceiveDragInfo(uint16_t fileCount, const std::string &info);
+
+  // Resolves the Explorer folder or Desktop directory under (screenX, screenY) on Windows
+  static std::string resolveDropTargetDirectory(int32_t screenX, int32_t screenY, const std::string &fallbackDir);
+
+  // Extracts the peer IP string from a connected client proxy
+  static std::string getClientPeerIp(BaseClientProxy *client);
+
+  // Locates localsend-cli binary next to current executable or via DESKSEND_LOCALSEND_CLI
+  static std::string findLocalSendCliPath();
+
+private:
+  FileDropBridge() = default;
+  ~FileDropBridge();
+
+  void sendFilesViaLocalSend(const std::string &targetIp, const std::vector<std::string> &files);
+  void handleReceivedFileLine(const std::string &filePath);
+
+  mutable std::mutex m_mutex;
+  std::vector<std::string> m_pendingFiles;
+  uint64_t m_pendingTimestampMs = 0;
+
+  std::vector<std::string> m_activeDragFiles;
+  BaseClientProxy *m_dragTargetClient = nullptr;
+
+  // Client-side drop target state
+  std::string m_lastResolvedDropDir;
+  std::string m_stagingDir;
+  std::string m_currentAllowedServerIp;
+  QProcess *m_receiverProcess = nullptr;
+};
+
+} // namespace deskflow

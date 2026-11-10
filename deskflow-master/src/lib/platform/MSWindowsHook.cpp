@@ -614,6 +614,11 @@ static bool mouseHookHandler(WPARAM wParam, int32_t x, int32_t y, int32_t data)
       // relay the event
       PostThreadMessage(g_threadID, DESKFLOW_MSG_MOUSE_MOVE, x, y);
 
+      // pass through while dragging with left button so edge drop target receives DragEnter
+      if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) {
+        return false;
+      }
+
       // if inside and not bogus then eat the event
       return inside && !bogus;
     }

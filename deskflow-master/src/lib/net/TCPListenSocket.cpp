@@ -99,7 +99,13 @@ std::unique_ptr<IDataSocket> TCPListenSocket::accept()
 {
   std::unique_ptr<IDataSocket> socket;
   try {
-    socket = std::make_unique<TCPSocket>(m_events, m_socketMultiplexer, ARCH->acceptSocket(m_socket, nullptr));
+    ArchNetAddress peerAddr = nullptr;
+    ArchSocket clientSock = ARCH->acceptSocket(m_socket, &peerAddr);
+    socket = std::make_unique<TCPSocket>(m_events, m_socketMultiplexer, clientSock);
+    if (peerAddr != nullptr) {
+      socket->setPeerAddress(ARCH->addrToString(peerAddr));
+      ARCH->closeAddr(peerAddr);
+    }
     setListeningJob();
     return socket;
   } catch (ArchNetworkException &) {

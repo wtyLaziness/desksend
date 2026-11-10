@@ -45,6 +45,8 @@ add_library(${lib_name} STATIC ${PLATFORM_CODE}
   DisplayException.cpp
   DisplayException.h
   DisplayInvalidException.h
+  FileDropBridge.cpp
+  FileDropBridge.h
   IApp.h
   IClient.h
   IClipboard.cpp
@@ -99,4 +101,8 @@ target_link_libraries(${lib_name}
 
 if(UNIX AND NOT APPLE)
   target_link_libraries(${lib_name} PRIVATE server)
+endif()
+
+if(WIN32)
+  target_link_libraries(${lib_name} PRIVATE ole32 shell32 uuid shlwapi)
 endif()

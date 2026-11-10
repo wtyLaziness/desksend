@@ -25,7 +25,8 @@ ClientProxy1_5::ClientProxy1_5(const std::string &name, deskflow::IStream *strea
 
 void ClientProxy1_5::sendDragInfo(uint32_t fileCount, const char *info, size_t size)
 {
-  // do nothing
+  std::string data(info, size);
+  ProtocolUtil::writef(getStream(), kMsgDDragInfo, fileCount, &data);
 }
 
 void ClientProxy1_5::fileChunkSending(uint8_t mark, char *data, size_t dataSize)

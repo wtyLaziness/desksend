@@ -14,6 +14,7 @@
 #include "deskflow/Clipboard.h"
 #include "deskflow/ClipboardChunk.h"
 #include "deskflow/DeskflowException.h"
+#include "deskflow/FileDropBridge.h"
 #include "deskflow/OptionTypes.h"
 #include "deskflow/ProtocolTypes.h"
 #include "deskflow/ProtocolUtil.h"
@@ -306,6 +307,14 @@ ServerProxy::ConnectionResult ServerProxy::parseMessage(const uint8_t *code)
 
   else if (memcmp(code, kMsgDSetOptions, 4) == 0) {
     setOptions();
+  }
+
+  else if (memcmp(code, kMsgDDragInfo, 4) == 0) {
+    uint16_t fileCount = 0;
+    std::string dragInfo;
+    ProtocolUtil::readf(m_stream, kMsgDDragInfo + 4, &fileCount, &dragInfo);
+    LOG_INFO("recv drag info count=%u info=\"%s\"", fileCount, dragInfo.c_str());
+    deskflow::FileDropBridge::instance().onClientReceiveDragInfo(fileCount, dragInfo);
   }
 
   else if (memcmp(code, kMsgCClose, 4) == 0) {

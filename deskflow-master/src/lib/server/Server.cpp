@@ -13,6 +13,7 @@
 #include "deskflow/AppUtil.h"
 #include "deskflow/Computer.h"
 #include "deskflow/DeskflowException.h"
+#include "deskflow/FileDropBridge.h"
 #include "deskflow/IPlatformComputer.h"
 #include "deskflow/OptionTypes.h"
 #include "deskflow/PacketStreamFilter.h"
@@ -152,6 +153,7 @@ Server::Server(ServerConfig &config, PrimaryClient *primaryClient, deskflow::Com
 
 Server::~Server()
 {
+  deskflow::FileDropBridge::instance().shutdownSentinels();
   // remove event handlers and timers
   using enum EventTypes;
   m_events->removeHandler(KeyStateKeyDown, m_inputFilter);
@@ -377,7 +379,11 @@ bool Server::isLockedToComputer() const
     return true;
   }
 
-  // locked if primary says we're locked
+  // locked if primary says we're locked (unless a cross-screen file drag is active)
+  if (deskflow::FileDropBridge::instance().hasPendingDragFiles()) {
+    LOG_DEBUG("allowing screen switch with pending dragged files");
+    return false;
+  }
   if (m_primaryClient->isLockedToComputer()) {
     return true;
   }
@@ -453,6 +459,9 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
   // since that's a waste of time we skip that and just warp the
   // mouse.
   if (m_active != dst) {
+    const bool leavingPrimary = (m_active == m_primaryClient && dst != m_primaryClient);
+    const bool returningToPrimary = (m_active != m_primaryClient && dst == m_primaryClient);
+
     // leave active computer
     if (!m_active->leave()) {
       // cannot leave computer
@@ -491,6 +500,12 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
 
     // enter new computer
     m_active->enter(x, y, m_seqNum, m_primaryClient->getToggleMask(), forScreensaver);
+
+    if (leavingPrimary) {
+      deskflow::FileDropBridge::instance().onLeavePrimary(dst);
+    } else if (returningToPrimary) {
+      deskflow::FileDropBridge::instance().onReturnToPrimary();
+    }
 
     if (m_enableClipboard) {
       // send the clipboard data to new active computer
@@ -1537,6 +1552,10 @@ void Server::onKeyDown(KeyID id, KeyModifierMask mask, KeyButton button, const s
   LOG_VERBOSE("onKeyDown id=%d mask=0x%04x button=0x%04x lang=%s", id, mask, button, lang.c_str());
   assert(m_active != nullptr);
 
+  if (id == kKeyEscape) {
+    deskflow::FileDropBridge::instance().cancelActiveDrag();
+  }
+
   // relay
   if (!m_keyboardBroadcasting && IKeyState::KeyInfo::isDefault(computers)) {
     m_active->keyDown(id, mask, button, lang);
@@ -1604,6 +1623,10 @@ void Server::onMouseUp(ButtonID id)
   LOG_VERBOSE("onMouseUp id=%d", id);
   assert(m_active != nullptr);
 
+  if (id == kButtonLeft && m_active != m_primaryClient) {
+    deskflow::FileDropBridge::instance().onSecondaryLeftMouseUp(m_active, m_x, m_y);
+  }
+
   // relay
   m_active->mouseUp(id);
 }
@@ -1636,6 +1659,7 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
   int32_t aw;
   int32_t ah;
   m_active->getShape(ax, ay, aw, ah);
+  deskflow::FileDropBridge::instance().onPrimaryMouseMove(x, y, ax, ay, aw, ah, getActivePrimarySides());
   int32_t zoneSize = getJumpZoneSize(m_active);
 
   // clamp position to computer

@@ -19,6 +19,7 @@
 #include "deskflow/Clipboard.h"
 #include "deskflow/Computer.h"
 #include "deskflow/DeskflowException.h"
+#include "deskflow/FileDropBridge.h"
 #include "deskflow/IPlatformComputer.h"
 #include "deskflow/PacketStreamFilter.h"
 #include "deskflow/ProtocolTypes.h"
@@ -73,6 +74,7 @@ Client::Client(
 
 Client::~Client()
 {
+  deskflow::FileDropBridge::instance().stopReceiver();
   m_events->removeHandler(EventTypes::ComputerSuspend, getEventTarget());
   m_events->removeHandler(EventTypes::ComputerResume, getEventTarget());
 
@@ -173,6 +175,14 @@ void Client::handshakeComplete()
   if (m_relativeMouseMoves && !m_hasRelativeRestorePosition) {
     saveRelativeRestorePosition();
   }
+  std::string serverIp = m_serverAddress.getAddress() != nullptr
+                             ? ARCH->addrToString(m_serverAddress.getAddress())
+                             : m_serverAddress.getHostname();
+  auto colonPos = serverIp.rfind(':');
+  if (colonPos != std::string::npos && serverIp.find(':') == colonPos) {
+    serverIp = serverIp.substr(0, colonPos);
+  }
+  deskflow::FileDropBridge::instance().startReceiver(serverIp);
   sendEvent(EventTypes::ClientConnected);
 }
 

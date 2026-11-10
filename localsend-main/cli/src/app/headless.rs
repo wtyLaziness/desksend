@@ -117,9 +117,14 @@ fn start_send(
     events_tx: &mpsc::Sender<AppEvent>,
 ) -> Result<SendState, String> {
     let fingerprint = target.resolve(&discovery.devices())?;
-    let device = discovery
+    let mut device = discovery
         .device_by_fingerprint(&fingerprint)
         .ok_or_else(|| format!("Destination {target} was not discovered"))?;
+    if let Some(direct_http) = target.direct_channel() {
+        let direct_ch = localsend::discovery::DeviceChannel::Http(direct_http);
+        device.device.channel = direct_ch.clone();
+        device.channels.retain(|ch, _| *ch == direct_ch);
+    }
     match payload {
         Payload::Files(paths) => sending::spawn_send(
             ui,
@@ -275,6 +280,14 @@ fn is_ip_allowed(ip_str: &str, allow_spec: Option<&str>, paired_contains: bool) 
                 return true;
             }
             if canonical.is_loopback() && allowed_canonical.is_loopback() {
+                return true;
+            }
+            if allowed_canonical.is_loopback()
+                && localsend::discovery::local_interface_addresses(
+                    &localsend::discovery::InterfaceFilter::default(),
+                )
+                .is_ok_and(|addrs| addrs.contains(&canonical))
+            {
                 return true;
             }
         }
