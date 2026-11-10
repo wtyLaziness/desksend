@@ -241,7 +241,7 @@ fn render_progress(ui: &mut Ui, send: &mut Option<SendState>) {
     )));
 }
 
-fn is_ip_allowed(ip: &IpAddr, allow_spec: Option<&str>, paired_contains: bool) -> bool {
+fn is_ip_allowed(ip_str: &str, allow_spec: Option<&str>, paired_contains: bool) -> bool {
     if paired_contains {
         return true;
     }
@@ -251,9 +251,13 @@ fn is_ip_allowed(ip: &IpAddr, allow_spec: Option<&str>, paired_contains: bool) -
     if spec == "*" {
         return true;
     }
+    let bare = ip_str.split('%').next().unwrap_or(ip_str).trim();
+    let Ok(ip) = bare.parse::<IpAddr>() else {
+        return false;
+    };
     let canonical = match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(*v6)),
-        IpAddr::V4(v4) => IpAddr::V4(*v4),
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        IpAddr::V4(v4) => IpAddr::V4(v4),
     };
     spec.split(',').map(str::trim).any(|item| {
         if item == "*" {
@@ -325,7 +329,8 @@ pub(super) async fn run_receive(
                     } => {
                         let fp = cert_fingerprint.unwrap_or_else(|| info.fingerprint.clone());
                         let paired = storage.paired.contains(&fp);
-                        if is_ip_allowed(&ip, auto_accept_from.as_deref(), paired) {
+                        let ip_str = ip.to_string();
+                        if is_ip_allowed(&ip_str, auto_accept_from.as_deref(), paired) {
                             let ids: HashSet<String> = files.keys().cloned().collect();
                             if decision_tx.send(PrepareUploadDecisionV2::Accept(ids)).is_ok() {
                                 println!("RECEIVE_SESSION_STARTED:{}:{}:{}", session_id, ip, files.len());

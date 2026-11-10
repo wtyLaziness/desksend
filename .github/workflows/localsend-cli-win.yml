@@ -14,10 +14,13 @@ jobs:
       - name: Install Rust toolchain
         working-directory: localsend-main
         run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "localsend-main -> target"
       - name: Build localsend-cli and run unit tests
         working-directory: localsend-main
         run: |
-          cargo test --package localsend-cli
+          cargo test --release --package localsend-cli
           cargo build --release --package localsend-cli
       - name: End-to-end headless receive & send test
         working-directory: localsend-main
