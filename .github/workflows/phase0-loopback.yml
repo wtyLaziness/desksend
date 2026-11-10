@@ -1,0 +1,35 @@
+name: phase0-loopback
+on:
+  workflow_dispatch:
+  push:
+    paths: ["phase0/loopback-test.ps1", ".github/workflows/phase0-loopback.yml"]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  loopback:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        disable_lock: ["false", "true"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download latest artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dfRun = gh run list --workflow deskflow-win --status success --limit 1 --json databaseId -q '.[0].databaseId'
+          $snRun = gh run list --workflow phase0-sentinel --status success --limit 1 --json databaseId -q '.[0].databaseId'
+          gh run download $dfRun -n deskflow-win-x64 -D df
+          gh run download $snRun -n sentinel-win-x64 -D sn
+          Expand-Archive (Get-ChildItem df\*.zip).FullName -DestinationPath df -Force
+      - name: Loopback drag test (disableLockToComputer=${{ matrix.disable_lock }})
+        run: |
+          $dfDir = (Get-ChildItem df -Directory | Select-Object -First 1).FullName
+          pwsh -STA -NoProfile -File ./phase0/loopback-test.ps1 -DeskflowDir $dfDir -SentinelExe "$PWD\sn\sentinel.exe" -OutDir "$PWD\out" -DisableLock "${{ matrix.disable_lock }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: loopback-out-disablelock-${{ matrix.disable_lock }}
+          path: out/
