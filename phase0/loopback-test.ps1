@@ -43,14 +43,18 @@ public class MouseDriver {
           MoveAbs(x, startY, sw, sh);
           Thread.Sleep(15);
         }
-        // 在最右边缘停留 500ms
-        for (int i = 0; i < 20; i++) {
+        // 在最右边缘停留并继续向右移动触发越界后在 client 上移动并松开左键
+        for (int i = 0; i < 15; i++) {
           MoveAbs(sw - 1, startY, sw, sh);
+          Thread.Sleep(25);
+        }
+        for (int i = 1; i <= 10; i++) {
+          MoveAbs(sw / 2 + i * 10, startY + i * 5, sw, sh);
           Thread.Sleep(25);
         }
         POINT p;
         GetCursorPos(out p);
-        System.IO.File.AppendAllText(logPath, "[Thread] At right edge cursor=(" + p.X + "," + p.Y + "), releasing LEFTUP\r\n");
+        System.IO.File.AppendAllText(logPath, "[Thread] After edge move cursor=(" + p.X + "," + p.Y + "), releasing LEFTUP\r\n");
         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
       } catch (Exception ex) {
         System.IO.File.AppendAllText(logPath, "[Thread] Error: " + ex.Message + "\r\n");
@@ -77,6 +81,8 @@ section: links
 		right = client
 	client:
 		left = host
+end
+section: options
 end
 "@ | Set-Content "$script:out\layout.cfg" -Encoding ASCII
 
