@@ -283,8 +283,8 @@ fn is_ip_allowed(ip_str: &str, allow_spec: Option<&str>, paired_contains: bool) 
                 return true;
             }
             if allowed_canonical.is_loopback()
-                && localsend::discovery::local_interface_addresses(
-                    &localsend::discovery::InterfaceFilter::default(),
+                && localsend::util::interface::local_interface_addresses(
+                    &localsend::util::interface::InterfaceFilter::default(),
                 )
                 .is_ok_and(|addrs| addrs.contains(&canonical))
             {

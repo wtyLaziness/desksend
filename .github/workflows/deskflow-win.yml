@@ -17,6 +17,11 @@ jobs:
           version: "6.8.*"
           arch: win64_msvc2022_64
           cache: true
+      - name: Cache vcpkg_installed
+        uses: actions/cache@v4
+        with:
+          path: deskflow-master/build/vcpkg_installed
+          key: vcpkg-win-x64-${{ hashFiles('deskflow-master/vcpkg.json') }}
       - name: Configure
         working-directory: deskflow-master
         run: >

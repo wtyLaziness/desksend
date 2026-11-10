@@ -17,6 +17,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "localsend-main -> target"
+          cache-on-failure: true
       - name: Build localsend-cli and run unit tests
         working-directory: localsend-main
         run: |

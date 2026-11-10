@@ -634,7 +634,7 @@ static LRESULT CALLBACK mouseLLHook(int code, WPARAM wParam, LPARAM lParam)
     // decode the message
     MSLLHOOKSTRUCT *info = reinterpret_cast<MSLLHOOKSTRUCT *>(lParam);
 
-    bool const injected = info->flags & LLMHF_INJECTED;
+    bool const injected = (info->flags & LLMHF_INJECTED) && (info->dwExtraInfo != 0x44534B53);
     if (!g_isPrimary && injected) {
       return CallNextHookEx(g_mouseLL, code, wParam, lParam);
     }

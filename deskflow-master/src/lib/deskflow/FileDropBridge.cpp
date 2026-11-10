@@ -6,6 +6,7 @@
 
 #include "deskflow/FileDropBridge.h"
 
+#include "base/DirectionTypes.h"
 #include "base/Log.h"
 #include "common/Enums.h"
 #include "io/StreamFilter.h"
