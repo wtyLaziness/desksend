@@ -403,11 +403,10 @@ void FileDropBridge::onLeavePrimary(BaseClientProxy *dstClient)
   }
 
 #if defined(_WIN32)
-  // Cancel local OLE DoDragDrop loop on the source machine by injecting VK_ESCAPE.
-  // Because MSWindowsComputer::leave() has already switched g_isPrimary to false,
-  // MSWindowsHook ignores injected key events and passes them to local Windows only.
-  keybd_event(VK_ESCAPE, 0, 0, 0);
-  keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, 0);
+  // Cancel local OLE DoDragDrop loop on the source machine by injecting VK_ESCAPE with magic extra info
+  // (0x44534B54) so MSWindowsHook::keyboardLLHook passes it to the local OS without relaying to Server.
+  keybd_event(VK_ESCAPE, 0, 0, static_cast<ULONG_PTR>(0x44534B54));
+  keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, static_cast<ULONG_PTR>(0x44534B54));
 #endif
 
   if (dstClient) {
@@ -445,7 +444,21 @@ void FileDropBridge::onReturnToPrimary()
 
 void FileDropBridge::cancelActiveDrag()
 {
-  onReturnToPrimary();
+  BaseClientProxy *oldTarget = nullptr;
+  {
+    std::scoped_lock lock(m_mutex);
+    if (m_activeDragFiles.empty()) {
+      return;
+    }
+    LOG_INFO("FileDropBridge: Escape pressed; cancelling file drag");
+    m_activeDragFiles.clear();
+    oldTarget = m_dragTargetClient;
+    m_dragTargetClient = nullptr;
+  }
+  if (oldTarget) {
+    const std::string cancelMsg = "DESKSEND_CANCEL";
+    oldTarget->sendDragInfo(0, cancelMsg.data(), cancelMsg.size());
+  }
 }
 
 void FileDropBridge::onSecondaryLeftMouseUp(BaseClientProxy *activeClient, int32_t x, int32_t y)

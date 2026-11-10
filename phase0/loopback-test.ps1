@@ -69,10 +69,10 @@ public class MouseDriver {
           Thread.Sleep(30);
         }
 
-        // 3. Move slightly on the client screen using relative deltas, then release left mouse button
+        // 3. Move slightly on the client screen relative to server center (sw/2, sh/2), then release left mouse button
         for (int i = 0; i < 6; i++) {
-          MoveRel(12, 4);
-          Thread.Sleep(25);
+          MoveAbs(sw / 2 + 25, sh / 2 + 10, sw, sh);
+          Thread.Sleep(30);
         }
         Thread.Sleep(200);
         GetCursorPos(out p);
