@@ -100,6 +100,76 @@ public:
   }
 };
 
+// 自检: 不依赖真实鼠标输入,验证
+// 1) RegisterDragDrop 成功且 OLE 已记录该窗口的 DropTarget
+// 2) 窗口在 alpha=1 时仍能被命中测试(WindowFromPoint)
+// 3) 用 Shell 生成的 IDataObject(与资源管理器拖拽同类型)能被正确解析出文件清单
+static int runSelfTest(HWND hwnd, DropTarget &target, HRESULT regHr, int x, int width, int height)
+{
+  int fails = 0;
+  auto check = [&](bool ok, const wchar_t *what) {
+    logf(L"[%s] %s", ok ? L"PASS" : L"FAIL", what);
+    if (!ok)
+      ++fails;
+  };
+  check(SUCCEEDED(regHr), L"RegisterDragDrop 成功");
+  check(GetPropW(hwnd, L"OleDropTargetInterface") != nullptr, L"OLE 已记录窗口的 DropTarget");
+
+  // 窗口需要先处理一次消息才可被命中
+  MSG msg;
+  for (int i = 0; i < 20; ++i) {
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+      DispatchMessageW(&msg);
+    Sleep(20);
+  }
+  POINT pt = {x + width / 2, height / 2};
+  HWND hit = WindowFromPoint(pt);
+  check(hit == hwnd, L"边缘点命中哨兵窗口(WindowFromPoint)");
+
+  // 构造测试文件
+  wchar_t tmp[MAX_PATH];
+  GetTempPathW(MAX_PATH, tmp);
+  std::wstring dir = std::wstring(tmp) + L"dd_selftest";
+  CreateDirectoryW(dir.c_str(), nullptr);
+  std::wstring f1 = dir + L"\\one.txt", f2 = dir + L"\\two.txt", sub = dir + L"\\folder";
+  for (auto &f : {f1, f2}) {
+    HANDLE h = CreateFileW(f.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD w;
+    WriteFile(h, "hello", 5, &w, nullptr);
+    CloseHandle(h);
+  }
+  CreateDirectoryW(sub.c_str(), nullptr);
+
+  PIDLIST_ABSOLUTE pidls[3] = {};
+  const std::wstring *paths[3] = {&f1, &f2, &sub};
+  bool pidlOk = true;
+  for (int i = 0; i < 3; ++i)
+    pidlOk &= SUCCEEDED(SHParseDisplayName(paths[i]->c_str(), nullptr, &pidls[i], 0, nullptr));
+  check(pidlOk, L"构造 3 个 PIDL");
+
+  IDataObject *obj = nullptr;
+  HRESULT hr = SHCreateDataObject(nullptr, 3, (PCUITEMID_CHILD_ARRAY)pidls, nullptr, IID_IDataObject, (void **)&obj);
+  check(SUCCEEDED(hr) && obj, L"SHCreateDataObject");
+  if (obj) {
+    POINTL p = {pt.x, pt.y};
+    DWORD eff = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+    check(target.DragEnter(obj, MK_LBUTTON, p, &eff) == S_OK && eff == DROPEFFECT_COPY, L"DragEnter 返回 COPY");
+    int n = dumpFiles(obj);
+    check(n == 3, L"解析出 3 个文件/文件夹");
+    check(target.Drop(obj, MK_LBUTTON, p, &eff) == S_OK, L"Drop 返回 S_OK");
+    obj->Release();
+  }
+  for (auto &p : pidls)
+    if (p)
+      CoTaskMemFree(p);
+
+  RevokeDragDrop(hwnd);
+  DestroyWindow(hwnd);
+  OleUninitialize();
+  logf(L"自检结果: %s (失败 %d 项)", fails ? L"FAIL" : L"ALL PASS", fails);
+  return fails ? 1 : 0;
+}
+
 static BOOL WINAPI onCtrl(DWORD)
 {
   PostQuitMessage(0);
@@ -147,6 +217,10 @@ int wmain(int argc, wchar_t **argv)
 
   DropTarget target;
   HRESULT hr = RegisterDragDrop(hwnd, &target);
+
+  if (argc > 1 && std::wstring(argv[1]) == L"--selftest")
+    return runSelfTest(hwnd, target, hr, x, width, sh);
+
   logf(L"哨兵窗口: %s 边缘, x=%d w=%d h=%d, RegisterDragDrop hr=0x%08lx", left ? L"左" : L"右", x, width, sh,
        (unsigned long)hr);
   logf(L"请在资源管理器中选中文件并拖到该边缘; Ctrl+C 退出");
