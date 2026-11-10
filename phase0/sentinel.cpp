@@ -7,6 +7,8 @@
 #include <shlobj.h>
 #include <ole2.h>
 #include <cstdarg>
+#include <fcntl.h>
+#include <io.h>
 #include <cstdio>
 #include <string>
 
@@ -31,6 +33,52 @@ static void logf(const wchar_t *fmt, ...)
   }
 }
 
+// 列出数据对象支持的剪贴板格式(诊断用)
+static void listFormats(IDataObject *obj)
+{
+  IEnumFORMATETC *en = nullptr;
+  if (FAILED(obj->EnumFormatEtc(DATADIR_GET, &en)) || !en) {
+    logf(L"  EnumFormatEtc 失败");
+    return;
+  }
+  FORMATETC f;
+  while (en->Next(1, &f, nullptr) == S_OK) {
+    wchar_t name[128] = L"";
+    if (f.cfFormat >= 0xC000)
+      GetClipboardFormatNameW(f.cfFormat, name, 128);
+    logf(L"  format cf=%u '%s' tymed=0x%lx", (unsigned)f.cfFormat, name, (unsigned long)f.tymed);
+  }
+  en->Release();
+}
+
+// 备用路径: Shell IDList Array(CFSTR_SHELLIDLIST)
+static int dumpViaShellIdList(IDataObject *obj)
+{
+  FORMATETC fmt = {(CLIPFORMAT)RegisterClipboardFormatW(CFSTR_SHELLIDLIST), nullptr, DVASPECT_CONTENT, -1,
+                   TYMED_HGLOBAL};
+  STGMEDIUM med = {};
+  if (FAILED(obj->GetData(&fmt, &med)))
+    return 0;
+  CIDA *cida = static_cast<CIDA *>(GlobalLock(med.hGlobal));
+  int n = 0;
+  PCUIDLIST_ABSOLUTE parent = reinterpret_cast<PCUIDLIST_ABSOLUTE>(reinterpret_cast<BYTE *>(cida) + cida->aoffset[0]);
+  for (UINT i = 0; i < cida->cidl; ++i) {
+    PCUIDLIST_RELATIVE child =
+        reinterpret_cast<PCUIDLIST_RELATIVE>(reinterpret_cast<BYTE *>(cida) + cida->aoffset[i + 1]);
+    PIDLIST_ABSOLUTE full = ILCombine(parent, child);
+    wchar_t path[MAX_PATH * 2];
+    if (full && SHGetPathFromIDListW(full, path)) {
+      logf(L"  [idlist %u] %s", i, path);
+      ++n;
+    }
+    if (full)
+      ILFree(full);
+  }
+  GlobalUnlock(med.hGlobal);
+  ReleaseStgMedium(&med);
+  return n;
+}
+
 // 读取 IDataObject 中的文件清单,返回文件数
 static int dumpFiles(IDataObject *obj)
 {
@@ -38,8 +86,9 @@ static int dumpFiles(IDataObject *obj)
   STGMEDIUM med = {};
   HRESULT hr = obj->GetData(&fmt, &med);
   if (FAILED(hr)) {
-    logf(L"  GetData(CF_HDROP) 失败 hr=0x%08lx (拖拽的可能不是文件)", (unsigned long)hr);
-    return 0;
+    logf(L"  GetData(CF_HDROP) failed hr=0x%08lx, trying SHELLIDLIST", (unsigned long)hr);
+    listFormats(obj);
+    return dumpViaShellIdList(obj);
   }
   HDROP drop = static_cast<HDROP>(GlobalLock(med.hGlobal));
   UINT n = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
@@ -192,6 +241,7 @@ int wmain(int argc, wchar_t **argv)
   if (width < 1)
     width = 6;
 
+  _setmode(_fileno(stdout), _O_U8TEXT);
   _wfopen_s(&g_log, L"sentinel.log", L"w, ccs=UTF-8");
   SetProcessDPIAware();
   if (FAILED(OleInitialize(nullptr))) {
