@@ -364,7 +364,7 @@ pub(super) async fn run_receive(
                         if !active_sessions.contains(&session_id) {
                             continue;
                         }
-                        let path = util::unique_path(&storage.destination, &file.file_name);
+                        let path = util::unique_nested_path(&storage.destination, &file.file_name);
                         file_paths.insert((session_id.clone(), file_id.clone()), path.clone());
                         let (result_tx, result_rx) = oneshot::channel::<Result<(), String>>();
                         let events_tx = events_tx.clone();

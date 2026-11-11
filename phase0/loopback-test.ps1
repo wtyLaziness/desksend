@@ -107,16 +107,11 @@ if ($LocalSendCliExe -and (Test-Path $LocalSendCliExe)) {
   Log "Copied localsend-cli.exe into $DeskflowDir"
 }
 
-$rxCfg = "$script:out\rx_cfg"
-$txCfg = "$script:out\tx_cfg"
 $dropDest = "$script:out\drop_dest"
-New-Item -ItemType Directory -Force $rxCfg, $txCfg, $dropDest | Out-Null
+New-Item -ItemType Directory -Force $dropDest | Out-Null
 
-$env:DESKSEND_RECEIVER_PORT = "53318"
-$env:DESKSEND_TARGET_PORT = "53318"
-$env:DESKSEND_SENDER_PORT = "53319"
-$env:DESKSEND_RECEIVER_CONFIG_HOME = $rxCfg
-$env:DESKSEND_SENDER_CONFIG_HOME = $txCfg
+# Only override the drop destination folder for deterministic verification;
+# ports (53318/53319) and isolated config directories use DeskSend's zero-config defaults.
 $env:DESKSEND_DEFAULT_DROP_DIR = $dropDest
 
 @"
@@ -190,10 +185,11 @@ Log "server alive=$(-not $srv.HasExited) client alive=$(-not $cli.HasExited) Dis
 
 $tmp = Join-Path $env:TEMP 'dd_test'
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $tmp | Out-Null
+New-Item -ItemType Directory -Force "$tmp\TestFolder\sub" | Out-Null
 'desksend-payload-1' | Set-Content "$tmp\one.txt" -NoNewline
 'desksend-payload-2' | Set-Content "$tmp\two.txt" -NoNewline
-$script:files = [string[]]@("$tmp\one.txt","$tmp\two.txt")
+'desksend-nested-folder-payload' | Set-Content "$tmp\TestFolder\sub\nested.txt" -NoNewline
+$script:files = [string[]]@("$tmp\one.txt","$tmp\two.txt","$tmp\TestFolder")
 
 $script:f = New-Object System.Windows.Forms.Form
 $script:f.StartPosition = 'Manual'
@@ -228,10 +224,10 @@ $script:f.Add_Shown({
 
 [System.Windows.Forms.Application]::Run($script:f)
 
-Log "Waiting up to 15s for transferred files to arrive in $dropDest ..."
+Log "Waiting up to 15s for transferred files and nested folder to arrive in $dropDest ..."
 $transferred = $false
 for ($i = 0; $i -lt 30; $i++) {
-  if ((Test-Path "$dropDest\one.txt") -and (Test-Path "$dropDest\two.txt")) {
+  if ((Test-Path "$dropDest\one.txt") -and (Test-Path "$dropDest\two.txt") -and (Test-Path "$dropDest\TestFolder\sub\nested.txt")) {
     $transferred = $true
     break
   }
@@ -250,16 +246,17 @@ foreach ($n in 'test.log','server.log','client.log','server.stderr','client.stde
 }
 
 Write-Host "=============== Dropped Files in $dropDest ==============="
-Get-ChildItem $dropDest -ErrorAction SilentlyContinue | ForEach-Object {
-  Write-Host ("{0} ({1} bytes): {2}" -f $_.Name, $_.Length, (Get-Content $_.FullName -Raw))
+Get-ChildItem $dropDest -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+  Write-Host ("{0} ({1} bytes): {2}" -f $_.FullName, $_.Length, (Get-Content $_.FullName -Raw))
 }
 
 if (-not $transferred) {
-  throw "E2E DeskSend file transfer FAILED: files did not arrive in $dropDest"
+  throw "E2E DeskSend file/folder transfer FAILED: items did not arrive in $dropDest"
 }
 $c1 = Get-Content "$dropDest\one.txt" -Raw
 $c2 = Get-Content "$dropDest\two.txt" -Raw
-if ($c1 -ne 'desksend-payload-1' -or $c2 -ne 'desksend-payload-2') {
-  throw "Transferred file content mismatch: c1='$c1' c2='$c2'"
+$c3 = Get-Content "$dropDest\TestFolder\sub\nested.txt" -Raw
+if ($c1 -ne 'desksend-payload-1' -or $c2 -ne 'desksend-payload-2' -or $c3 -ne 'desksend-nested-folder-payload') {
+  throw "Transferred content mismatch: c1='$c1' c2='$c2' c3='$c3'"
 }
-Log "E2E DeskSend cross-screen drag-and-drop file transfer PASSED!"
+Log "E2E DeskSend cross-screen drag-and-drop file & folder transfer PASSED!"

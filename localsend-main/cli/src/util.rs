@@ -110,6 +110,32 @@ pub fn unique_path(dir: &Path, file_name: &str) -> PathBuf {
         .unwrap()
 }
 
+/// Resolves a sender-supplied relative path (e.g. `MyFolder/sub/file.txt`) inside `dir`,
+/// sanitizing each path component individually and stripping any `.` or `..` segments
+/// so folder hierarchy is preserved safely without path traversal.
+pub fn unique_nested_path(dir: &Path, file_name: &str) -> PathBuf {
+    let rules = filename::Rules::current();
+    let segments: Vec<String> = file_name
+        .split(['/', '\\'])
+        .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
+        .map(|seg| filename::sanitize(seg, rules))
+        .filter(|seg| !seg.is_empty() && seg != "." && seg != "..")
+        .collect();
+
+    if segments.len() <= 1 {
+        return unique_path(dir, file_name);
+    }
+
+    let mut parent = dir.to_path_buf();
+    for seg in &segments[..segments.len() - 1] {
+        parent.push(seg);
+    }
+    let _ = std::fs::create_dir_all(&parent);
+
+    let last = &segments[segments.len() - 1];
+    unique_path(&parent, last)
+}
+
 /// Estimates the transfer speed from cumulative byte counts, smoothed with an
 /// exponential moving average.
 pub struct SpeedMeter {
@@ -141,5 +167,29 @@ impl SpeedMeter {
         self.last_bytes = bytes_now;
         self.last_time = now;
         self.ema
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_nested_path_preserves_subdirectories_and_strips_traversal() {
+        let base = std::env::temp_dir().join(format!(
+            "localsend_nested_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        let p1 = unique_nested_path(&base, "MyFolder/sub/hello.txt");
+        assert_eq!(p1, base.join("MyFolder").join("sub").join("hello.txt"));
+        assert!(base.join("MyFolder").join("sub").is_dir());
+
+        let p2 = unique_nested_path(&base, "../../EvilFolder/../safe.txt");
+        assert_eq!(p2, base.join("EvilFolder").join("safe.txt"));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

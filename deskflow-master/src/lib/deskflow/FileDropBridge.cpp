@@ -327,6 +327,10 @@ void FileDropBridge::shutdownSentinels()
 #if defined(_WIN32)
   g_sentinelMgr.shutdown();
 #endif
+  std::scoped_lock lock(m_mutex);
+  m_pendingFiles.clear();
+  m_activeDragFiles.clear();
+  m_dragTargetClient = nullptr;
 }
 
 void FileDropBridge::onPrimaryMouseMove(
@@ -511,14 +515,18 @@ std::string FileDropBridge::getClientPeerIp(BaseClientProxy *client)
   if (addr.front() == '[') {
     auto closeBracket = addr.find(']');
     if (closeBracket != std::string::npos) {
-      return addr.substr(1, closeBracket - 1);
+      addr = addr.substr(1, closeBracket - 1);
     }
   } else {
     auto firstColon = addr.find(':');
     auto lastColon = addr.rfind(':');
     if (firstColon != std::string::npos && firstColon == lastColon) {
-      return addr.substr(0, firstColon);
+      addr = addr.substr(0, firstColon);
     }
+  }
+  const QString qAddr = QString::fromStdString(addr);
+  if (qAddr.startsWith(QStringLiteral("::ffff:"), Qt::CaseInsensitive)) {
+    return qAddr.mid(7).toStdString();
   }
   return addr;
 }
@@ -554,16 +562,17 @@ void FileDropBridge::sendFilesViaLocalSend(const std::string &targetIp, const st
   }
 
   const QString cliPath = QString::fromStdString(findLocalSendCliPath());
-  QString destination = QString::fromStdString(targetIp);
+  QString targetPortStr = QStringLiteral("53318");
   if (const char *targetPort = std::getenv("DESKSEND_TARGET_PORT"); targetPort && targetPort[0] != '\0') {
-    destination += QStringLiteral(":") + QString::fromUtf8(targetPort);
+    targetPortStr = QString::fromUtf8(targetPort);
   }
+  const QString destination = QString::fromStdString(targetIp) + QStringLiteral(":") + targetPortStr;
 
   QStringList args;
   if (const char *senderPort = std::getenv("DESKSEND_SENDER_PORT"); senderPort && senderPort[0] != '\0') {
     args << QStringLiteral("--port") << QString::fromUtf8(senderPort);
   } else {
-    // Use an alternate port for ephemeral sender so it never collides with a local receiver on 53317
+    // Use an alternate port for ephemeral sender so it never collides with LocalSend GUI (53317) or DeskSend receiver (53318)
     args << QStringLiteral("--port") << QStringLiteral("53319");
   }
   args << QStringLiteral("send") << QStringLiteral("--to") << destination;
@@ -573,9 +582,12 @@ void FileDropBridge::sendFilesViaLocalSend(const std::string &targetIp, const st
 
   auto *proc = new QProcess();
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  QString senderCfgDir = QDir(QDir::tempPath()).filePath(QStringLiteral("DeskSend_SenderCfg"));
   if (const char *senderCfg = std::getenv("DESKSEND_SENDER_CONFIG_HOME"); senderCfg && senderCfg[0] != '\0') {
-    env.insert(QStringLiteral("XDG_CONFIG_HOME"), QString::fromUtf8(senderCfg));
+    senderCfgDir = QString::fromUtf8(senderCfg);
   }
+  QDir().mkpath(senderCfgDir);
+  env.insert(QStringLiteral("XDG_CONFIG_HOME"), senderCfgDir);
   proc->setProcessEnvironment(env);
 
   QObject::connect(proc, &QProcess::finished, proc, [proc, destination](int exitCode, QProcess::ExitStatus) {
@@ -632,12 +644,15 @@ void FileDropBridge::startReceiver(const std::string &serverHost)
   }
 
   const QString cliPath = QString::fromStdString(findLocalSendCliPath());
-  QString port = QStringLiteral("53317");
+  QString port = QStringLiteral("53318");
   if (const char *envPort = std::getenv("DESKSEND_RECEIVER_PORT"); envPort && envPort[0] != '\0') {
     port = QString::fromUtf8(envPort);
   }
 
   QString allowSpec = QString::fromStdString(serverHost);
+  if (allowSpec.startsWith(QStringLiteral("::ffff:"), Qt::CaseInsensitive)) {
+    allowSpec = allowSpec.mid(7);
+  }
   if (allowSpec.isEmpty() || allowSpec == QStringLiteral("localhost")) {
     allowSpec = QStringLiteral("127.0.0.1");
   }
@@ -648,9 +663,12 @@ void FileDropBridge::startReceiver(const std::string &serverHost)
 
   m_receiverProcess = new QProcess();
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  QString rxCfgDir = QDir(QDir::tempPath()).filePath(QStringLiteral("DeskSend_ReceiverCfg"));
   if (const char *rxCfg = std::getenv("DESKSEND_RECEIVER_CONFIG_HOME"); rxCfg && rxCfg[0] != '\0') {
-    env.insert(QStringLiteral("XDG_CONFIG_HOME"), QString::fromUtf8(rxCfg));
+    rxCfgDir = QString::fromUtf8(rxCfg);
   }
+  QDir().mkpath(rxCfgDir);
+  env.insert(QStringLiteral("XDG_CONFIG_HOME"), rxCfgDir);
   m_receiverProcess->setProcessEnvironment(env);
 
   QObject::connect(m_receiverProcess, &QProcess::readyReadStandardOutput, [this]() {
@@ -724,9 +742,11 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
 void FileDropBridge::handleReceivedFileLine(const std::string &filePath)
 {
   std::string targetDir;
+  std::string stagingDirStr;
   {
     std::scoped_lock lock(m_mutex);
     targetDir = m_lastResolvedDropDir;
+    stagingDirStr = m_stagingDir;
   }
   if (targetDir.empty()) {
     return;
@@ -737,34 +757,60 @@ void FileDropBridge::handleReceivedFileLine(const std::string &filePath)
     return;
   }
 
-  QDir dstDir(QString::fromStdString(targetDir));
-  if (!dstDir.exists()) {
-    dstDir.mkpath(QStringLiteral("."));
+  QDir dstRootDir(QString::fromStdString(targetDir));
+  if (!dstRootDir.exists()) {
+    dstRootDir.mkpath(QStringLiteral("."));
   }
 
-  QString baseName = srcInfo.completeBaseName();
-  QString suffix = srcInfo.suffix();
-  QString fileName = srcInfo.fileName();
-  QString dstPath = dstDir.filePath(fileName);
+  QString relPath = srcInfo.fileName();
+  if (!stagingDirStr.empty()) {
+    QDir stagingDir(QString::fromStdString(stagingDirStr));
+    const QString candidateRel = stagingDir.relativeFilePath(srcInfo.absoluteFilePath());
+    if (!candidateRel.isEmpty() && !candidateRel.startsWith(QStringLiteral("..")) &&
+        !QDir::isAbsolutePath(candidateRel)) {
+      relPath = candidateRel;
+    }
+  }
+
+  QString dstPath = dstRootDir.filePath(relPath);
+  QFileInfo dstInfo(dstPath);
+  QDir dstParentDir = dstInfo.dir();
+  if (!dstParentDir.exists()) {
+    dstParentDir.mkpath(QStringLiteral("."));
+  }
+
+  QString baseName = dstInfo.completeBaseName();
+  QString suffix = dstInfo.suffix();
   int counter = 1;
   while (QFileInfo::exists(dstPath)) {
     if (suffix.isEmpty()) {
-      dstPath = dstDir.filePath(QStringLiteral("%1 (%2)").arg(baseName).arg(counter));
+      dstPath = dstParentDir.filePath(QStringLiteral("%1 (%2)").arg(baseName).arg(counter));
     } else {
-      dstPath = dstDir.filePath(QStringLiteral("%1 (%2).%3").arg(baseName).arg(counter).arg(suffix));
+      dstPath = dstParentDir.filePath(QStringLiteral("%1 (%2).%3").arg(baseName).arg(counter).arg(suffix));
     }
     ++counter;
   }
 
+  bool moved = false;
   if (QFile::rename(srcInfo.absoluteFilePath(), dstPath)) {
     LOG_INFO("FileDropBridge: placed received file at \"%s\"", dstPath.toStdString().c_str());
+    moved = true;
   } else if (QFile::copy(srcInfo.absoluteFilePath(), dstPath)) {
     QFile::remove(srcInfo.absoluteFilePath());
     LOG_INFO("FileDropBridge: copied received file to \"%s\"", dstPath.toStdString().c_str());
+    moved = true;
   } else {
     LOG_WARN(
         "FileDropBridge: failed to move \"%s\" to \"%s\"", filePath.c_str(), dstPath.toStdString().c_str()
     );
+  }
+
+  if (moved && !stagingDirStr.empty()) {
+    QDir stagingDir(QString::fromStdString(stagingDirStr));
+    const QString relParent = stagingDir.relativeFilePath(srcInfo.dir().absolutePath());
+    if (!relParent.isEmpty() && relParent != QStringLiteral(".") && !relParent.startsWith(QStringLiteral(".."))) {
+      stagingDir.rmpath(relParent);
+    }
   }
 }
 
