@@ -233,9 +233,8 @@ New-Item -ItemType Directory -Force "$tmp\TestFolder\sub" | Out-Null
 'desksend-payload-1' | Set-Content "$tmp\one.txt" -NoNewline
 'desksend-payload-2' | Set-Content "$tmp\two.txt" -NoNewline
 'desksend-nested-folder-payload' | Set-Content "$tmp\TestFolder\sub\nested.txt" -NoNewline
-$script:files = [string[]]@("$tmp\one.txt","$tmp\two.txt","$tmp\TestFolder")
 [IO.File]::WriteAllBytes("$tmp\large.bin", [byte[]]::new(32MB))
-$script:files += "$tmp\large.bin"
+$script:files = [string[]]@("$tmp\one.txt","$tmp\two.txt","$tmp\TestFolder","$tmp\large.bin")
 
 $script:f = New-Object System.Windows.Forms.Form
 $script:f.StartPosition = 'Manual'

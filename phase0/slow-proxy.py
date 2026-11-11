@@ -1,7 +1,6 @@
 """仅用于 CI：限速 LocalSend 上行，让回切测试发生在传输过程中。"""
 
 import asyncio
-import sys
 
 
 async def relay(reader, writer, throttle=False):
