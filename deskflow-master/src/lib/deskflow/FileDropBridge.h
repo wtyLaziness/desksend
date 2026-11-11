@@ -82,6 +82,7 @@ private:
   {
     std::string dir;
     bool copyToClipboard = false;
+    uint64_t timestampMs = 0;
   };
 
   FileDropBridge() = default;
@@ -90,8 +91,10 @@ private:
   void sendFilesViaLocalSend(const std::string &targetIp, const std::vector<std::string> &files);
   void processNextSendJob();
   void handleReceivedFileLine(const std::string &filePath);
-  void handleReceiveSessionStarted();
-  void handleReceiveSessionFinished();
+  void handleReceiveFileFailedLine();
+  void handleReceiveSessionStarted(size_t expectedFiles);
+  void handleReceiveSessionFinished(bool cancelled);
+  void finalizeActiveSession();
 
   mutable std::mutex m_mutex;
   std::vector<std::string> m_pendingFiles;
@@ -109,6 +112,9 @@ private:
   std::deque<DropTargetEntry> m_pendingDropTargets;
   DropTargetEntry m_activeSessionTarget;
   std::vector<std::string> m_activeSessionPlacedFiles;
+  size_t m_activeSessionExpectedFiles = 0;
+  size_t m_activeSessionHandledFiles = 0;
+  bool m_activeSessionEnded = false;
   std::string m_stagingDir;
   std::string m_currentAllowedServerIp;
   QProcess *m_receiverProcess = nullptr;

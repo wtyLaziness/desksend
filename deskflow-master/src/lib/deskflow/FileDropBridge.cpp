@@ -797,6 +797,14 @@ void FileDropBridge::processNextSendJob()
   QObject::connect(proc, &QProcess::started, proc, [proc]() { assignProcessToKillOnCloseJob(proc->processId()); });
 #endif
 
+  QObject::connect(proc, &QProcess::errorOccurred, proc, [this, proc, destination](QProcess::ProcessError error) {
+    if (error == QProcess::FailedToStart) {
+      LOG_WARN("FileDropBridge: failed to start localsend-cli for %s", destination.toStdString().c_str());
+      proc->deleteLater();
+      processNextSendJob();
+    }
+  });
+
   QObject::connect(proc, &QProcess::finished, proc, [this, proc, destination](int exitCode, QProcess::ExitStatus) {
     const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
     const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
@@ -900,13 +908,22 @@ void FileDropBridge::startReceiver(const std::string &serverHost)
       const QString line = QString::fromUtf8(m_receiverProcess->readLine()).trimmed();
       LOG_INFO("FileDropBridge [rx]: %s", line.toStdString().c_str());
       const QString filePrefix = QStringLiteral("RECEIVED_FILE:");
+      const QString startPrefix = QStringLiteral("RECEIVE_SESSION_STARTED:");
       if (line.startsWith(filePrefix)) {
         handleReceivedFileLine(line.mid(filePrefix.size()).toStdString());
-      } else if (line.startsWith(QStringLiteral("RECEIVE_SESSION_STARTED:"))) {
-        handleReceiveSessionStarted();
-      } else if (line.startsWith(QStringLiteral("RECEIVE_SESSION_FINISHED:")) ||
-                 line.startsWith(QStringLiteral("RECEIVE_SESSION_CANCELLED:"))) {
-        handleReceiveSessionFinished();
+      } else if (line.startsWith(QStringLiteral("RECEIVE_FILE_FAILED:"))) {
+        handleReceiveFileFailedLine();
+      } else if (line.startsWith(startPrefix)) {
+        size_t expectedCount = 0;
+        const int lastColon = line.lastIndexOf(':');
+        if (lastColon > 0) {
+          expectedCount = static_cast<size_t>(line.mid(lastColon + 1).toUInt());
+        }
+        handleReceiveSessionStarted(expectedCount);
+      } else if (line.startsWith(QStringLiteral("RECEIVE_SESSION_FINISHED:"))) {
+        handleReceiveSessionFinished(false);
+      } else if (line.startsWith(QStringLiteral("RECEIVE_SESSION_CANCELLED:"))) {
+        handleReceiveSessionFinished(true);
       }
     }
   });
@@ -952,8 +969,12 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
       std::string resolved = resolveDropTargetDirectory(x, y, fallback, &isDirectFolder);
       {
         std::scoped_lock lock(m_mutex);
+        const uint64_t now = nowMs();
+        while (!m_pendingDropTargets.empty() && (now - m_pendingDropTargets.front().timestampMs > 15000)) {
+          m_pendingDropTargets.pop_front();
+        }
         m_lastResolvedDropDir = resolved;
-        m_pendingDropTargets.push_back(DropTargetEntry{resolved, !isDirectFolder});
+        m_pendingDropTargets.push_back(DropTargetEntry{resolved, !isDirectFolder, now});
       }
       LOG_INFO(
           "FileDropBridge: remote drop at (%d,%d) for %u file(s) -> target folder \"%s\" (directFolder=%d)", x, y,
@@ -967,31 +988,76 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
   }
 }
 
-void FileDropBridge::handleReceiveSessionStarted()
+void FileDropBridge::handleReceiveSessionStarted(size_t expectedFiles)
 {
+  finalizeActiveSession();
   std::scoped_lock lock(m_mutex);
+  const uint64_t now = nowMs();
+  while (!m_pendingDropTargets.empty() && (now - m_pendingDropTargets.front().timestampMs > 15000)) {
+    m_pendingDropTargets.pop_front();
+  }
   m_activeSessionPlacedFiles.clear();
+  m_activeSessionExpectedFiles = expectedFiles;
+  m_activeSessionHandledFiles = 0;
+  m_activeSessionEnded = false;
   if (!m_pendingDropTargets.empty()) {
     m_activeSessionTarget = std::move(m_pendingDropTargets.front());
     m_pendingDropTargets.pop_front();
   } else {
-    m_activeSessionTarget = DropTargetEntry{m_lastResolvedDropDir, false};
+    m_activeSessionTarget = DropTargetEntry{m_lastResolvedDropDir, false, now};
   }
 }
 
-void FileDropBridge::handleReceiveSessionFinished()
+void FileDropBridge::handleReceiveSessionFinished(bool cancelled)
+{
+  bool readyToFinalize = false;
+  {
+    std::scoped_lock lock(m_mutex);
+    m_activeSessionEnded = true;
+    if (cancelled || m_activeSessionExpectedFiles == 0 ||
+        m_activeSessionHandledFiles >= m_activeSessionExpectedFiles) {
+      readyToFinalize = true;
+    }
+  }
+  if (readyToFinalize) {
+    finalizeActiveSession();
+  }
+}
+
+void FileDropBridge::handleReceiveFileFailedLine()
+{
+  bool readyToFinalize = false;
+  {
+    std::scoped_lock lock(m_mutex);
+    ++m_activeSessionHandledFiles;
+    if (m_activeSessionEnded && m_activeSessionHandledFiles >= m_activeSessionExpectedFiles) {
+      readyToFinalize = true;
+    }
+  }
+  if (readyToFinalize) {
+    finalizeActiveSession();
+  }
+}
+
+void FileDropBridge::finalizeActiveSession()
 {
   std::vector<std::string> filesForClipboard;
   bool shouldCopyToClipboard = false;
   std::string stagingDirStr;
   {
     std::scoped_lock lock(m_mutex);
+    if (m_activeSessionTarget.dir.empty() && m_activeSessionPlacedFiles.empty() && !m_activeSessionEnded) {
+      return;
+    }
     shouldCopyToClipboard = m_activeSessionTarget.copyToClipboard;
     if (shouldCopyToClipboard) {
       filesForClipboard = std::move(m_activeSessionPlacedFiles);
     }
     m_activeSessionPlacedFiles.clear();
     m_activeSessionTarget = DropTargetEntry{};
+    m_activeSessionExpectedFiles = 0;
+    m_activeSessionHandledFiles = 0;
+    m_activeSessionEnded = false;
     stagingDirStr = m_stagingDir;
   }
 
@@ -1081,9 +1147,20 @@ void FileDropBridge::handleReceivedFileLine(const std::string &filePath)
     );
   }
 
-  if (placed) {
+  bool readyToFinalize = false;
+  {
     std::scoped_lock lock(m_mutex);
-    m_activeSessionPlacedFiles.push_back(dstPath.toStdString());
+    if (placed) {
+      m_activeSessionPlacedFiles.push_back(dstPath.toStdString());
+    }
+    ++m_activeSessionHandledFiles;
+    if (m_activeSessionEnded && m_activeSessionExpectedFiles > 0 &&
+        m_activeSessionHandledFiles >= m_activeSessionExpectedFiles) {
+      readyToFinalize = true;
+    }
+  }
+  if (readyToFinalize) {
+    finalizeActiveSession();
   }
 }
 
