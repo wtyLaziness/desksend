@@ -1297,6 +1297,9 @@ void Server::handleWheelEvent(const Event &event)
 
 void Server::handleSwitchWaitTimeout()
 {
+  if (m_switchComputer == nullptr) {
+    return;
+  }
   // ignore if mouse is locked to computer
   if (isLockedToComputer()) {
     LOG_VERBOSE("locked to computer");
@@ -1975,6 +1978,9 @@ bool Server::removeClient(BaseClientProxy *client)
   m_clients.erase(getName(client));
   m_clientSet.erase(i);
 
+  if (m_switchComputer == client) {
+    stopSwitch();
+  }
   deskflow::FileDropBridge::instance().onClientDisconnected(client);
 
   return true;
