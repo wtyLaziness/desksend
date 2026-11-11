@@ -791,26 +791,15 @@ void FileDropBridge::handleReceivedFileLine(const std::string &filePath)
     ++counter;
   }
 
-  bool moved = false;
   if (QFile::rename(srcInfo.absoluteFilePath(), dstPath)) {
     LOG_INFO("FileDropBridge: placed received file at \"%s\"", dstPath.toStdString().c_str());
-    moved = true;
   } else if (QFile::copy(srcInfo.absoluteFilePath(), dstPath)) {
     QFile::remove(srcInfo.absoluteFilePath());
     LOG_INFO("FileDropBridge: copied received file to \"%s\"", dstPath.toStdString().c_str());
-    moved = true;
   } else {
     LOG_WARN(
         "FileDropBridge: failed to move \"%s\" to \"%s\"", filePath.c_str(), dstPath.toStdString().c_str()
     );
-  }
-
-  if (moved && !stagingDirStr.empty()) {
-    QDir stagingDir(QString::fromStdString(stagingDirStr));
-    const QString relParent = stagingDir.relativeFilePath(srcInfo.dir().absolutePath());
-    if (!relParent.isEmpty() && relParent != QStringLiteral(".") && !relParent.startsWith(QStringLiteral(".."))) {
-      stagingDir.rmpath(relParent);
-    }
   }
 }
 

@@ -93,6 +93,7 @@ pub fn progress_bar(fraction: f64, width: usize) -> String {
 /// final path component and sanitized for the local filesystem, so it can
 /// neither escape the target directory nor carry illegal characters.
 pub fn unique_path(dir: &Path, file_name: &str) -> PathBuf {
+    let _ = std::fs::create_dir_all(dir);
     let name = filename::sanitize_path(file_name, filename::Rules::current());
 
     let candidate = dir.join(&name);
