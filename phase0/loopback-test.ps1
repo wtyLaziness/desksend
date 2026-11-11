@@ -26,6 +26,10 @@ public class MouseDriver {
   public const uint WM_CLOSE = 0x0010;
   public static readonly UIntPtr MAGIC_EXTRA = new UIntPtr(0x44534B53);
   public static string ProxyLog;
+  public static string ReadShared(string path) {
+    using (var stream = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite))
+    using (var reader = new System.IO.StreamReader(stream)) return reader.ReadToEnd();
+  }
 
   public static void MoveAbs(int x, int y, int sw, int sh) {
     uint dx = (uint)((x * 65535) / (sw - 1));
@@ -43,7 +47,7 @@ public class MouseDriver {
       try {
         Thread.Sleep(600);
         MoveAbs(startX, startY, sw, sh);
-        Thread.Sleep(200);
+        Thread.Sleep(500);
         mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, MAGIC_EXTRA);
         System.IO.File.AppendAllText(logPath, "[Thread] LEFTDOWN at (" + startX + "," + startY + ")\r\n");
         Thread.Sleep(150);
@@ -81,7 +85,7 @@ public class MouseDriver {
         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, MAGIC_EXTRA);
         // 等待真正开始上传，再回切；不点击鼠标，避免掩盖按键状态残留。
         for (int i = 0; i < 100; i++) {
-          if (System.IO.File.Exists(ProxyLog) && System.IO.File.ReadAllText(ProxyLog).Contains("PROXY_UPLOAD_STARTED")) break;
+          if (System.IO.File.Exists(ProxyLog) && ReadShared(ProxyLog).Contains("PROXY_UPLOAD_STARTED")) break;
           Thread.Sleep(100);
         }
         System.IO.File.AppendAllText(logPath, "[Thread] Returning to primary during upload\r\n");
