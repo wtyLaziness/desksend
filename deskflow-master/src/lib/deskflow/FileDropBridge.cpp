@@ -229,6 +229,7 @@ std::vector<std::string> extractFilesFromDataObject(IDataObject *obj)
 }
 
 void cancelNativeDragBeforeSwitch(int sideIndex);
+void armNativeDragHandoff(int sideIndex);
 
 class SentinelDropTarget : public IDropTarget
 {
@@ -259,7 +260,7 @@ public:
     if (!files.empty()) {
       LOG_INFO("FileDropBridge: sentinel DragEnter at (%ld,%ld) captured %zu file(s)", pt.x, pt.y, files.size());
       if (FileDropBridge::instance().setPendingDragFiles(std::move(files))) {
-        cancelNativeDragBeforeSwitch(sideIndex);
+        armNativeDragHandoff(sideIndex);
       }
       // 本地目标永远不接收原生放下，避免源文件或桌面图标被移动。
       *eff = DROPEFFECT_NONE;
@@ -305,6 +306,7 @@ struct Win32SentinelManager
   std::array<bool, 4> visible = {false, false, false, false};
   std::array<SentinelDropTarget, 4> dropTargets;
   bool cancellingNativeDrag = false;
+  bool nativeDragCancellationComplete = false;
   int cancellingSide = 0;
   HWND cancelTimerWindow = nullptr;
 
@@ -418,6 +420,20 @@ struct Win32SentinelManager
 
 Win32SentinelManager g_sentinelMgr;
 
+void nudgeAcrossEdge(int side)
+{
+  const int dx = side == 0 ? -8 : side == 1 ? 8 : 0;
+  const int dy = side == 2 ? -8 : side == 3 ? 8 : 0;
+  mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(dx), static_cast<DWORD>(dy), 0, 0);
+}
+
+void armNativeDragHandoff(int sideIndex)
+{
+  g_sentinelMgr.cancellingSide = sideIndex;
+  g_sentinelMgr.nativeDragCancellationComplete = false;
+  nudgeAcrossEdge(sideIndex);
+}
+
 void CALLBACK finishNativeDragCancellation(HWND hwnd, UINT, UINT_PTR timerId, DWORD)
 {
   KillTimer(hwnd, timerId);
@@ -426,6 +442,7 @@ void CALLBACK finishNativeDragCancellation(HWND hwnd, UINT, UINT_PTR timerId, DW
   }
   keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, static_cast<ULONG_PTR>(0x44534B54));
   g_sentinelMgr.cancellingNativeDrag = false;
+  g_sentinelMgr.nativeDragCancellationComplete = true;
   if (!FileDropBridge::instance().hasPendingDragFiles()) {
     return;
   }
@@ -433,11 +450,8 @@ void CALLBACK finishNativeDragCancellation(HWND hwnd, UINT, UINT_PTR timerId, DW
     FileDropBridge::instance().cancelActiveDrag();
     return;
   }
-  const int side = g_sentinelMgr.cancellingSide;
-  const int dx = side == 0 ? -8 : side == 1 ? 8 : 0;
-  const int dy = side == 2 ? -8 : side == 3 ? 8 : 0;
   LOG_INFO("FileDropBridge: native drag cancellation completed before screen handoff");
-  mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(dx), static_cast<DWORD>(dy), 0, 0);
+  nudgeAcrossEdge(g_sentinelMgr.cancellingSide);
 }
 
 void cancelNativeDragBeforeSwitch(int sideIndex)
@@ -705,13 +719,19 @@ void FileDropBridge::onLeftMouseUp(bool onSecondary)
 #endif
 }
 
-bool FileDropBridge::canSwitchFromPrimary() const
+bool FileDropBridge::canSwitchFromPrimary()
 {
 #if defined(_WIN32)
-  return !g_sentinelMgr.cancellingNativeDrag;
-#else
-  return true;
+  if (g_sentinelMgr.cancellingNativeDrag) {
+    return false;
+  }
+  // 只有 Server 已允许切屏时才取消本地拖拽，保留锁屏和锁定角落的行为。
+  if (hasPendingDragFiles() && !g_sentinelMgr.nativeDragCancellationComplete) {
+    cancelNativeDragBeforeSwitch(g_sentinelMgr.cancellingSide);
+    return false;
+  }
 #endif
+  return true;
 }
 
 bool FileDropBridge::setPendingDragFiles(std::vector<std::string> files)

@@ -41,7 +41,7 @@ public:
   bool setPendingDragFiles(std::vector<std::string> files);
   void onPrimaryLeftMouseDown();
   void onLeftMouseUp(bool onSecondary);
-  bool canSwitchFromPrimary() const;
+  bool canSwitchFromPrimary();
 
   // Called when Server::switchComputer leaves primary to a remote client
   void onLeavePrimary(BaseClientProxy *dstClient);
