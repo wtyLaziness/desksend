@@ -9,6 +9,19 @@ class VersionCheckerTests : public QObject
 {
   Q_OBJECT
 private Q_SLOTS:
+  void publicChannel()
+  {
+    if (!qEnvironmentVariableIsSet("DESKSEND_LIVE_UPDATE_TEST"))
+      QSKIP("Public release smoke test is enabled after publishing");
+    VersionChecker checker;
+    QSignalSpy checked(&checker, &VersionChecker::checked);
+    QSignalSpy errors(&checker, &VersionChecker::checkFailed);
+    checker.checkLatest();
+    QTRY_VERIFY_WITH_TIMEOUT(!checked.isEmpty() || !errors.isEmpty(), 30000);
+    QVERIFY2(errors.isEmpty(), errors.isEmpty() ? "" : qPrintable(errors.first().first().toString()));
+    QVERIFY(!checker.release().download.isEmpty());
+    QCOMPARE(checker.release().sha256.size(), 64);
+  }
   void versions()
   {
     QVERIFY(VersionChecker::isNewer("1.0.0.0", "1.0.1"));

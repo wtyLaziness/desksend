@@ -124,7 +124,15 @@ try {
     if ($rollbackErrors.Count) {
         Write-UpdateLog ('ROLLBACK_FAILED: ' + ($rollbackErrors -join '; '))
         $failure += ' 自动恢复未完全成功，请使用备份目录恢复。'
-    } elseif ($stopped) { Start-DeskSend }
+    } elseif (!$NoRestart) {
+        # 即使验证阶段失败，也等待已请求退出的界面结束后恢复旧版。
+        $canRestart = $stopped
+        if (!$canRestart -and $GuiProcessId -gt 0) {
+            $previousGui = Get-Process -Id $GuiProcessId -ErrorAction SilentlyContinue
+            $canRestart = !$previousGui -or $previousGui.WaitForExit(30000)
+        }
+        if ($canRestart) { Start-DeskSend }
+    }
     if (!$NoRestart) {
         Add-Type -AssemblyName System.Windows.Forms
         $null = [Windows.Forms.MessageBox]::Show(($failure + "`r`n日志：" + $logPath), 'DeskSend 更新失败')

@@ -36,6 +36,17 @@ jobs:
         run: cpack -G ZIP
       - name: Test portable updater
         run: ./phase0/update-test.ps1
+      - name: Collect update channel diagnostic test
+        run: |
+          New-Item -ItemType Directory diagnostics
+          Copy-Item deskflow-master/build/src/unittests/gui/VersionCheckerTests.exe diagnostics/
+          $testDll = @(where.exe Qt6Test.dll)[0]
+          if (!$testDll) { throw 'Qt6Test.dll not found' }
+          Copy-Item -LiteralPath $testDll -Destination diagnostics/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desksend-update-diagnostics
+          path: diagnostics/
       - uses: actions/upload-artifact@v4
         with:
           name: deskflow-win-x64
