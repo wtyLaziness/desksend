@@ -1,6 +1,11 @@
 name: phase0-loopback
 on:
   workflow_dispatch:
+    inputs:
+      binaries_commit:
+        description: "Optional commit with identical production sources and successful builds"
+        required: false
+        type: string
 permissions:
   contents: read
   actions: read
@@ -12,9 +17,17 @@ jobs:
       - name: Download latest artifacts
         env:
           GH_TOKEN: ${{ github.token }}
+          BINARIES_COMMIT: ${{ inputs.binaries_commit }}
         run: |
-          $dfRun = gh run list --workflow deskflow-win --commit $env:GITHUB_SHA --status success --limit 1 --json databaseId -q '.[0].databaseId'
-          $lsRun = gh run list --workflow localsend-cli-win --commit $env:GITHUB_SHA --status success --limit 1 --json databaseId -q '.[0].databaseId'
+          $buildSha = $env:GITHUB_SHA
+          if ($env:BINARIES_COMMIT) {
+            git fetch --depth=1 origin $env:BINARIES_COMMIT
+            git diff --exit-code FETCH_HEAD $env:GITHUB_SHA -- deskflow-master localsend-main/cli localsend-main/packages/core
+            if ($LASTEXITCODE -ne 0) { throw 'Production sources differ from requested binaries' }
+            $buildSha = git rev-parse FETCH_HEAD
+          }
+          $dfRun = gh run list --workflow deskflow-win --commit $buildSha --status success --limit 1 --json databaseId -q '.[0].databaseId'
+          $lsRun = gh run list --workflow localsend-cli-win --commit $buildSha --status success --limit 1 --json databaseId -q '.[0].databaseId'
           if (!$dfRun -or !$lsRun) { throw "Both builds must succeed for commit $env:GITHUB_SHA before running E2E" }
           Write-Host "Downloading deskflow-win ($dfRun) and localsend-cli-win ($lsRun)"
           gh run download $dfRun -n deskflow-win-x64 -D df

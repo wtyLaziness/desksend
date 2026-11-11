@@ -25,6 +25,7 @@ public class MouseDriver {
   public const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
   public const uint WM_CLOSE = 0x0010;
   public static readonly UIntPtr MAGIC_EXTRA = new UIntPtr(0x44534B53);
+  public static string ProxyLog;
 
   public static void MoveAbs(int x, int y, int sw, int sh) {
     uint dx = (uint)((x * 65535) / (sw - 1));
@@ -78,6 +79,16 @@ public class MouseDriver {
         GetCursorPos(out p);
         System.IO.File.AppendAllText(logPath, "[Thread] Releasing LEFTUP on client, cursor=(" + p.X + "," + p.Y + ")\r\n");
         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, MAGIC_EXTRA);
+        // 等待真正开始上传，再回切；不点击鼠标，避免掩盖按键状态残留。
+        for (int i = 0; i < 100; i++) {
+          if (System.IO.File.Exists(ProxyLog) && System.IO.File.ReadAllText(ProxyLog).Contains("PROXY_UPLOAD_STARTED")) break;
+          Thread.Sleep(100);
+        }
+        System.IO.File.AppendAllText(logPath, "[Thread] Returning to primary during upload\r\n");
+        for (int i = 0; i < 30; i++) {
+          MoveRel(-100, 0);
+          Thread.Sleep(20);
+        }
         Thread.Sleep(500);
       } catch (Exception ex) {
         System.IO.File.AppendAllText(logPath, "[Thread] Error: " + ex.Message + "\r\n");
@@ -113,6 +124,14 @@ New-Item -ItemType Directory -Force $dropDest | Out-Null
 # Only override the drop destination folder for deterministic verification;
 # ports (53318/53319) and isolated config directories use DeskSend's zero-config defaults.
 $env:DESKSEND_DEFAULT_DROP_DIR = $dropDest
+$env:DESKSEND_TARGET_PORT = '53320'
+$proxyLog = "$script:out\proxy.log"
+[MouseDriver]::ProxyLog = $proxyLog
+$proxy = Start-Process python -ArgumentList '-u',"$PSScriptRoot\slow-proxy.py" -PassThru -WindowStyle Hidden -RedirectStandardOutput $proxyLog -RedirectStandardError "$script:out\proxy.err"
+for ($i = 0; $i -lt 30; $i++) {
+  if ((Test-Path $proxyLog) -and ((Get-Content $proxyLog -Raw) -match 'PROXY_READY')) { break }
+  Start-Sleep -Milliseconds 100
+}
 
 @"
 section: links
@@ -211,6 +230,8 @@ New-Item -ItemType Directory -Force "$tmp\TestFolder\sub" | Out-Null
 'desksend-payload-2' | Set-Content "$tmp\two.txt" -NoNewline
 'desksend-nested-folder-payload' | Set-Content "$tmp\TestFolder\sub\nested.txt" -NoNewline
 $script:files = [string[]]@("$tmp\one.txt","$tmp\two.txt","$tmp\TestFolder")
+[IO.File]::WriteAllBytes("$tmp\large.bin", [byte[]]::new(32MB))
+$script:files += "$tmp\large.bin"
 
 $script:f = New-Object System.Windows.Forms.Form
 $script:f.StartPosition = 'Manual'
@@ -245,10 +266,10 @@ $script:f.Add_Shown({
 
 [System.Windows.Forms.Application]::Run($script:f)
 
-Log "Waiting up to 15s for transferred files and nested folder to arrive in $dropDest ..."
+Log "Waiting up to 90s for throttled transfer to arrive in $dropDest ..."
 $transferred = $false
-for ($i = 0; $i -lt 30; $i++) {
-  if ((Test-Path "$dropDest\one.txt") -and (Test-Path "$dropDest\two.txt") -and (Test-Path "$dropDest\TestFolder\sub\nested.txt")) {
+for ($i = 0; $i -lt 180; $i++) {
+  if ((Test-Path "$dropDest\one.txt") -and (Test-Path "$dropDest\two.txt") -and (Test-Path "$dropDest\TestFolder\sub\nested.txt") -and (Test-Path "$dropDest\large.bin")) {
     $transferred = $true
     break
   }
@@ -272,6 +293,7 @@ if ($transferred) {
   }
 }
 Stop-Process $cli,$srv -Force -ErrorAction SilentlyContinue
+Stop-Process $proxy -Force -ErrorAction SilentlyContinue
 Get-Process localsend-cli -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep 1
 
@@ -284,12 +306,20 @@ foreach ($n in 'test.log','server.log','client.log','server.stderr','client.stde
 
 Write-Host "=============== Dropped Files in $dropDest ==============="
 Get-ChildItem $dropDest -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-  Write-Host ("{0} ({1} bytes): {2}" -f $_.FullName, $_.Length, (Get-Content $_.FullName -Raw))
+  Write-Host ("{0} ({1} bytes)" -f $_.FullName, $_.Length)
 }
 
 if (-not $transferred) {
   throw "E2E DeskSend file/folder transfer FAILED: items did not arrive in $dropDest"
 }
+$serverText = Get-Content "$script:out\server.log" -Raw
+$returnIndex = $serverText.IndexOf('switch from "client" to "host"')
+$successIndex = $serverText.IndexOf('LocalSend transfer to')
+if ($returnIndex -lt 0 -or $successIndex -lt 0 -or $returnIndex -ge $successIndex) {
+  throw 'Cursor did not return to primary before transfer completed'
+}
+if ((Get-FileHash "$tmp\large.bin").Hash -ne (Get-FileHash "$dropDest\large.bin").Hash) { throw 'Large file hash mismatch' }
+Log 'Returned to primary during upload; transfer continued and large file hash matched'
 $c1 = Get-Content "$dropDest\one.txt" -Raw
 $c2 = Get-Content "$dropDest\two.txt" -Raw
 $c3 = Get-Content "$dropDest\TestFolder\sub\nested.txt" -Raw
