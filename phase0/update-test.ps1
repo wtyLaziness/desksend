@@ -57,3 +57,6 @@ Run-Case 'missing-cli' 'missing-cli'
 Run-Case 'wrong-file-hash' 'inner-hash'
 Run-Case 'zip-slip' 'traversal'
 Write-Output ('UPDATE_TESTS_PASSED: ' + $passed + '; evidence=' + $runRoot)
+
+# 最后一个拒绝用例会留下非零退出码，显式报告整组测试成功。
+exit 0
