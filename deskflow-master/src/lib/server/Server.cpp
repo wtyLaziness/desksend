@@ -380,7 +380,8 @@ bool Server::isLockedToComputer() const
   }
 
   // locked if primary says we're locked (unless a cross-screen file drag is active)
-  if (deskflow::FileDropBridge::instance().hasPendingDragFiles()) {
+  if (deskflow::FileDropBridge::instance().hasPendingDragFiles() ||
+      deskflow::FileDropBridge::instance().hasActiveDragFiles()) {
     LOG_DEBUG("allowing screen switch with pending dragged files");
     return false;
   }

@@ -36,6 +36,7 @@ public:
 
   // True when the edge sentinel has just captured CF_HDROP files while LBUTTON is held
   bool hasPendingDragFiles() const;
+  bool hasActiveDragFiles() const;
 
   // Called by sentinel DropTarget::DragEnter or by tests
   bool setPendingDragFiles(std::vector<std::string> files);

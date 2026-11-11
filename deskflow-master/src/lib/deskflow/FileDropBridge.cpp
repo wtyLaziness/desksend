@@ -756,6 +756,12 @@ bool FileDropBridge::hasPendingDragFiles() const
   return (nowMs() - m_pendingTimestampMs) <= 4000;
 }
 
+bool FileDropBridge::hasActiveDragFiles() const
+{
+  std::scoped_lock lock(m_mutex);
+  return !m_activeDragFiles.empty();
+}
+
 void FileDropBridge::onLeavePrimary(BaseClientProxy *dstClient)
 {
 #if defined(_WIN32)
