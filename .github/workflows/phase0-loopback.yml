@@ -1,8 +1,6 @@
 name: phase0-loopback
 on:
   workflow_dispatch:
-  push:
-    paths: ["phase0/loopback-test.ps1", ".github/workflows/phase0-loopback.yml"]
 permissions:
   contents: read
   actions: read
@@ -15,8 +13,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $dfRun = gh run list --workflow deskflow-win --status success --limit 1 --json databaseId -q '.[0].databaseId'
-          $lsRun = gh run list --workflow localsend-cli-win --status success --limit 1 --json databaseId -q '.[0].databaseId'
+          $dfRun = gh run list --workflow deskflow-win --commit $env:GITHUB_SHA --status success --limit 1 --json databaseId -q '.[0].databaseId'
+          $lsRun = gh run list --workflow localsend-cli-win --commit $env:GITHUB_SHA --status success --limit 1 --json databaseId -q '.[0].databaseId'
+          if (!$dfRun -or !$lsRun) { throw "Both builds must succeed for commit $env:GITHUB_SHA before running E2E" }
           Write-Host "Downloading deskflow-win ($dfRun) and localsend-cli-win ($lsRun)"
           gh run download $dfRun -n deskflow-win-x64 -D df
           gh run download $lsRun -n localsend-cli-win-x64 -D ls

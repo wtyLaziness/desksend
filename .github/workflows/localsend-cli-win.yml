@@ -32,6 +32,7 @@ jobs:
           New-Item -ItemType Directory -Force "$base\rx_cfg", "$base\tx_cfg", "$base\rx_dest", "$base\tx_src" | Out-Null
           "hello from desksend" | Set-Content "$base\tx_src\test1.txt" -NoNewline
           "second file 12345"   | Set-Content "$base\tx_src\test2.txt" -NoNewline
+          [IO.File]::WriteAllBytes("$base\tx_src\large.bin", [byte[]]::new(32MB))
 
           $env:XDG_CONFIG_HOME = "$base\rx_cfg"
           $rx = Start-Process $exe -ArgumentList "--port","53318","--destination","$base\rx_dest","receive","--auto-accept-from","127.0.0.1" -PassThru -WindowStyle Hidden -RedirectStandardOutput "$base\rx.out" -RedirectStandardError "$base\rx.err"
@@ -43,7 +44,7 @@ jobs:
           Get-Content "$base\rx.out"
 
           $env:XDG_CONFIG_HOME = "$base\tx_cfg"
-          & $exe --port 53319 send --to "127.0.0.1:53318" "$base\tx_src\test1.txt" "$base\tx_src\test2.txt"
+          & $exe --port 53319 send --to "127.0.0.1:53318" "$base\tx_src\test1.txt" "$base\tx_src\test2.txt" "$base\tx_src\large.bin" | Tee-Object "$base\tx.out"
           $sendExit = $LASTEXITCODE
           Start-Sleep 1
           Stop-Process $rx -Force -ErrorAction SilentlyContinue
@@ -54,6 +55,10 @@ jobs:
           Get-Content "$base\rx.err"
 
           if ($sendExit -ne 0) { throw "Send exited with $sendExit" }
+          $total = (Get-ChildItem "$base\tx_src" -File | Measure-Object Length -Sum).Sum
+          if (!((Get-Content "$base\tx.out" -Raw) -match "SEND_PROGRESS:${total}:${total}")) { throw 'Missing final send byte progress' }
+          if (!((Get-Content "$base\rx.out" -Raw) -match "RECEIVE_PROGRESS:[^:]+:${total}:${total}")) { throw 'Missing final receive byte progress' }
+          if ((Get-FileHash "$base\tx_src\large.bin").Hash -ne (Get-FileHash "$base\rx_dest\large.bin").Hash) { throw 'Large file hash mismatch' }
           $c1 = Get-Content "$base\rx_dest\test1.txt" -Raw
           $c2 = Get-Content "$base\rx_dest\test2.txt" -Raw
           if ($c1 -ne "hello from desksend" -or $c2 -ne "second file 12345") {

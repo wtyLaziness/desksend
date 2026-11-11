@@ -97,6 +97,7 @@ target_link_libraries(${lib_name}
     Qt6::Network
   PRIVATE
     platform
+    Qt6::Widgets
 )
 
 if(UNIX AND NOT APPLE)

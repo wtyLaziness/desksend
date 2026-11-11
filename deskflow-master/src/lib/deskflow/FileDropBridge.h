@@ -115,6 +115,7 @@ private:
   size_t m_activeSessionExpectedFiles = 0;
   size_t m_activeSessionHandledFiles = 0;
   bool m_activeSessionEnded = false;
+  bool m_activeSessionFailed = false;
   std::string m_stagingDir;
   std::string m_currentAllowedServerIp;
   QProcess *m_receiverProcess = nullptr;

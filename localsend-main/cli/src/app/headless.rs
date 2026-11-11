@@ -4,7 +4,6 @@
 //! requests are declined.
 
 use super::sending::{self, Payload, SendState};
-use super::status;
 use super::target::TargetSelector;
 use super::{AppEvent, Network, discovery, spawn_staged_discovery, start_network, stop_network};
 use crate::sanitize;
@@ -18,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
@@ -88,9 +87,13 @@ pub(super) async fn run(
                 if let Some(send) = &mut send {
                     send.session_id = Some(session_id);
                     send.total_bytes = accepted_bytes;
+                    println!("SEND_PROGRESS:0:{}", accepted_bytes);
                 }
             }
             AppEvent::SendEnded { success } => {
+                if success && let Some(send) = &send {
+                    println!("SEND_PROGRESS:{}:{}", send.total_bytes, send.total_bytes);
+                }
                 break match success {
                     true => Ok(()),
                     false => Err(anyhow::anyhow!("Transfer failed")),
@@ -234,16 +237,22 @@ fn render_progress(ui: &mut Ui, send: &mut Option<SendState>) {
         return;
     };
     let done = send.sent.load(Ordering::Relaxed);
-    let speed = send.speed.update(done);
-    let width = util::terminal_width().saturating_sub(1);
-    ui.set_status(Some(status::transfer_status(
-        Category::Send,
-        &send.alias,
-        done,
-        send.total_bytes,
-        speed,
-        width,
-    )));
+    println!("SEND_PROGRESS:{}:{}", done, send.total_bytes);
+}
+
+#[derive(Default)]
+struct ReceiveProgress {
+    total: u64,
+    files: HashMap<String, Arc<AtomicU64>>,
+    pending: usize,
+    ended: bool,
+}
+
+impl ReceiveProgress {
+    fn report(&self, session_id: &str) {
+        let done: u64 = self.files.values().map(|p| p.load(Ordering::Relaxed)).sum();
+        println!("RECEIVE_PROGRESS:{}:{}:{}", session_id, done.min(self.total), self.total);
+    }
 }
 
 fn is_ip_allowed(ip_str: &str, allow_spec: Option<&str>, paired_contains: bool) -> bool {
@@ -317,9 +326,17 @@ pub(super) async fn run_receive(
 
     let mut active_sessions: HashSet<String> = HashSet::new();
     let mut file_paths: HashMap<(String, String), PathBuf> = HashMap::new();
+    let mut progress: HashMap<String, ReceiveProgress> = HashMap::new();
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
+            _ = tick.tick() => {
+                for (sid, state) in &progress {
+                    state.report(sid);
+                }
+            }
             _ = tokio::signal::ctrl_c() => {
                 break;
             }
@@ -348,6 +365,13 @@ pub(super) async fn run_receive(
                             let ids: HashSet<String> = files.keys().cloned().collect();
                             if decision_tx.send(PrepareUploadDecisionV2::Accept(ids)).is_ok() {
                                 println!("RECEIVE_SESSION_STARTED:{}:{}:{}", session_id, ip, files.len());
+                                let state = ReceiveProgress {
+                                    total: files.values().map(|f| f.size).sum(),
+                                    pending: files.len(),
+                                    ..Default::default()
+                                };
+                                state.report(&session_id);
+                                progress.insert(session_id.clone(), state);
                                 active_sessions.insert(session_id);
                             }
                         } else {
@@ -367,12 +391,29 @@ pub(super) async fn run_receive(
                         let path = util::unique_nested_path(&storage.destination, &file.file_name);
                         file_paths.insert((session_id.clone(), file_id.clone()), path.clone());
                         let (result_tx, result_rx) = oneshot::channel::<Result<(), String>>();
+                        let bytes = Arc::new(AtomicU64::new(0));
+                        if let Some(state) = progress.get_mut(&session_id) {
+                            state.files.insert(file_id.clone(), bytes.clone());
+                        }
+                        let (progress_tx, mut progress_rx) = mpsc::channel::<u64>(16);
+                        let final_bytes = bytes.clone();
+                        let file_size = file.size;
+                        let progress_task = tokio::spawn(async move {
+                            while let Some(written) = progress_rx.recv().await {
+                                bytes.store(written, Ordering::Relaxed);
+                            }
+                        });
                         let events_tx = events_tx.clone();
                         tokio::spawn(async move {
                             let result = match result_rx.await {
                                 Ok(r) => r,
                                 Err(_) => Err("Upload aborted".to_string()),
                             };
+                            progress_task.abort();
+                            let _ = progress_task.await;
+                            if result.is_ok() {
+                                final_bytes.store(file_size, Ordering::Relaxed);
+                            }
                             let _ = events_tx
                                 .send(AppEvent::ReceiveFileResult {
                                     session_id,
@@ -384,28 +425,44 @@ pub(super) async fn run_receive(
                         let _ = target_tx.send(FileUploadTarget::Path {
                             path,
                             result_tx,
-                            progress_tx: None,
+                            progress_tx: Some(progress_tx),
                         });
                     }
                     ServerEventV2::SessionEnd { session_id, reason } => {
                         active_sessions.remove(&session_id);
+                        if let Some(state) = progress.get_mut(&session_id) {
+                            state.ended = true;
+                            state.report(&session_id);
+                            if state.pending == 0 {
+                                progress.remove(&session_id);
+                            }
+                        }
                         match reason {
                             SessionEndReasonV2::Finished => {
                                 println!("RECEIVE_SESSION_FINISHED:{}", session_id);
                             }
                             SessionEndReasonV2::Cancelled => {
+                                progress.remove(&session_id);
                                 println!("RECEIVE_SESSION_CANCELLED:{}", session_id);
                             }
                         }
                     }
                     ServerEventV2::PrepareUploadAborted { session_id } => {
                         active_sessions.remove(&session_id);
+                        progress.remove(&session_id);
                     }
                     ServerEventV2::CancelReceived { .. } | ServerEventV2::ListenerFailed { .. } => {}
                 }
             }
             Some(event) = events_rx.recv() => {
                 if let AppEvent::ReceiveFileResult { session_id, file_id, result } = event {
+                    if let Some(state) = progress.get_mut(&session_id) {
+                        state.report(&session_id);
+                        state.pending = state.pending.saturating_sub(1);
+                        if state.ended && state.pending == 0 {
+                            progress.remove(&session_id);
+                        }
+                    }
                     if let Some(path) = file_paths.remove(&(session_id, file_id)) {
                         match result {
                             Ok(()) => println!("RECEIVED_FILE:{}", path.display()),

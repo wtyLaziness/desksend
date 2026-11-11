@@ -167,9 +167,10 @@ file=$(("$script:out\client.log") -replace '\\','/')
 "@ | Set-Content "$script:out\client.conf" -Encoding ASCII
 
 $core = Join-Path $DeskflowDir 'deskflow-core.exe'
-$srv = Start-Process $core -ArgumentList 'server','--new-instance','-s',"$script:out\server.conf" -PassThru -WindowStyle Hidden -RedirectStandardOutput "$script:out\server.stdout" -RedirectStandardError "$script:out\server.stderr"
-Start-Sleep 3
 $cli = Start-Process $core -ArgumentList 'client','--new-instance','-s',"$script:out\client.conf" -PassThru -WindowStyle Hidden -RedirectStandardOutput "$script:out\client.stdout" -RedirectStandardError "$script:out\client.stderr"
+Start-Sleep 3
+if ($cli.HasExited) { throw 'Client exited while waiting for the server' }
+$srv = Start-Process $core -ArgumentList 'server','--new-instance','-s',"$script:out\server.conf" -PassThru -WindowStyle Hidden -RedirectStandardOutput "$script:out\server.stdout" -RedirectStandardError "$script:out\server.stderr"
 
 # Wait for client connection and headless LocalSend receiver readiness
 for ($i = 0; $i -lt 30; $i++) {
@@ -180,6 +181,26 @@ for ($i = 0; $i -lt 30; $i++) {
 }
 
 $sw = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width
+if (!(Test-Path "$script:out\client.log") -or !((Get-Content "$script:out\client.log" -Raw) -match 'LOCALSEND_RECEIVER_READY')) {
+  throw 'Receiver did not become ready after starting the server late'
+}
+$receiverIds = @(Get-Process localsend-cli -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+Stop-Process $srv -Force
+Start-Sleep 3
+if ($cli.HasExited) { throw 'Client exited after the server stopped' }
+$srv = Start-Process $core -ArgumentList 'server','--new-instance','-s',"$script:out\server.conf" -PassThru -WindowStyle Hidden -RedirectStandardOutput "$script:out\server-restart.stdout" -RedirectStandardError "$script:out\server-restart.stderr"
+$reconnected = $false
+for ($i = 0; $i -lt 30; $i++) {
+  if (@(Select-String -Path "$script:out\client.log" -Pattern 'connected to server' -CaseSensitive | Where-Object { $_.Line -notmatch 'disconnected' }).Count -ge 2) {
+    $reconnected = $true
+    break
+  }
+  Start-Sleep -Milliseconds 500
+}
+if (!$reconnected) { throw 'Client did not reconnect automatically after server restart' }
+$afterIds = @(Get-Process localsend-cli -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+if (@(Compare-Object $receiverIds $afterIds).Count -ne 0) { throw 'Receiver was duplicated or restarted on reconnect' }
+Log 'Client waited for late server, reconnected after restart, and reused the receiver'
 $sh = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height
 Log "server alive=$(-not $srv.HasExited) client alive=$(-not $cli.HasExited) DisableLock=$DisableLock screen=${sw}x${sh}"
 

@@ -25,6 +25,15 @@
 #include <QString>
 #include <QStringList>
 #include <QThread>
+#include <QElapsedTimer>
+#include <QGuiApplication>
+#include <QLabel>
+#include <QLocale>
+#include <QProgressBar>
+#include <QScreen>
+#include <QTimer>
+#include <QVBoxLayout>
+#include <QWidget>
 
 #include <array>
 #include <chrono>
@@ -50,6 +59,99 @@
 namespace deskflow {
 
 namespace {
+
+// 所有状态窗口操作均在 Qt 主线程执行，不抢走拖拽和键鼠输入的焦点。
+class TransferStatus : public QWidget
+{
+public:
+  explicit TransferStatus(bool receiving) : QWidget(nullptr, Qt::Tool | Qt::WindowStaysOnTopHint), m_receiving(receiving)
+  {
+    setWindowTitle(receiving ? QStringLiteral("DeskSend · 接收文件") : QStringLiteral("DeskSend · 发送文件"));
+    setAttribute(Qt::WA_ShowWithoutActivating);
+    setWindowFlag(Qt::WindowDoesNotAcceptFocus);
+    setMinimumWidth(380);
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(18, 16, 18, 16);
+    m_title = new QLabel(this);
+    m_title->setWordWrap(true);
+    m_bar = new QProgressBar(this);
+    m_bar->setAccessibleName(QStringLiteral("文件传输进度"));
+    m_details = new QLabel(this);
+    m_details->setWordWrap(true);
+    layout->addWidget(m_title);
+    layout->addWidget(m_bar);
+    layout->addWidget(m_details);
+    m_hide.setSingleShot(true);
+    QObject::connect(&m_hide, &QTimer::timeout, this, &QWidget::hide);
+  }
+
+  void begin(const QString &description)
+  {
+    m_hide.stop();
+    m_elapsed.start();
+    m_done = 0;
+    m_total = 0;
+    m_title->setText(description);
+    m_bar->setRange(0, 0);
+    m_details->setText(QStringLiteral("正在准备传输…"));
+    adjustSize();
+    if (auto *screen = QGuiApplication::primaryScreen()) {
+      const auto area = screen->availableGeometry();
+      move(area.right() - width() - 20, area.bottom() - height() - (m_receiving ? 200 : 20));
+    }
+    show();
+  }
+
+  void progress(quint64 done, quint64 total)
+  {
+    m_done = qMin(done, total);
+    m_total = total;
+    m_bar->setRange(0, 100);
+    m_bar->setValue(total ? static_cast<int>(100.0 * m_done / total) : 0);
+    const double seconds = qMax<qint64>(1, m_elapsed.elapsed()) / 1000.0;
+    const double speed = m_done / seconds;
+    const QString eta = speed > 0 ? QStringLiteral("%1 秒").arg(static_cast<quint64>((total - m_done) / speed))
+                                  : QStringLiteral("估算中");
+    const QLocale locale;
+    m_details->setText(QStringLiteral("%1 / %2\n%3/s · 已用 %4 秒 · 预计剩余 %5")
+        .arg(locale.formattedDataSize(m_done), locale.formattedDataSize(total),
+             locale.formattedDataSize(static_cast<qint64>(speed)))
+        .arg(static_cast<quint64>(seconds)).arg(eta));
+  }
+
+  void finish(bool success, const QString &message)
+  {
+    if (success) {
+      progress(m_total, m_total);
+      m_bar->setValue(100);
+    } else {
+      m_bar->setRange(0, 100);
+    }
+    m_title->setText(message);
+    if (!success) {
+      m_details->setText(QStringLiteral("请检查网络、接收端口和 localsend-cli.exe；详细原因见日志。"));
+    }
+    show();
+    m_hide.start(success ? 8000 : 20000);
+  }
+
+private:
+  bool m_receiving;
+  QLabel *m_title;
+  QLabel *m_details;
+  QProgressBar *m_bar;
+  QElapsedTimer m_elapsed;
+  QTimer m_hide;
+  quint64 m_done = 0;
+  quint64 m_total = 0;
+};
+
+TransferStatus &transferStatus(bool receiving)
+{
+  static auto *sender = new TransferStatus(false);
+  static auto *receiver = new TransferStatus(true);
+  return receiving ? *receiver : *sender;
+}
 
 uint64_t nowMs()
 {
@@ -784,6 +886,7 @@ void FileDropBridge::processNextSendJob()
   }
 
   auto *proc = new QProcess();
+  proc->setProcessChannelMode(QProcess::MergedChannels);
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   QString senderCfgDir = QDir(QDir::tempPath()).filePath(QStringLiteral("DeskSend_SenderCfg"));
   if (const char *senderCfg = std::getenv("DESKSEND_SENDER_CONFIG_HOME"); senderCfg && senderCfg[0] != '\0') {
@@ -792,6 +895,20 @@ void FileDropBridge::processNextSendJob()
   QDir().mkpath(senderCfgDir);
   env.insert(QStringLiteral("XDG_CONFIG_HOME"), senderCfgDir);
   proc->setProcessEnvironment(env);
+  transferStatus(false).begin(QStringLiteral("正在发送到 %1").arg(destination));
+  QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [proc]() {
+    while (proc->canReadLine()) {
+      const QString line = QString::fromUtf8(proc->readLine()).trimmed();
+      if (line.startsWith(QStringLiteral("SEND_PROGRESS:"))) {
+        const auto fields = line.split(':');
+        if (fields.size() == 3) {
+          transferStatus(false).progress(fields[1].toULongLong(), fields[2].toULongLong());
+        }
+      } else {
+        LOG_INFO("FileDropBridge [tx]: %s", line.toStdString().c_str());
+      }
+    }
+  });
 
 #if defined(_WIN32)
   QObject::connect(proc, &QProcess::started, proc, [proc]() { assignProcessToKillOnCloseJob(proc->processId()); });
@@ -800,15 +917,18 @@ void FileDropBridge::processNextSendJob()
   QObject::connect(proc, &QProcess::errorOccurred, proc, [this, proc, destination](QProcess::ProcessError error) {
     if (error == QProcess::FailedToStart) {
       LOG_WARN("FileDropBridge: failed to start localsend-cli for %s", destination.toStdString().c_str());
+      transferStatus(false).finish(false, QStringLiteral("发送失败：无法启动 localsend-cli.exe"));
       proc->deleteLater();
       processNextSendJob();
     }
   });
 
-  QObject::connect(proc, &QProcess::finished, proc, [this, proc, destination](int exitCode, QProcess::ExitStatus) {
+  QObject::connect(proc, &QProcess::finished, proc, [this, proc, destination](int exitCode, QProcess::ExitStatus status) {
     const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
     const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
-    if (exitCode == 0) {
+    const bool success = exitCode == 0 && status == QProcess::NormalExit;
+    transferStatus(false).finish(success, success ? QStringLiteral("文件发送完成") : QStringLiteral("文件发送失败"));
+    if (success) {
       LOG_INFO("FileDropBridge: LocalSend transfer to %s succeeded", destination.toStdString().c_str());
     } else {
       LOG_WARN(
@@ -836,8 +956,13 @@ void FileDropBridge::startReceiver(const std::string &serverHost)
     if (m_currentAllowedServerIp == serverHost) {
       return;
     }
+    m_receiverProcess->disconnect();
     m_receiverProcess->kill();
     m_receiverProcess->waitForFinished(1000);
+    delete m_receiverProcess;
+    m_receiverProcess = nullptr;
+  }
+  if (m_receiverProcess) {
     delete m_receiverProcess;
     m_receiverProcess = nullptr;
   }
@@ -900,16 +1025,32 @@ void FileDropBridge::startReceiver(const std::string &serverHost)
   });
 #endif
 
-  QObject::connect(m_receiverProcess, &QProcess::readyReadStandardOutput, [this]() {
+  QObject::connect(m_receiverProcess, &QProcess::errorOccurred, m_receiverProcess, [](QProcess::ProcessError error) {
+    if (error == QProcess::FailedToStart) {
+      transferStatus(true).finish(false, QStringLiteral("接收端启动失败：无法启动 localsend-cli.exe"));
+    }
+  });
+  QObject::connect(m_receiverProcess, &QProcess::finished, m_receiverProcess, [](int, QProcess::ExitStatus) {
+    transferStatus(true).finish(false, QStringLiteral("文件接收监听已停止，请检查端口是否被占用"));
+  });
+
+  QObject::connect(m_receiverProcess, &QProcess::readyReadStandardOutput, m_receiverProcess, [this]() {
     if (!m_receiverProcess) {
       return;
     }
     while (m_receiverProcess->canReadLine()) {
       const QString line = QString::fromUtf8(m_receiverProcess->readLine()).trimmed();
-      LOG_INFO("FileDropBridge [rx]: %s", line.toStdString().c_str());
+      if (!line.startsWith(QStringLiteral("RECEIVE_PROGRESS:"))) {
+        LOG_INFO("FileDropBridge [rx]: %s", line.toStdString().c_str());
+      }
       const QString filePrefix = QStringLiteral("RECEIVED_FILE:");
       const QString startPrefix = QStringLiteral("RECEIVE_SESSION_STARTED:");
-      if (line.startsWith(filePrefix)) {
+      if (line.startsWith(QStringLiteral("RECEIVE_PROGRESS:"))) {
+        const auto fields = line.split(':');
+        if (fields.size() == 4) {
+          transferStatus(true).progress(fields[2].toULongLong(), fields[3].toULongLong());
+        }
+      } else if (line.startsWith(filePrefix)) {
         handleReceivedFileLine(line.mid(filePrefix.size()).toStdString());
       } else if (line.startsWith(QStringLiteral("RECEIVE_FILE_FAILED:"))) {
         handleReceiveFileFailedLine();
@@ -944,6 +1085,7 @@ void FileDropBridge::stopReceiver()
 
   std::scoped_lock lock(m_mutex);
   if (m_receiverProcess) {
+    m_receiverProcess->disconnect();
     m_receiverProcess->kill();
     m_receiverProcess->waitForFinished(1000);
     delete m_receiverProcess;
@@ -1000,6 +1142,8 @@ void FileDropBridge::handleReceiveSessionStarted(size_t expectedFiles)
   m_activeSessionExpectedFiles = expectedFiles;
   m_activeSessionHandledFiles = 0;
   m_activeSessionEnded = false;
+  m_activeSessionFailed = false;
+  transferStatus(true).begin(QStringLiteral("正在接收 %1 个文件").arg(static_cast<qulonglong>(expectedFiles)));
   if (!m_pendingDropTargets.empty()) {
     m_activeSessionTarget = std::move(m_pendingDropTargets.front());
     m_pendingDropTargets.pop_front();
@@ -1014,6 +1158,7 @@ void FileDropBridge::handleReceiveSessionFinished(bool cancelled)
   {
     std::scoped_lock lock(m_mutex);
     m_activeSessionEnded = true;
+    m_activeSessionFailed = m_activeSessionFailed || cancelled;
     if (cancelled || m_activeSessionExpectedFiles == 0 ||
         m_activeSessionHandledFiles >= m_activeSessionExpectedFiles) {
       readyToFinalize = true;
@@ -1030,6 +1175,7 @@ void FileDropBridge::handleReceiveFileFailedLine()
   {
     std::scoped_lock lock(m_mutex);
     ++m_activeSessionHandledFiles;
+    m_activeSessionFailed = true;
     if (m_activeSessionEnded && m_activeSessionHandledFiles >= m_activeSessionExpectedFiles) {
       readyToFinalize = true;
     }
@@ -1050,6 +1196,10 @@ void FileDropBridge::finalizeActiveSession()
       return;
     }
     shouldCopyToClipboard = m_activeSessionTarget.copyToClipboard;
+    if (m_activeSessionEnded) {
+      transferStatus(true).finish(!m_activeSessionFailed,
+          m_activeSessionFailed ? QStringLiteral("文件接收失败或传输已取消") : QStringLiteral("文件接收完成"));
+    }
     if (shouldCopyToClipboard) {
       filesForClipboard = std::move(m_activeSessionPlacedFiles);
     }
@@ -1152,6 +1302,8 @@ void FileDropBridge::handleReceivedFileLine(const std::string &filePath)
     std::scoped_lock lock(m_mutex);
     if (placed) {
       m_activeSessionPlacedFiles.push_back(dstPath.toStdString());
+    } else {
+      m_activeSessionFailed = true;
     }
     ++m_activeSessionHandledFiles;
     if (m_activeSessionEnded && m_activeSessionExpectedFiles > 0 &&

@@ -75,6 +75,8 @@ int main(int argc, char **argv)
 
   QApplication::setApplicationName(QStringLiteral("%1 Core").arg(kAppName));
   QApplication app(argc, argv);
+  // 传输状态窗口关闭后，键鼠共享和接收监听仍需继续运行。
+  app.setQuitOnLastWindowClosed(false);
 
   Arch arch;
   arch.init();

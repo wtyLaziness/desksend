@@ -169,6 +169,7 @@ void ClientApp::scheduleClientRestart(double retryTime)
 
 void ClientApp::handleClientConnected()
 {
+  m_retryCount = 0;
   LOG_DEBUG("connected to server");
   ipcSendConnectionState(deskflow::core::ConnectionState::Connected);
   // Reset server index on successful connection
