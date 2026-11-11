@@ -1962,6 +1962,8 @@ bool Server::removeClient(BaseClientProxy *client)
   m_clients.erase(getName(client));
   m_clientSet.erase(i);
 
+  deskflow::FileDropBridge::instance().onClientDisconnected(client);
+
   return true;
 }
 
