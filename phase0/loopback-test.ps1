@@ -165,6 +165,11 @@ for ($i = 0; $i -lt 30; $i++) {
   if ((Test-Path $proxyLog) -and ((Get-Content $proxyLog -Raw) -match 'PROXY_READY')) { break }
   Start-Sleep -Milliseconds 100
 }
+$controlProxy = Start-Process python -ArgumentList '-u',"$PSScriptRoot\input-proxy.py",([string]([int]([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width / 2))),([string]([int]([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height / 2))) -PassThru -WindowStyle Hidden -RedirectStandardOutput "$script:out\control-proxy.log" -RedirectStandardError "$script:out\control-proxy.err"
+for ($i = 0; $i -lt 30; $i++) {
+  if ((Test-Path "$script:out\control-proxy.log") -and ((Get-Content "$script:out\control-proxy.log" -Raw) -match 'CONTROL_PROXY_READY')) { break }
+  Start-Sleep -Milliseconds 100
+}
 
 @"
 section: links
@@ -205,7 +210,7 @@ file=$(("$script:out\server.log") -replace '\\','/')
 @"
 [core]
 computerName=client
-port=24800
+port=24801
 coreMode=1
 [client]
 remoteHost=127.0.0.1
@@ -327,6 +332,7 @@ if ($transferred) {
 }
 Stop-Process $cli,$srv -Force -ErrorAction SilentlyContinue
 Stop-Process $proxy -Force -ErrorAction SilentlyContinue
+Stop-Process $controlProxy -Force -ErrorAction SilentlyContinue
 Get-Process localsend-cli -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep 1
 
