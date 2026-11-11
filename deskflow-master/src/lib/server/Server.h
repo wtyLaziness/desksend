@@ -282,7 +282,7 @@ private:
   bool shouldSwitchTwoTap() const;
 
   // start delay switch timer
-  void startSwitchWait(int32_t x, int32_t y);
+  void startSwitchWait(int32_t x, int32_t y, double delay = -1.0);
 
   // stop delay switch timer
   void stopSwitchWait();

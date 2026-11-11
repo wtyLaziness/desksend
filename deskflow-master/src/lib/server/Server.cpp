@@ -406,6 +406,9 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
   assert(dst != nullptr);
   if (m_active == m_primaryClient && dst != m_primaryClient &&
       !deskflow::FileDropBridge::instance().canSwitchFromPrimary()) {
+    // 光标已经到边缘时，取消 OLE 后的移动可能被系统裁剪为零；用切屏计时器继续交接。
+    m_switchComputer = dst;
+    startSwitchWait(x, y, 0.12);
     return;
   }
 
@@ -972,12 +975,12 @@ bool Server::shouldSwitchTwoTap() const
   return (m_switchTwoTapArmed && m_switchTwoTapTimer.getTime() <= m_switchTwoTapDelay);
 }
 
-void Server::startSwitchWait(int32_t x, int32_t y)
+void Server::startSwitchWait(int32_t x, int32_t y, double delay)
 {
   stopSwitchWait();
   m_switchWaitX = x;
   m_switchWaitY = y;
-  m_switchWaitTimer = m_events->newOneShotTimer(m_switchWaitDelay, this);
+  m_switchWaitTimer = m_events->newOneShotTimer(delay >= 0.0 ? delay : m_switchWaitDelay, this);
   LOG_VERBOSE("waiting to switch");
 }
 

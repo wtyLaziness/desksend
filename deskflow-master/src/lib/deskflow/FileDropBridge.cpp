@@ -451,7 +451,6 @@ void CALLBACK finishNativeDragCancellation(HWND hwnd, UINT, UINT_PTR timerId, DW
     return;
   }
   LOG_INFO("FileDropBridge: native drag cancellation completed before screen handoff");
-  nudgeAcrossEdge(g_sentinelMgr.cancellingSide);
 }
 
 void cancelNativeDragBeforeSwitch(int sideIndex)
