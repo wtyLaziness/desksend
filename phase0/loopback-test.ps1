@@ -255,6 +255,22 @@ for ($i = 0; $i -lt 30; $i++) {
   Start-Sleep -Milliseconds 500
 }
 
+# CI 不具备本机截图技能脚本，使用 Windows 截图 API 保存窗口验证证据。
+if ($transferred) {
+  Start-Sleep -Milliseconds 500
+  $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+  $bitmap = [System.Drawing.Bitmap]::new($bounds.Width, $bounds.Height)
+  $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+  try {
+    $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+    $capture = Join-Path $env:TEMP 'desksend-transfer-status.png'
+    $bitmap.Save($capture, [System.Drawing.Imaging.ImageFormat]::Png)
+    Copy-Item $capture "$script:out\transfer-status.png" -Force
+  } finally {
+    $graphics.Dispose()
+    $bitmap.Dispose()
+  }
+}
 Stop-Process $cli,$srv -Force -ErrorAction SilentlyContinue
 Get-Process localsend-cli -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep 1

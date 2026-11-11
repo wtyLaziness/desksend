@@ -105,5 +105,7 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(WIN32)
+  # 状态提示含中文，明确指定 MSVC 的源码和执行字符集。
+  target_compile_options(${lib_name} PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
   target_link_libraries(${lib_name} PRIVATE ole32 shell32 uuid shlwapi)
 endif()
