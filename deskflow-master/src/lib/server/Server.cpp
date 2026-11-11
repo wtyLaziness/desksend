@@ -1629,6 +1629,9 @@ void Server::onMouseUp(ButtonID id)
 {
   LOG_VERBOSE("onMouseUp id=%d", id);
   assert(m_active != nullptr);
+  if (id == kButtonLeft) {
+    deskflow::FileDropBridge::instance().onLeftMouseUp(m_active != m_primaryClient);
+  }
 
   if (id == kButtonLeft && m_active != m_primaryClient) {
     deskflow::FileDropBridge::instance().onSecondaryLeftMouseUp(m_active, m_x, m_y);

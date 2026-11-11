@@ -40,6 +40,7 @@ public:
   // Called by sentinel DropTarget::DragEnter or by tests
   bool setPendingDragFiles(std::vector<std::string> files);
   void onPrimaryLeftMouseDown();
+  void onLeftMouseUp(bool onSecondary);
   bool canSwitchFromPrimary() const;
 
   // Called when Server::switchComputer leaves primary to a remote client
@@ -102,6 +103,7 @@ private:
   std::vector<std::string> m_pendingFiles;
   uint64_t m_pendingTimestampMs = 0;
   bool m_canCaptureDrag = false;
+  bool m_sourceButtonNeedsRelease = false;
 
   std::vector<std::string> m_activeDragFiles;
   BaseClientProxy *m_dragTargetClient = nullptr;

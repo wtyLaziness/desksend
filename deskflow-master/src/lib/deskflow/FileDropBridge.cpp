@@ -635,6 +635,7 @@ void FileDropBridge::shutdownSentinels()
   std::scoped_lock lock(m_mutex);
   m_pendingFiles.clear();
   m_canCaptureDrag = false;
+  m_sourceButtonNeedsRelease = false;
   m_activeDragFiles.clear();
   m_dragTargetClient = nullptr;
 }
@@ -684,6 +685,26 @@ void FileDropBridge::onPrimaryLeftMouseDown()
   m_canCaptureDrag = true;
 }
 
+void FileDropBridge::onLeftMouseUp(bool onSecondary)
+{
+  bool releaseSourceButton;
+  {
+    std::scoped_lock lock(m_mutex);
+    releaseSourceButton = m_sourceButtonNeedsRelease;
+    m_sourceButtonNeedsRelease = false;
+  }
+#if defined(_WIN32)
+  if (onSecondary && releaseSourceButton) {
+    // 物理松手在副屏时被钩子转发，另给源系统补一次松手，清除本地按下状态。
+    // 此事件只到本地 OS，不再次转发给副机，也不触发发送逻辑。
+    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, static_cast<ULONG_PTR>(0x44534B54));
+  }
+#else
+  (void)onSecondary;
+  (void)releaseSourceButton;
+#endif
+}
+
 bool FileDropBridge::canSwitchFromPrimary() const
 {
 #if defined(_WIN32)
@@ -701,6 +722,7 @@ bool FileDropBridge::setPendingDragFiles(std::vector<std::string> files)
     return false;
   }
   m_canCaptureDrag = false;
+  m_sourceButtonNeedsRelease = true;
   m_pendingFiles = std::move(files);
   m_pendingTimestampMs = nowMs();
   return true;

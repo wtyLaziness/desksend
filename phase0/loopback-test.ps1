@@ -18,6 +18,7 @@ public class MouseDriver {
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
+  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
   [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
   public struct POINT { public int X; public int Y; }
@@ -105,6 +106,10 @@ public class MouseDriver {
         GetCursorPos(out p);
         System.IO.File.AppendAllText(logPath, "[Thread] Releasing LEFTUP on client, cursor=(" + p.X + "," + p.Y + ")\r\n");
         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, MAGIC_EXTRA);
+        Thread.Sleep(150);
+        if ((GetAsyncKeyState(1) & 0x8000) != 0) {
+          throw new Exception("Source OS still considers left mouse button pressed after remote release");
+        }
         // 等待真正开始上传，再回切；不点击鼠标，避免掩盖按键状态残留。
         for (int i = 0; !CancelDrag && !ReturnBeforeRelease && i < 100; i++) {
           if (System.IO.File.Exists(ProxyLog) && ReadShared(ProxyLog).Contains("PROXY_UPLOAD_STARTED")) break;
