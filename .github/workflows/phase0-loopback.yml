@@ -37,8 +37,19 @@ jobs:
         run: |
           $dfDir = (Get-ChildItem df -Directory | Select-Object -First 1).FullName
           pwsh -STA -NoProfile -File ./phase0/loopback-test.ps1 -DeskflowDir $dfDir -LocalSendCliExe "$PWD\ls\localsend-cli.exe" -OutDir "$PWD\out" -DisableLock "false"
+      - name: Esc cancels drag without transferring or moving source files
+        run: |
+          $dfDir = (Get-ChildItem df -Directory | Select-Object -First 1).FullName
+          pwsh -STA -NoProfile -File ./phase0/loopback-test.ps1 -DeskflowDir $dfDir -LocalSendCliExe "$PWD\ls\localsend-cli.exe" -OutDir "$PWD\out-cancel" -DisableLock "false" -CancelDrag
+      - name: Returning to primary before release cancels drag
+        run: |
+          $dfDir = (Get-ChildItem df -Directory | Select-Object -First 1).FullName
+          pwsh -STA -NoProfile -File ./phase0/loopback-test.ps1 -DeskflowDir $dfDir -LocalSendCliExe "$PWD\ls\localsend-cli.exe" -OutDir "$PWD\out-return" -DisableLock "false" -ReturnBeforeRelease
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: desksend-e2e-logs
-          path: out/
+          path: |
+            out/
+            out-cancel/
+            out-return/

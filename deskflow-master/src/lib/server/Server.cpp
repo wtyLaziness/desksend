@@ -404,6 +404,10 @@ int32_t Server::getJumpZoneSize(const BaseClientProxy *client) const
 void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool forScreensaver)
 {
   assert(dst != nullptr);
+  if (m_active == m_primaryClient && dst != m_primaryClient &&
+      !deskflow::FileDropBridge::instance().canSwitchFromPrimary()) {
+    return;
+  }
 
   int32_t dx;
   int32_t dy;
@@ -1613,6 +1617,9 @@ void Server::onMouseDown(ButtonID id)
 {
   LOG_VERBOSE("onMouseDown id=%d", id);
   assert(m_active != nullptr);
+  if (id == kButtonLeft && m_active == m_primaryClient) {
+    deskflow::FileDropBridge::instance().onPrimaryLeftMouseDown();
+  }
 
   // relay
   m_active->mouseDown(id);

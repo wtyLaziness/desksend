@@ -2,7 +2,9 @@
   [string]$DeskflowDir,
   [string]$LocalSendCliExe = "",
   [string]$OutDir,
-  [string]$DisableLock = 'false'
+  [string]$DisableLock = 'false',
+  [switch]$CancelDrag,
+  [switch]$ReturnBeforeRelease
 )
 $ErrorActionPreference = 'Continue'
 New-Item -ItemType Directory -Force $OutDir | Out-Null
@@ -17,6 +19,7 @@ public class MouseDriver {
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
   public struct POINT { public int X; public int Y; }
 
   public const uint MOUSEEVENTF_MOVE = 0x0001;
@@ -26,6 +29,9 @@ public class MouseDriver {
   public const uint WM_CLOSE = 0x0010;
   public static readonly UIntPtr MAGIC_EXTRA = new UIntPtr(0x44534B53);
   public static string ProxyLog;
+  public static volatile bool NativeDragEnded;
+  public static bool CancelDrag;
+  public static bool ReturnBeforeRelease;
   public static string ReadShared(string path) {
     using (var stream = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite))
     using (var reader = new System.IO.StreamReader(stream)) return reader.ReadToEnd();
@@ -80,11 +86,27 @@ public class MouseDriver {
           Thread.Sleep(30);
         }
         Thread.Sleep(200);
+        if (!NativeDragEnded) {
+          throw new Exception("Native drag did not cancel before remote button release");
+        }
+        System.IO.File.AppendAllText(logPath, "[Thread] Native drag ended before remote button release\r\n");
+        if (CancelDrag) {
+          keybd_event(0x1B, 0, 0, MAGIC_EXTRA);
+          Thread.Sleep(80);
+          keybd_event(0x1B, 0, 2, MAGIC_EXTRA);
+          Thread.Sleep(200);
+        }
+        if (ReturnBeforeRelease) {
+          for (int i = 0; i < 30; i++) {
+            MoveRel(-100, 0);
+            Thread.Sleep(20);
+          }
+        }
         GetCursorPos(out p);
         System.IO.File.AppendAllText(logPath, "[Thread] Releasing LEFTUP on client, cursor=(" + p.X + "," + p.Y + ")\r\n");
         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, MAGIC_EXTRA);
         // 等待真正开始上传，再回切；不点击鼠标，避免掩盖按键状态残留。
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; !CancelDrag && !ReturnBeforeRelease && i < 100; i++) {
           if (System.IO.File.Exists(ProxyLog) && ReadShared(ProxyLog).Contains("PROXY_UPLOAD_STARTED")) break;
           Thread.Sleep(100);
         }
@@ -108,6 +130,8 @@ public class MouseDriver {
 }
 "@
 [MouseDriver]::SetProcessDPIAware() | Out-Null
+[MouseDriver]::CancelDrag = $CancelDrag.IsPresent
+[MouseDriver]::ReturnBeforeRelease = $ReturnBeforeRelease.IsPresent
 
 $script:out = (Resolve-Path $OutDir).Path
 $testLog = "$script:out\test.log"
@@ -251,6 +275,7 @@ $script:lbl.Add_MouseDown({
   $d = New-Object System.Windows.Forms.DataObject
   $d.SetData([System.Windows.Forms.DataFormats]::FileDrop, $script:files)
   $r = $script:lbl.DoDragDrop($d, [System.Windows.Forms.DragDropEffects]::Copy -bor [System.Windows.Forms.DragDropEffects]::Move)
+  [MouseDriver]::NativeDragEnded = ($r -eq [System.Windows.Forms.DragDropEffects]::None)
   Log "DoDragDrop returned: $r"
 })
 
@@ -271,7 +296,7 @@ $script:f.Add_Shown({
 
 Log "Waiting up to 90s for throttled transfer to arrive in $dropDest ..."
 $transferred = $false
-for ($i = 0; $i -lt 180; $i++) {
+for ($i = 0; !$CancelDrag -and !$ReturnBeforeRelease -and $i -lt 180; $i++) {
   if ((Test-Path "$dropDest\one.txt") -and (Test-Path "$dropDest\two.txt") -and (Test-Path "$dropDest\TestFolder\sub\nested.txt") -and (Test-Path "$dropDest\large.bin")) {
     $transferred = $true
     break
@@ -313,9 +338,33 @@ Get-ChildItem $dropDest -Recurse -File -ErrorAction SilentlyContinue | ForEach-O
 }
 
 if (-not $transferred) {
+  if ($CancelDrag -or $ReturnBeforeRelease) {
+    $serverText = Get-Content "$script:out\server.log" -Raw
+    if ($serverText -match 'spawning .*localsend-cli|queued send job' -or @(Get-ChildItem $dropDest -Recurse -File).Count -gt 0) {
+      throw 'Cancelled drag unexpectedly sent files'
+    }
+    $cancelMessage = if ($CancelDrag) {'Escape pressed; cancelling file drag'} else {'cursor returned to primary before release; cancelling file drag'}
+    if ($serverText -notmatch $cancelMessage -or $serverText -notmatch 'switch from "client" to "host"') {
+      throw 'Cancelled drag did not cancel and return to primary'
+    }
+    if (!((Get-Content $testLog -Raw) -match 'Native drag ended before remote button release')) {
+      throw 'Native source drag did not end before release'
+    }
+    Log 'Remote drag cancelled without sending files; cursor returned to primary'
+    exit 0
+  }
   throw "E2E DeskSend file/folder transfer FAILED: items did not arrive in $dropDest"
 }
 $serverText = Get-Content "$script:out\server.log" -Raw
+if (@([regex]::Matches($serverText, 'FileDropBridge: spawning ')).Count -ne 1 -or $serverText -match 'queued send job') {
+  throw 'One drag produced duplicate send jobs'
+}
+if (!((Get-Content $testLog -Raw) -match 'Native drag ended before remote button release')) {
+  throw 'Native source drag did not end before release'
+}
+if (!(Test-Path "$tmp\large.bin") -or !(Test-Path "$tmp\one.txt") -or !(Test-Path "$tmp\TestFolder\sub\nested.txt")) {
+  throw 'Source files were moved or removed'
+}
 $returnIndex = $serverText.IndexOf('switch from "client" to "host"')
 $successIndex = $serverText.IndexOf('LocalSend transfer to')
 if ($returnIndex -lt 0 -or $successIndex -lt 0 -or $returnIndex -ge $successIndex) {

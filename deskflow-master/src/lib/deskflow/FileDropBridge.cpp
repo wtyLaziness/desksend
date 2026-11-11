@@ -228,6 +228,8 @@ std::vector<std::string> extractFilesFromDataObject(IDataObject *obj)
   return results;
 }
 
+void cancelNativeDragBeforeSwitch(int sideIndex);
+
 class SentinelDropTarget : public IDropTarget
 {
 public:
@@ -256,14 +258,11 @@ public:
     auto files = extractFilesFromDataObject(obj);
     if (!files.empty()) {
       LOG_INFO("FileDropBridge: sentinel DragEnter at (%ld,%ld) captured %zu file(s)", pt.x, pt.y, files.size());
-      FileDropBridge::instance().setPendingDragFiles(std::move(files));
-      *eff = DROPEFFECT_COPY;
-      // Nudge cursor into the 1px jump zone so Server::onMouseMovePrimary switches immediately
-      int dx = (sideIndex == 0) ? -8 : (sideIndex == 1 ? 8 : 0);
-      int dy = (sideIndex == 2) ? -8 : (sideIndex == 3 ? 8 : 0);
-      if (dx != 0 || dy != 0) {
-        mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(dx), static_cast<DWORD>(dy), 0, 0);
+      if (FileDropBridge::instance().setPendingDragFiles(std::move(files))) {
+        cancelNativeDragBeforeSwitch(sideIndex);
       }
+      // 本地目标永远不接收原生放下，避免源文件或桌面图标被移动。
+      *eff = DROPEFFECT_NONE;
     } else {
       *eff = DROPEFFECT_NONE;
     }
@@ -272,7 +271,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD *eff) override
   {
-    *eff = FileDropBridge::instance().hasPendingDragFiles() ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+    *eff = DROPEFFECT_NONE;
     return S_OK;
   }
 
@@ -285,14 +284,9 @@ public:
 
   HRESULT STDMETHODCALLTYPE Drop(IDataObject *obj, DWORD, POINTL pt, DWORD *eff) override
   {
-    auto files = extractFilesFromDataObject(obj);
-    if (!files.empty()) {
-      LOG_INFO("FileDropBridge: sentinel Drop at (%ld,%ld) with %zu file(s)", pt.x, pt.y, files.size());
-      FileDropBridge::instance().setPendingDragFiles(std::move(files));
-      *eff = DROPEFFECT_COPY;
-    } else {
-      *eff = DROPEFFECT_NONE;
-    }
+    (void)obj;
+    (void)pt;
+    *eff = DROPEFFECT_NONE;
     return S_OK;
   }
 };
@@ -310,6 +304,9 @@ struct Win32SentinelManager
   std::array<HWND, 4> hwnds = {nullptr, nullptr, nullptr, nullptr}; // 0:L, 1:R, 2:T, 3:B
   std::array<bool, 4> visible = {false, false, false, false};
   std::array<SentinelDropTarget, 4> dropTargets;
+  bool cancellingNativeDrag = false;
+  int cancellingSide = 0;
+  HWND cancelTimerWindow = nullptr;
 
   void ensureInitialized(int32_t x, int32_t y, int32_t w, int32_t h)
   {
@@ -396,6 +393,11 @@ struct Win32SentinelManager
 
   void shutdown()
   {
+    if (cancellingNativeDrag) {
+      KillTimer(cancelTimerWindow, 1);
+      keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, static_cast<ULONG_PTR>(0x44534B54));
+      cancellingNativeDrag = false;
+    }
     if (!initialized) {
       return;
     }
@@ -415,6 +417,53 @@ struct Win32SentinelManager
 };
 
 Win32SentinelManager g_sentinelMgr;
+
+void CALLBACK finishNativeDragCancellation(HWND hwnd, UINT, UINT_PTR timerId, DWORD)
+{
+  KillTimer(hwnd, timerId);
+  if (!g_sentinelMgr.cancellingNativeDrag) {
+    return;
+  }
+  keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, static_cast<ULONG_PTR>(0x44534B54));
+  g_sentinelMgr.cancellingNativeDrag = false;
+  if (!FileDropBridge::instance().hasPendingDragFiles()) {
+    return;
+  }
+  if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0) {
+    FileDropBridge::instance().cancelActiveDrag();
+    return;
+  }
+  const int side = g_sentinelMgr.cancellingSide;
+  const int dx = side == 0 ? -8 : side == 1 ? 8 : 0;
+  const int dy = side == 2 ? -8 : side == 3 ? 8 : 0;
+  LOG_INFO("FileDropBridge: native drag cancellation completed before screen handoff");
+  mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(dx), static_cast<DWORD>(dy), 0, 0);
+}
+
+void cancelNativeDragBeforeSwitch(int sideIndex)
+{
+  // 保留源窗口的前台状态，让 OLE 消费 Esc 后再交出鼠标，避免中央残影。
+  const HWND hwnd = g_sentinelMgr.hwnds.at(sideIndex);
+  g_sentinelMgr.cancellingNativeDrag = true;
+  g_sentinelMgr.cancellingSide = sideIndex;
+  g_sentinelMgr.cancelTimerWindow = hwnd;
+  if (!SetTimer(hwnd, 1, 80, finishNativeDragCancellation)) {
+    g_sentinelMgr.cancellingNativeDrag = false;
+    FileDropBridge::instance().cancelActiveDrag();
+    LOG_WARN("FileDropBridge: could not schedule native drag cancellation");
+    return;
+  }
+  INPUT escape = {};
+  escape.type = INPUT_KEYBOARD;
+  escape.ki.wVk = VK_ESCAPE;
+  escape.ki.dwExtraInfo = static_cast<ULONG_PTR>(0x44534B54);
+  if (SendInput(1, &escape, sizeof(escape)) != 1) {
+    KillTimer(hwnd, 1);
+    g_sentinelMgr.cancellingNativeDrag = false;
+    FileDropBridge::instance().cancelActiveDrag();
+    LOG_WARN("FileDropBridge: could not cancel source native drag");
+  }
+}
 
 void assignProcessToKillOnCloseJob(qint64 pid)
 {
@@ -585,6 +634,7 @@ void FileDropBridge::shutdownSentinels()
 #endif
   std::scoped_lock lock(m_mutex);
   m_pendingFiles.clear();
+  m_canCaptureDrag = false;
   m_activeDragFiles.clear();
   m_dragTargetClient = nullptr;
 }
@@ -627,11 +677,33 @@ void FileDropBridge::onPrimaryMouseMove(
 #endif
 }
 
-void FileDropBridge::setPendingDragFiles(std::vector<std::string> files)
+void FileDropBridge::onPrimaryLeftMouseDown()
 {
   std::scoped_lock lock(m_mutex);
+  m_pendingFiles.clear();
+  m_canCaptureDrag = true;
+}
+
+bool FileDropBridge::canSwitchFromPrimary() const
+{
+#if defined(_WIN32)
+  return !g_sentinelMgr.cancellingNativeDrag;
+#else
+  return true;
+#endif
+}
+
+bool FileDropBridge::setPendingDragFiles(std::vector<std::string> files)
+{
+  std::scoped_lock lock(m_mutex);
+  if (!m_canCaptureDrag || files.empty()) {
+    LOG_DEBUG("FileDropBridge: ignoring repeated native drag capture without a new primary button press");
+    return false;
+  }
+  m_canCaptureDrag = false;
   m_pendingFiles = std::move(files);
   m_pendingTimestampMs = nowMs();
+  return true;
 }
 
 bool FileDropBridge::hasPendingDragFiles() const
@@ -662,13 +734,6 @@ void FileDropBridge::onLeavePrimary(BaseClientProxy *dstClient)
     m_dragTargetClient = dstClient;
   }
 
-#if defined(_WIN32)
-  // Cancel local OLE DoDragDrop loop on the source machine by injecting VK_ESCAPE with magic extra info
-  // (0x44534B54) so MSWindowsHook::keyboardLLHook passes it to the local OS without relaying to Server.
-  keybd_event(VK_ESCAPE, 0, 0, static_cast<ULONG_PTR>(0x44534B54));
-  keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, static_cast<ULONG_PTR>(0x44534B54));
-#endif
-
   if (dstClient) {
     std::string msg = "DESKSEND_START";
     for (const auto &f : files) {
@@ -691,18 +756,9 @@ void FileDropBridge::onReturnToPrimary()
     if (m_activeDragFiles.empty()) {
       return;
     }
-#if defined(_WIN32)
-    const bool stillHoldingLeft = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-#else
-    const bool stillHoldingLeft = false;
-#endif
-    if (stillHoldingLeft) {
-      LOG_INFO("FileDropBridge: cursor returned to primary while LBUTTON still held; preserving pending drag files");
-      m_pendingFiles = std::move(m_activeDragFiles);
-      m_pendingTimestampMs = nowMs();
-    } else {
-      LOG_INFO("FileDropBridge: cursor returned to primary before release; cancelling file drag");
-    }
+    LOG_INFO("FileDropBridge: cursor returned to primary before release; cancelling file drag");
+    m_pendingFiles.clear();
+    m_canCaptureDrag = false;
     m_activeDragFiles.clear();
     oldTarget = m_dragTargetClient;
     m_dragTargetClient = nullptr;
@@ -731,10 +787,9 @@ void FileDropBridge::cancelActiveDrag()
   BaseClientProxy *oldTarget = nullptr;
   {
     std::scoped_lock lock(m_mutex);
-    if (m_activeDragFiles.empty()) {
-      return;
-    }
     LOG_INFO("FileDropBridge: Escape pressed; cancelling file drag");
+    m_pendingFiles.clear();
+    m_canCaptureDrag = false;
     m_activeDragFiles.clear();
     oldTarget = m_dragTargetClient;
     m_dragTargetClient = nullptr;
