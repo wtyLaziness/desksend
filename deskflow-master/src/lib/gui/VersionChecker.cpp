@@ -1,129 +1,86 @@
-/*
- * Deskflow -- mouse and keyboard sharing utility
- * SPDX-FileCopyrightText: (C) 2012 Synergy App Ltd
- * SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
- */
-
+// SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
+// SPDX-FileCopyrightText: (C) 2012 Synergy App Ltd
 #include "VersionChecker.h"
-
-#include "common/Settings.h"
+#include "common/UrlConstants.h"
 #include "common/VersionInfo.h"
-
-#include <QLocale>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QProcess>
 #include <QRegularExpression>
-#include <climits>
+#include <QVersionNumber>
+#include <QVariant>
 
-VersionChecker::VersionChecker(QObject *parent) : QObject(parent), m_network{new QNetworkAccessManager(this)}
+VersionChecker::VersionChecker(QObject *parent) : QObject(parent), m_network(new QNetworkAccessManager(this))
 {
-  connect(m_network, &QNetworkAccessManager::finished, this, &VersionChecker::replyFinished, Qt::UniqueConnection);
+  connect(m_network, &QNetworkAccessManager::finished, this, &VersionChecker::replyFinished);
 }
-
-void VersionChecker::checkLatest() const
+bool VersionChecker::isNewer(const QString &current, const QString &candidate)
 {
-  const QString url = Settings::value(Settings::Gui::UpdateCheckUrl).toString();
-  qDebug("checking for updates at: %s", qPrintable(url));
-  auto request = QNetworkRequest(url);
-  auto userAgent = QString("%1 %2 on %3").arg(kAppName, kVersion, QSysInfo::prettyProductName());
-  request.setHeader(QNetworkRequest::UserAgentHeader, userAgent);
-  request.setRawHeader("X-Deskflow-Version", kVersion);
-  request.setRawHeader("X-Deskflow-Language", qPrintable(QLocale::system().name()));
+  return QVersionNumber::compare(QVersionNumber::fromString(candidate), QVersionNumber::fromString(current)) > 0;
+}
+bool VersionChecker::parseRelease(const QByteArray &json, Release &release, QString &error)
+{
+  release = {};
+  const auto document = QJsonDocument::fromJson(json);
+  const auto object = document.object();
+  const auto tag = object.value("tag_name").toString();
+  static const QRegularExpression versionPattern("^v([0-9]+\\.[0-9]+\\.[0-9]+)$");
+  const auto match = versionPattern.match(tag);
+  if (!document.isObject() || !match.hasMatch() || object.value("draft").toBool(true) || object.value("prerelease").toBool(true)) {
+    error = QStringLiteral("发布信息无效，未找到正式版。");
+    return false;
+  }
+  const auto version = match.captured(1);
+  const auto name = QStringLiteral("DeskSend-%1-windows-x64.zip").arg(version);
+  const QUrl expected(QStringLiteral("https://github.com/wtyLaziness/desksend-releases/releases/download/%1/%2").arg(tag, name));
+  for (const auto &entry : object.value("assets").toArray()) {
+    const auto asset = entry.toObject();
+    if (asset.value("name").toString() != name)
+      continue;
+    static const QRegularExpression hashPattern("^sha256:([0-9a-fA-F]{64})$");
+    const auto hash = hashPattern.match(asset.value("digest").toString());
+    const auto size = asset.value("size").toVariant().toLongLong();
+    if (QUrl(asset.value("browser_download_url").toString()) != expected || !hash.hasMatch() || size <= 0 || asset.value("state").toString() != QStringLiteral("uploaded")) {
+      error = QStringLiteral("更新包地址、大小或 SHA-256 校验信息无效。");
+      return false;
+    }
+    release = {version, expected, hash.captured(1).toLatin1().toLower(), size};
+    return true;
+  }
+  error = QStringLiteral("此版本未提供完整的 Windows x64 更新包。");
+  return false;
+}
+void VersionChecker::checkLatest()
+{
+  if (m_checking)
+    return;
+  m_checking = true;
+  m_release = {};
+  // 固定使用 DeskSend 发布源，不读取旧版保存的上游更新地址。
+  QNetworkRequest request{QUrl(kUrlUpdateCheck)};
+  request.setTransferTimeout(20000);
+  request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("DeskSend/%1").arg(kVersion));
+  request.setRawHeader("Accept", "application/vnd.github+json");
   m_network->get(request);
 }
-
 void VersionChecker::replyFinished(QNetworkReply *reply)
 {
-  const auto httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-  if (reply->error() != QNetworkReply::NoError) {
-    qWarning("version check server error: %s", qPrintable(reply->errorString()));
-    qWarning("version check server response: %s", qPrintable(QString(reply->readAll())));
-    qWarning("error checking for updates, http status: %d", httpStatus);
-    return;
-  }
-
-  qDebug("version check server success, http status: %d", httpStatus);
-
-  const auto newestVersion = QString(reply->readAll());
+  m_checking = false;
   reply->deleteLater();
-  qDebug("version check response: %s", qPrintable(newestVersion));
-
-  if (newestVersion.isEmpty()) {
-    qWarning() << "version check is response is empty";
+  if (reply->error() != QNetworkReply::NoError) {
+    Q_EMIT checkFailed(QStringLiteral("无法检查 DeskSend 更新：%1").arg(reply->errorString()));
     return;
   }
-
-  if (compareVersions(kVersion, newestVersion) > 0) {
-    qWarning().noquote() //
-        << QStringLiteral("current version %1 out of date, update available: %2").arg(kVersion, newestVersion);
-    Q_EMIT updateFound(newestVersion);
-  } else {
-    qDebug().noquote() << QStringLiteral("current version %1 is upto date").arg(kVersion);
+  QString error;
+  if (!parseRelease(reply->readAll(), m_release, error)) {
+    Q_EMIT checkFailed(error);
+    return;
   }
-}
-
-int VersionChecker::getStageVersion(QString stage)
-{
-  const char *stableName = "stable";
-  const char *rcName = "rc";
-  const char *betaName = "beta";
-
-  // use max int for stable so it's always the highest value.
-  const int stableValue = INT_MAX;
-  const int rcValue = 2;
-  const int betaValue = 1;
-  const int otherValue = 0;
-
-  if (stage.isEmpty() || stage == stableName) {
-    return stableValue;
-  } else if (stage.startsWith(rcName, Qt::CaseInsensitive)) {
-    static QRegularExpression re("\\d*", QRegularExpression::CaseInsensitiveOption);
-    auto match = re.match(stage);
-    if (match.hasMatch()) {
-      // return the rc value plus the rc number (e.g. 2 + 1)
-      // this should be ok since stable is max int.
-      return rcValue + match.captured(1).toInt();
-    }
-  } else if (stage == betaName) {
-    return betaValue;
-  }
-
-  return otherValue;
-}
-
-int VersionChecker::compareVersions(const QString &left, const QString &right)
-{
-  if (left.compare(right) == 0)
-    return 0; // versions are same.
-
-  QStringList leftParts = left.split("-");
-  QStringList rightParts = right.split("-");
-
-  QString leftNumber = leftParts.at(0);
-  QString rightNumber = rightParts.at(0);
-
-  QStringList leftNumberParts = leftNumber.split(".");
-  QStringList rightNumberParts = rightNumber.split(".");
-
-  auto leftStagePart = leftParts.size() > 1 ? leftParts.at(1) : "";
-  auto rightStagePart = rightParts.size() > 1 ? rightParts.at(1) : "";
-
-  const int leftMajor = leftNumberParts.at(0).toInt();
-  const int leftMinor = leftNumberParts.at(1).toInt();
-  const int leftPatch = leftNumberParts.at(2).toInt();
-  const int leftStage = getStageVersion(leftStagePart);
-
-  const int rightMajor = rightNumberParts.at(0).toInt();
-  const int rightMinor = rightNumberParts.at(1).toInt();
-  const int rightPatch = rightNumberParts.at(2).toInt();
-  const int rightStage = getStageVersion(rightStagePart);
-
-  const bool rightWins =
-      (rightMajor > leftMajor) || ((rightMajor >= leftMajor) && (rightMinor > leftMinor)) ||
-      ((rightMajor >= leftMajor) && (rightMinor >= leftMinor) && (rightPatch > leftPatch)) ||
-      ((rightMajor >= leftMajor) && (rightMinor >= leftMinor) && (rightPatch >= leftPatch) && (rightStage > leftStage));
-
-  return rightWins ? 1 : -1;
+  const bool available = isNewer(kVersion, m_release.version);
+  if (available)
+    Q_EMIT updateFound(m_release.version);
+  Q_EMIT checked(available);
 }

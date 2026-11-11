@@ -46,7 +46,7 @@
     -->
     <util:CloseApplication
       Id="CloseDeskflowGui"
-      Target="deskflow.exe"
+      Target="DeskSend.exe"
       CloseMessage="yes"
       RebootPrompt="no"
       TerminateProcess="10" />
@@ -90,7 +90,7 @@
 
     <CustomAction
       Id="RunDeskflow"
-      ExeCommand="[INSTALL_ROOT]deskflow.exe"
+      ExeCommand="[INSTALL_ROOT]DeskSend.exe"
       Directory="INSTALL_ROOT"
       Execute="immediate"
       Impersonate="yes"

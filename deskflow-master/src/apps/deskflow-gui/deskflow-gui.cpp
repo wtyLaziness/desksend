@@ -57,7 +57,7 @@ int main(int argc, char *argv[])
 #endif
 
   QCoreApplication::setApplicationName(kAppName);
-  QCoreApplication::setOrganizationName(kAppName);
+  QCoreApplication::setOrganizationName(kSettingsName);
   QCoreApplication::setApplicationVersion(kVersion);
   QCoreApplication::setOrganizationDomain(kOrgDomain); // used in prefix, can't be a url
   QGuiApplication::setDesktopFileName(kRevFqdnName);

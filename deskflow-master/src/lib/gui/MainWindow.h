@@ -96,7 +96,7 @@ private:
 
   void clearSettings();
   void openAboutDialog();
-  void openGetNewVersionUrl() const;
+  void openGetNewVersionUrl();
   void openSettings();
   void startCore();
   void stopCore();

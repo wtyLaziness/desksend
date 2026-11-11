@@ -14,6 +14,7 @@
 #include "StyleUtils.h"
 
 #include "dialogs/AboutDialog.h"
+#include "dialogs/UpdateDialog.h"
 #include "dialogs/ClientConfigDialog.h"
 #include "dialogs/FingerprintDialog.h"
 #include "dialogs/HelpDialog.h"
@@ -85,7 +86,7 @@ MainWindow::MainWindow()
 {
   ui->setupUi(this);
 
-  setWindowIcon(QIcon::fromTheme(kRevFqdnName));
+  setWindowIcon(QIcon(":/branding/desksend.png"));
 
   addDockWidget(Qt::BottomDockWidgetArea, m_logDock);
 
@@ -471,9 +472,17 @@ void MainWindow::openAboutDialog()
   about.exec();
 }
 
-void MainWindow::openGetNewVersionUrl() const
+void MainWindow::openGetNewVersionUrl()
 {
-  QDesktopServices::openUrl(QUrl(kUrlDownload));
+  UpdateDialog dialog(this);
+  connect(&dialog, &UpdateDialog::installRequested, this, [this]() {
+    Settings::setValue(Settings::Gui::AutoStartCore, m_coreProcess.isStarted());
+    saveSettings();
+    m_saveOnExit = false;
+    stopCore();
+    close();
+  });
+  dialog.exec();
 }
 
 void MainWindow::openSettings()
@@ -677,6 +686,10 @@ void MainWindow::createMenuBar()
 
   m_menuView->addAction(m_logDock->toggleViewAction());
 
+  auto updates = m_menuHelp->addAction(QStringLiteral("检查 DeskSend 更新…"));
+  updates->setObjectName("actionDeskSendUpdates");
+  connect(updates, &QAction::triggered, this, &MainWindow::openGetNewVersionUrl);
+  m_menuHelp->addSeparator();
   m_menuHelp->addAction(m_actionAbout);
   m_menuHelp->addAction(m_actionShowHelp);
 
@@ -744,33 +757,7 @@ void MainWindow::saveSettings() const
 
 void MainWindow::setTrayIcon()
 {
-  static const auto fallbackPath = QStringLiteral(":/icons/%1-%2/apps/64/%3");
-
-  QString themeIcon = kRevFqdnName;
-  if (!Settings::value(Settings::Gui::SymbolicTrayIcon).toBool()) {
-    if (deskflow::platform::isMac())
-      m_trayIcon->setIcon(QIcon::fromTheme(themeIcon));
-    else
-      m_trayIcon->setIcon(QIcon(fallbackPath.arg(kAppId, QStringLiteral("dark"), themeIcon)));
-    return;
-  }
-
-  themeIcon.append(QStringLiteral("-symbolic"));
-
-  if (deskflow::platform::isWindows()) {
-    QSettings settings(
-        QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
-        QSettings::NativeFormat
-    );
-    const QString theme = settings.value(QStringLiteral("SystemUsesLightTheme"), 1).toBool() ? QStringLiteral("light")
-                                                                                             : QStringLiteral("dark");
-    m_trayIcon->setIcon(QIcon(fallbackPath.arg(kAppId, theme, themeIcon)));
-    return;
-  }
-
-  auto icon = QIcon::fromTheme(themeIcon, QIcon(fallbackPath.arg(kAppId, iconMode(), themeIcon)));
-  icon.setIsMask(true);
-  m_trayIcon->setIcon(icon);
+  m_trayIcon->setIcon(QIcon(":/branding/desksend.png"));
 }
 
 void MainWindow::handleLogLine(const QString &line)
@@ -1053,7 +1040,7 @@ void MainWindow::changeEvent(QEvent *e)
   QMainWindow::changeEvent(e);
   if (e->type() == QEvent::PaletteChange) {
     updateIconTheme();
-    setWindowIcon(QIcon::fromTheme(kRevFqdnName));
+    setWindowIcon(QIcon(":/branding/desksend.png"));
     setTrayIcon();
   } else if (e->type() == QEvent::LanguageChange) {
     ui->retranslateUi(this);

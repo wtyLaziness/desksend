@@ -23,7 +23,7 @@ AboutDialog::AboutDialog(QWidget *parent) : QDialog(parent), ui{std::make_unique
   const QSize pixmapSize(px, px);
   ui->lblIcon->setFixedSize(pixmapSize);
 
-  ui->lblIcon->setPixmap(QPixmap(QIcon::fromTheme(kRevFqdnName).pixmap(QSize().scaled(pixmapSize, Qt::KeepAspectRatio)))
+  ui->lblIcon->setPixmap(QPixmap(QIcon(":/branding/desksend.png").pixmap(QSize().scaled(pixmapSize, Qt::KeepAspectRatio)))
   );
 
   ui->btnCopyVersion->setIcon(QIcon::fromTheme(QIcon::ThemeIcon::EditCopy));

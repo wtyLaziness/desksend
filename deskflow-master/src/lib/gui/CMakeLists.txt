@@ -44,6 +44,8 @@ add_library(${target} STATIC
   core/CoreProcess.h
   core/NetworkMonitor.cpp
   core/NetworkMonitor.h
+  dialogs/UpdateDialog.cpp
+  dialogs/UpdateDialog.h
   dialogs/AboutDialog.cpp
   dialogs/AboutDialog.h
   dialogs/AboutDialog.ui
@@ -124,3 +126,7 @@ target_link_libraries(${target}
     net
     Qt6::Widgets
 )
+
+if(MSVC)
+  target_compile_options(${target} PRIVATE /utf-8)
+endif()

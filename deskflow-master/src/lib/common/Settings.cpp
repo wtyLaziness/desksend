@@ -77,7 +77,7 @@ Settings::Settings(QObject *parent) : QObject(parent), m_settingsWatcher{new QFi
     fileToLoad = portableFile;
 #else
   if (const auto xdgConfigHome = qEnvironmentVariable("XDG_CONFIG_HOME"); !xdgConfigHome.isEmpty())
-    fileToLoad = QStringLiteral("%1/%2/%2.conf").arg(xdgConfigHome, kAppName);
+    fileToLoad = QStringLiteral("%1/%2/%2.conf").arg(xdgConfigHome, kSettingsName);
 #endif
   else if (QFile(UserSettingFile).exists())
     fileToLoad = UserSettingFile;
@@ -98,7 +98,7 @@ Settings::Settings(QObject *parent) : QObject(parent), m_settingsWatcher{new QFi
   const auto stateBase = !xdgStateHome.isEmpty()
                              ? xdgStateHome
                              : QStandardPaths::standardLocations(QStandardPaths::GenericStateLocation).at(0);
-  const auto stateFile = QStringLiteral("%1/%2.state").arg(stateBase, kAppName);
+  const auto stateFile = QStringLiteral("%1/%2.state").arg(stateBase, kSettingsName);
 
   m_stateSettings = new QSettings(stateFile, QSettings::IniFormat, this);
 
@@ -511,7 +511,7 @@ void Settings::restoreDefaultSettings()
 QString Settings::portableSettingsFile()
 {
   static const auto filename =
-      QStringLiteral("%1/settings/%2.conf").arg(QCoreApplication::applicationDirPath(), kAppName);
+      QStringLiteral("%1/settings/%2.conf").arg(QCoreApplication::applicationDirPath(), kSettingsName);
   return QFileInfo(filename).absoluteFilePath();
 }
 

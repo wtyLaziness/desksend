@@ -89,20 +89,22 @@ if(WIN32)
     configure_file(cmake/vcpkg.json.in ${CMAKE_SOURCE_DIR}/vcpkg.json @ONLY)
 endif()
 
+include(cmake/DeskSendVersion.cmake)
+
 #Define our project
 project(
   deskflow
-  VERSION "${DESKFLOW_VERSION_MAJOR}.${DESKFLOW_VERSION_MINOR}.${DESKFLOW_VERSION_PATCH}.${DESKFLOW_VERSION_TWEAK}"
-  DESCRIPTION "Keyboard and mouse sharing utility"
-  HOMEPAGE_URL "https://deskflow.org"
+  VERSION "${DESKSEND_VERSION}.0"
+  DESCRIPTION "Keyboard, mouse and file sharing"
+  HOMEPAGE_URL "https://github.com/wtyLaziness/desksend-releases"
   LANGUAGES C CXX
 )
 
 # Define Additional "PROJECT" vars for packaging and metadata
-set(CMAKE_PROJECT_PROPER_NAME "Deskflow")
+set(CMAKE_PROJECT_PROPER_NAME "DeskSend")
 set(CMAKE_PROJECT_VENDOR "${CMAKE_PROJECT_PROPER_NAME} Devs")
-set(CMAKE_PROJECT_COPYRIGHT "(C) 2024-2026 ${CMAKE_PROJECT_VENDOR}")
-set(CMAKE_PROJECT_CONTACT "${CMAKE_PROJECT_PROPER_NAME} <maintainers@deskflow.org>")
+set(CMAKE_PROJECT_COPYRIGHT "(C) 2024-2026 Deskflow Developers")
+set(CMAKE_PROJECT_CONTACT "https://github.com/wtyLaziness/desksend-releases")
 set(CMAKE_PROJECT_REV_FQDN "org.deskflow.deskflow")
 
 #Unset the vars used in the project call
