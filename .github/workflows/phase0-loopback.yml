@@ -33,6 +33,10 @@ jobs:
           gh run download $dfRun -n deskflow-win-x64 -D df
           gh run download $lsRun -n localsend-cli-win-x64 -D ls
           Expand-Archive (Get-ChildItem df\*.zip).FullName -DestinationPath df -Force
+      - name: DeskSend executable identity and startup smoke test
+        run: |
+          $dfDir = (Get-ChildItem df -Directory | Select-Object -First 1).FullName
+          ./phase0/branding-test.ps1 -DeskflowDir $dfDir -OutDir "$PWD\out-branding"
       - name: Full E2E DeskSend drag-and-drop file transfer test (disableLockToComputer=false)
         run: |
           $dfDir = (Get-ChildItem df -Directory | Select-Object -First 1).FullName
@@ -53,3 +57,4 @@ jobs:
             out/
             out-cancel/
             out-return/
+            out-branding/
