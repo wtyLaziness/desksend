@@ -5,6 +5,9 @@ on:
     paths:
       - "localsend-main/cli/**"
       - "localsend-main/packages/core/**"
+      - "localsend-main/Cargo.toml"
+      - "localsend-main/Cargo.lock"
+      - "localsend-main/rust-toolchain.toml"
       - ".github/workflows/localsend-cli-win.yml"
 jobs:
   build-and-test:

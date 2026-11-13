@@ -2,7 +2,7 @@ name: deskflow-win
 on:
   workflow_dispatch:
   push:
-    paths: ["deskflow-master/**", ".github/workflows/deskflow-win.yml"]
+    paths: ["deskflow-master/**", "tests/update-test.ps1", ".github/workflows/deskflow-win.yml"]
 jobs:
   build:
     runs-on: windows-latest
@@ -41,7 +41,7 @@ jobs:
             deskflow-master/build/*.zip
           if-no-files-found: error
       - name: Test portable updater
-        run: ./phase0/update-test.ps1
+        run: ./tests/update-test.ps1
       - name: Collect update channel diagnostic test
         run: |
           New-Item -ItemType Directory diagnostics

@@ -1,75 +1,147 @@
-# DeskSend
+<div align="center">
+  <img src="deskflow-master/src/apps/res/branding/desksend.png" width="104" alt="DeskSend 图标">
+  <h1>DeskSend</h1>
+  <p><strong>在多台 Windows 电脑之间共享同一套键鼠，并直接把文件拖过屏幕边缘送到另一台电脑。</strong></p>
+  <p>
+    <a href="https://github.com/wtyLaziness/desksend/actions/workflows/deskflow-win.yml"><img src="https://github.com/wtyLaziness/desksend/actions/workflows/deskflow-win.yml/badge.svg" alt="deskflow-win"></a>
+    <a href="https://github.com/wtyLaziness/desksend/actions/workflows/localsend-cli-win.yml"><img src="https://github.com/wtyLaziness/desksend/actions/workflows/localsend-cli-win.yml/badge.svg" alt="localsend-cli-win"></a>
+    <a href="https://github.com/wtyLaziness/desksend/actions/workflows/e2e-loopback.yml"><img src="https://github.com/wtyLaziness/desksend/actions/workflows/e2e-loopback.yml/badge.svg" alt="e2e-loopback"></a>
+  </p>
+  <p>
+    <a href="https://github.com/wtyLaziness/desksend/releases/latest">下载最新完整包</a> ·
+    <a href="docs/使用指南.md">详细使用指南</a> ·
+    <a href="docs/构建与发布.md">构建与发布</a> ·
+    <a href="docs/发布与更新.md">发布与更新说明</a> ·
+    <a href="CONTRIBUTING.md">参与贡献</a> ·
+    <a href="LICENSE.md">许可证</a>
+  </p>
+</div>
 
-<img src="deskflow-master/src/apps/res/branding/desksend.png" width="112" alt="DeskSend 图标">
+---
 
-**在两台 Windows 电脑之间共享键盘、鼠标，并把文件拖过屏幕边缘发送到另一台电脑。**
+**DeskSend** 将 [Deskflow](https://github.com/deskflow/deskflow) 的跨屏键鼠共享与 [LocalSend](https://github.com/localsend/localsend) 的局域网文件传输整合在统一桌面界面与绿色便携包中。用户无需单独启动 LocalSend，也无需手动配对传输客户端，即可通过习惯的系统拖拽手势完成跨机文件发送。
 
-DeskSend 将 Deskflow 的键鼠共享与 LocalSend 的局域网文件传输整合在一个界面和完整便携包中。目前发布 Windows x64 版本。
+## 核心特性
 
-**[下载最新完整包](https://github.com/wtyLaziness/desksend/releases/latest)** · [详细使用方法](docs/使用指南.md) · [构建与发布](docs/构建与发布.md) · [许可证](LICENSE.md)
+| 能力 | 说明 |
+| --- | --- |
+| **原生跨屏拖拽传文件** | 在主机（Server）桌面或资源管理器拖起文件或文件夹，越过屏幕边缘并在副机（Client）松手即传；传输开始后可将鼠标移回主机继续操作。 |
+| **智能落点与剪贴板回退** | 落在副机桌面或打开的资源管理器窗口/当前标签页时直写对应目录；落在其他应用窗口时保存到默认接收目录（优先“下载”，其次“桌面”），并同步写入系统文件剪贴板供 `Ctrl+V` 粘贴。 |
+| **可取消、不混传** | 松手前按 `Esc` 或将鼠标拖回主机即可取消，不触发传输且保留主机源文件；每次拖拽绑定独立一次性会话令牌与 SHA-256 截断标签（`pin_tag`），支持按会话精准取消。 |
+| **传输隔离与安全控制** | 键鼠通道（`TCP 24800`）支持 TLS 加密与证书指纹信任；文件组件（`TCP 53318`）通过标准输入（`--auth-stdin` / `--pin-stdin` / `--paths-stdin`）传递一次性令牌和路径清单，避免密钥和文件路径暴露在命令行或日志中。 |
+| **一体便携与安全升级** | 解压即用，支持菜单“帮助 → 检查 DeskSend 更新”。下载后核对大小与 `SHA-256`、支持 GitHub `ETag` 缓存与传输中安装二次确认，更新时备份旧程序至 `.desksend-backups/` 并完整保留 `settings/`。 |
 
-## 下载后打开哪个文件
+---
 
-下载发布附件中的 `DeskSend-<版本>-windows-x64.zip`，完整解压后打开 **`DeskSend.exe`**。
+## 工作原理与架构
 
-请保留同目录的 DLL、插件、翻译文件和 `localsend-cli.exe`。文件传输组件会自动启动，无需单独打开，也不用另外安装 LocalSend。源码 ZIP 面向开发者，日常使用下载 Windows 完整包即可。
+DeskSend 在运行时协调桌面界面、键鼠共享核心以及后台 LocalSend 文件收发组件协同工作：
 
-## 第一次使用
+```mermaid
+flowchart LR
+  subgraph S["主机 Server"]
+    SGUI["DeskSend.exe<br/>(GUI 与状态展示)"]
+    SCORE["deskflow-core.exe<br/>(键鼠共享 + FileDropBridge)"]
+    SCLI["localsend-cli.exe<br/>(headless send)"]
+    SGUI <--> SCORE
+    SCORE -->|"--pin-stdin / --paths-stdin"| SCLI
+  end
 
-准备两台处在同一局域网中的 Windows 电脑，并在两端使用同一个版本的完整包。
+  subgraph C["副机 Client"]
+    CGUI["DeskSend.exe<br/>(GUI 与状态展示)"]
+    CCORE["deskflow-core.exe<br/>(键鼠接收 + FileDropBridge + 落点解析)"]
+    CCLI["localsend-cli.exe<br/>(receive --auth-stdin)"]
+    CGUI <--> CCORE
+    CCORE -->|"GRANT / REVOKE"| CCLI
+  end
 
-1. **主机 Server**：连接键盘、鼠标的电脑。打开 DeskSend，选择“使用此计算机的键盘和鼠标”，进入“配置服务器”，添加副机，并把屏幕排在实际相对位置。屏幕名称应与副机界面显示的计算机名一致。
-2. **副机 Client**：打开 DeskSend，选择“使用另一台计算机的鼠标和键盘”，填写主机的局域网 IPv4 地址。
-3. 启动两端。首次连接如出现证书确认，请核对两端显示的指纹后再信任。
-4. 将鼠标移到配置的屏幕边缘，确认可以在两台电脑之间移动和操作。
+  SCORE <-->|"TCP 24800<br/>控制流 / TLS / DESKSEND_CANCEL"| CCORE
+  SCLI -->|"TCP 53318<br/>LocalSend 文件传输流"| CCLI
+```
 
-主机默认接收键鼠连接的端口为 **TCP 24800**，副机接收文件的端口为 **TCP 53318**，需要防火墙允许。详细配置和排查方法见[使用指南](docs/使用指南.md)。
+| 组件 / 端口 | 职责说明 |
+| --- | --- |
+| `DeskSend.exe` | 桌面主界面、托盘、系统设置与内建更新器。 |
+| `deskflow-core.exe` | 跨屏键鼠核心与 `FileDropBridge`（捕获拖拽、分发授权令牌、解析副机落点并触发文件回退）。 |
+| `localsend-cli.exe` | 随包附带的后台 LocalSend 文件发送/接收进程，由核心按需拉起，无需手动运行。 |
+| `TCP 24800` | 主机默认键鼠共享及 DeskSend 控制信令端口（需主机入站放行）。 |
+| `TCP 53318` | 副机默认 `localsend-cli` 接收端口（需副机入站放行）。 |
 
-## 怎样传文件
+> 部分内部二进制名、配置文件路径与常量（如 `deskflow-core.exe`、`settings/Deskflow.conf`、`settings/tls/`、`kOrgDomain`）保留 Deskflow 名称，用于维持便携模式检测与历史配置兼容性，请勿手动改名。
 
-1. 在主机桌面或资源管理器中选中文件或文件夹，按住鼠标左键拖动。
-2. 拖向副机所在方向的屏幕边缘，跨屏后在副机桌面或打开的资源管理器文件夹中松手。
-3. DeskSend 自动传输，并显示进度和完成或失败状态。主机的源文件保留。
+---
 
-支持多文件和嵌套文件夹。松手前按 Esc 或拖回主机可以取消拖拽；开始传输后可以把鼠标移回主机，文件继续发送。落点不是桌面或资源管理器时，会使用默认接收目录和文件剪贴板回退，详见[文件落点说明](docs/使用指南.md#文件落点)。
+## 快速开始（Windows x64）
 
-## 更新与保留配对
+### 1. 下载与解压
 
-在“帮助 → 检查 DeskSend 更新”中检查版本，下载后选择“安装并重启”。更新包包含键鼠共享和文件传输组件，会校验 SHA-256、备份待覆盖的程序文件，并保留整个 `settings` 目录。
+1. 前往 [GitHub Releases](https://github.com/wtyLaziness/desksend/releases/latest)（应用内更新通道对应 [desksend-releases](https://github.com/wtyLaziness/desksend-releases/releases/latest)）下载 **`DeskSend-<版本>-windows-x64.zip`**。
+2. 将压缩包**完整解压到一个可写目录**，再运行 **`DeskSend.exe`**。
+3. 切勿在压缩包预览中直接运行，也不要单独复制 EXE；请保留同目录下的 `localsend-cli.exe`、`deskflow-core.exe`、Qt DLL、插件与 `translations/`。`DeskSend-<版本>-source.zip` 为对应版本的源码归档。
 
-手动换包时，先退出旧程序，将完整包解压到新目录，再把旧目录的整个 **`settings` 文件夹**复制到新目录，覆盖默认设置后运行 `DeskSend.exe`。保留这些文件可继续使用原配置、证书和配对。不要只替换一个 EXE，也不要清空设置来处理普通更新问题。
+### 2. 配置主机与副机
 
-更新查询需要访问 GitHub；网络不通或接口限流时可以稍后重试，也可从[发布页](https://github.com/wtyLaziness/desksend-releases/releases/latest)下载完整包。
+两台 Windows 电脑接入同一可互访局域网，并使用相同版本：
 
-## 当前范围
+1. **主机（Server，连接物理键鼠的电脑）**：
+   - 打开 `DeskSend.exe`，选择“使用此计算机的键盘和鼠标”。
+   - 进入“配置服务器”，添加副机屏幕并按实际方位放置，屏幕名称需与副机界面显示的计算机名一致。
+   - 点击启动。若开启防火墙，放行入站 **`TCP 24800`**。
+2. **副机（Client）**：
+   - 打开 `DeskSend.exe`，选择“使用另一台计算机的鼠标和键盘”。
+   - 填入主机的局域网 IPv4 地址（切勿填写 `127.0.0.1`）并启动。放行入站 **`TCP 53318`**。
+3. **完成配对**：首次启用 TLS 连接出现证书指纹确认时，请核对两端指纹一致后再信任；随后将鼠标移过配置好的屏幕边缘验证跨屏操作。
 
-- 文件拖拽传输方向为 **Server → Client**。
-- 空文件夹不会被传输。
-- 单次拖动大量文件可能受 Windows 命令行长度限制。
-- 便携版没有系统服务，不能控制 Windows 登录界面或 UAC 安全桌面。
-- 副机保持运行时会等待主机并尝试重连；主机关闭后无需反复重启副机。
+### 3. 跨屏传输文件
 
-1.0.1 已验证真实双机文件传输与中文界面，并有自动化回归覆盖多文件、嵌套文件夹、32 MiB 文件、拖拽取消、传输中回主机和断线重连。更多电脑和网络环境仍欢迎验证。
+1. 在主机桌面或资源管理器中选中一个或多个文件/文件夹，按住鼠标左键拖动。
+2. 拖向副机所在方向的屏幕边缘，跨屏进入副机桌面或已打开的资源管理器文件夹窗口后松手。
+3. DeskSend 自动完成传输并在界面显示进度与结果；源文件仍保留在主机。开始传输后即可把鼠标移回主机继续操作。
 
-## 源码结构
+常见异常排查与详细说明（端口测试、落点规则、语言设置、防火墙建议）请见 [详细使用指南](docs/使用指南.md)。
+
+---
+
+## 更新与配置保留
+
+- **应用内更新**：点击菜单 **“帮助 → 检查 DeskSend 更新”**（英文界面为 `Help → 检查 DeskSend 更新…`），下载校验通过后点击 **“安装并重启”**。程序会在退出后复核 ZIP 哈希与 `desksend-build.json` 文件清单、将待覆盖文件备份至 `.desksend-backups/`，并完整保留 `settings/`（配置、证书、信任指纹）。
+- **手动升级或换目录迁移**：
+  1. 等待文件传输完成后退出旧版 DeskSend。
+  2. 将新版 `DeskSend-<版本>-windows-x64.zip` 完整解压到新目录。
+  3. 将旧目录中的整个 **`settings/` 文件夹** 复制到新目录，覆盖新包默认配置。
+  4. 运行新目录的 `DeskSend.exe`（若安装路径变化，注意同步更新防火墙允许规则）。
+
+更新协议与回滚细节见 [发布与更新说明](docs/发布与更新.md)。
+
+---
+
+## 当前能力边界
+
+- **运行平台与形态**：目前仅提供 **Windows x64 绿色便携版**。便携版不安装系统服务，因此无法接管 Windows 登录界面、锁屏或 UAC 安全桌面。
+- **拖拽传输方向**：当前仅支持 **主机（Server）→ 副机（Client）** 方向的跨屏文件拖拽传输。
+- **空目录处理**：保留多级嵌套目录结构，但纯空文件夹或空子目录会被忽略，不会在目标端创建空目录。
+- **离线/重启重连**：主机关闭或重启后，保持运行的副机将自动等待重连（包含 mTLS 重连）。
+
+---
+
+## 仓库结构与开发者入口
 
 | 路径 | 内容 |
 | --- | --- |
-| `deskflow-master/` | 键鼠共享核心、DeskSend 界面、跨屏拖拽桥接和更新窗口 |
-| `localsend-main/cli/` | 后台文件发送与接收组件 |
-| `localsend-main/packages/core/` | LocalSend 协议实现 |
-| `phase0/` | 自动化回归、产品检查和完整包组装脚本 |
-| `.github/workflows/` | Windows 构建、传输和拖拽回归工作流 |
+| [`deskflow-master/`](deskflow-master/) | DeskSend GUI、`deskflow-core`、跨屏拖拽桥接 `FileDropBridge`、内建更新器与版本定义 [`DeskSendVersion.cmake`](deskflow-master/cmake/DeskSendVersion.cmake)。 |
+| [`localsend-main/`](localsend-main/) | 精简后的 Rust 工作区，仅保留后台文件收发进程 [`cli/`](localsend-main/cli/) 与 LocalSend 协议实现 [`packages/core/`](localsend-main/packages/core/)。 |
+| [`scripts/`](scripts/) | 完整发布包、对应源码归档与 `SHA256SUMS.txt` 组装脚本 [`package-release.py`](scripts/package-release.py)。 |
+| [`tests/`](tests/) | 便携更新器自测 [`update-test.ps1`](tests/update-test.ps1)、品牌检查 [`branding-test.ps1`](tests/branding-test.ps1)、双角色拖拽回环 E2E [`loopback-test.ps1`](tests/loopback-test.ps1) 及代理脚本 [`input-proxy.py`](tests/input-proxy.py) / [`slow-proxy.py`](tests/slow-proxy.py)。 |
+| [`docs/`](docs/) | [使用指南](docs/使用指南.md)、[构建与发布说明](docs/构建与发布.md) 与 [发布与更新说明](docs/发布与更新.md)。 |
+| [`.github/workflows/`](.github/workflows/) | `deskflow-win`（C++ 构建/单测/更新验证）、`localsend-cli-win`（Rust 构建/单测/32 MiB 收发验证）、`e2e-loopback`（常规/mTLS/取消/回切跨屏回环 E2E）。 |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | 本地开发环境、单元测试与 E2E 运行命令、工程约定与 PR 要求。 |
 
-界面程序、键鼠核心与文件传输组件是不同进程，由 DeskSend 统一启动和更新。部分内部文件名、配置名和协议标识保留 Deskflow 名称，用于兼容已有设置。
+想从源码构建或提交 PR，请先阅读 [构建与发布](docs/构建与发布.md) 与 [贡献指南](CONTRIBUTING.md)。
 
-## 参与改进
-
-请先阅读[贡献说明](CONTRIBUTING.md)。报告问题时说明版本、主副机角色、复现步骤和错误信息；分享日志前移除证书、密钥、令牌以及不希望公开的地址和文件路径。
+---
 
 ## 许可证与致谢
 
-- [Deskflow](https://github.com/deskflow/deskflow) 及相关改动：`GPL-2.0-only WITH LicenseRef-OpenSSL-Exception`。
-- [LocalSend](https://github.com/localsend/localsend) 及相关改动：`Apache-2.0`。
-
-其他组件和脚本按各自许可证或 SPDX 标识提供，保留原作者的版权声明。完整说明见[许可证索引](LICENSE.md)。公开发布仓库提供每个版本的对应构建源码、程序包和校验文件。
+- **Deskflow 键鼠共享核心、GUI 及对应修改**：`GPL-2.0-only WITH LicenseRef-OpenSSL-Exception`（[GPLv2](deskflow-master/LICENSE)、[OpenSSL 链接例外](deskflow-master/LICENSES/LicenseRef-OpenSSL-Exception.txt)）
+- **LocalSend 文件传输组件及对应修改**：`Apache-2.0`（[LocalSend LICENSE](localsend-main/LICENSE)）
+- **构建与测试辅助脚本**：按各文件头部 SPDX 声明或上游原始许可提供，完整许可说明见 [许可证索引](LICENSE.md)。

@@ -1,9 +1,0 @@
-[Desktop Entry]
-Name=LocalSend
-Exec=localsend_app
-Icon=localsend
-Type=Application
-Terminal=false
-Categories=Utility;
-Comment=
-StartupWMClass=org.localsend.localsend_app

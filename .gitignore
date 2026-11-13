@@ -1,5 +1,6 @@
 deskflow-bin/
-phase0/bin/
+tests/bin/
+/deskflow-master/build/
 
 # 本机运行设置、生成文件与私密材料；源码中的 settings 页面不受影响。
 /settings/

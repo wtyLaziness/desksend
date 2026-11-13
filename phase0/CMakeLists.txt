@@ -1,6 +1,0 @@
-cmake_minimum_required(VERSION 3.16)
-project(desksend_phase0 CXX)
-set(CMAKE_CXX_STANDARD 17)
-add_executable(sentinel sentinel.cpp)
-target_compile_definitions(sentinel PRIVATE UNICODE _UNICODE)
-target_link_libraries(sentinel PRIVATE ole32 shell32 user32 uuid)
