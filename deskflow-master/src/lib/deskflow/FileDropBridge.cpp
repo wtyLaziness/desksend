@@ -1674,7 +1674,8 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
       {
         std::scoped_lock lock(m_mutex);
         const uint64_t now = nowMs();
-        while (!m_pendingDropTargets.empty() && (now - m_pendingDropTargets.front().timestampMs > 300000)) {
+        while (!m_pendingDropTargets.empty() && now >= m_pendingDropTargets.front().timestampMs &&
+               (now - m_pendingDropTargets.front().timestampMs > 300000)) {
           m_pendingDropTargets.pop_front();
         }
         m_lastResolvedDropDir = resolved;
@@ -1729,7 +1730,8 @@ void FileDropBridge::handleReceiveSessionStarted(size_t expectedFiles, const std
   {
     std::scoped_lock lock(m_mutex);
     const uint64_t now = nowMs();
-    while (!m_pendingDropTargets.empty() && (now - m_pendingDropTargets.front().timestampMs > 300000)) {
+    while (!m_pendingDropTargets.empty() && now >= m_pendingDropTargets.front().timestampMs &&
+           (now - m_pendingDropTargets.front().timestampMs > 300000)) {
       m_pendingDropTargets.pop_front();
     }
     m_activeSessionPlacedFiles.clear();

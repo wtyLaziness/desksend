@@ -9,6 +9,8 @@
 #include <QTemporaryDir>
 #include <QtTest>
 
+#include <chrono>
+
 namespace {
 
 class MockDragClientProxy final : public BaseClientProxy
@@ -177,10 +179,16 @@ private Q_SLOTS:
     QTemporaryDir dirA, dirB, dirC, fallback;
     QVERIFY(dirA.isValid() && dirB.isValid() && dirC.isValid() && fallback.isValid());
 
+    const auto steadyNowMs = []() -> uint64_t {
+      using namespace std::chrono;
+      return static_cast<uint64_t>(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+    };
+
     auto &bridge = deskflow::FileDropBridge::instance();
     bridge.stopReceiver();
     {
       std::scoped_lock lock(bridge.m_mutex);
+      bridge.m_receiverDesired = true;
       bridge.m_defaultDropFallbackDir = fallback.path().toStdString();
     }
     bridge.onClientReceiveDragInfo(1, "DESKSEND_DROP:999999,999999:" + tagA);
@@ -189,8 +197,9 @@ private Q_SLOTS:
       QCOMPARE(bridge.m_pendingDropTargets.size(), size_t{1});
       QCOMPARE(bridge.m_pendingDropTargets.back().tokenTag, tagA);
       bridge.m_pendingDropTargets.back().dir = dirA.path().toStdString();
-      bridge.m_pendingDropTargets.push_back({dirB.path().toStdString(), true, 1000000001ULL, tagB});
-      bridge.m_pendingDropTargets.push_back({dirC.path().toStdString(), false, 1000000002ULL, tagC});
+      const uint64_t t = steadyNowMs();
+      bridge.m_pendingDropTargets.push_back({dirB.path().toStdString(), true, t, tagB});
+      bridge.m_pendingDropTargets.push_back({dirC.path().toStdString(), false, t, tagC});
     }
 
     // Cancel token A only: removes tag A while leaving tag B and tag C intact
@@ -202,8 +211,8 @@ private Q_SLOTS:
       QCOMPARE(bridge.m_pendingDropTargets[1].tokenTag, tagC);
       QVERIFY(!bridge.m_pendingReceiverAuthLines.empty());
       QCOMPARE(bridge.m_pendingReceiverAuthLines.back(), std::string("REVOKE " + tokenA));
-      // Refresh timestamps relative to current time so neither expires
-      const uint64_t now = static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch());
+      // Refresh timestamps relative to steady_clock so neither expires
+      const uint64_t now = steadyNowMs();
       bridge.m_pendingDropTargets[0].timestampMs = now;
       bridge.m_pendingDropTargets[1].timestampMs = now;
     }
