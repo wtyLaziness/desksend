@@ -11,7 +11,6 @@
     <a href="docs/使用指南.md">详细使用指南</a> ·
     <a href="docs/构建与发布.md">构建与发布</a> ·
     <a href="docs/发布与更新.md">发布与更新说明</a> ·
-    <a href="CONTRIBUTING.md">参与贡献</a> ·
     <a href="LICENSE.md">许可证</a>
   </p>
 </div>
@@ -132,9 +131,8 @@ flowchart LR
 | [`scripts/`](scripts/) | 完整发布包、对应源码归档与 `SHA256SUMS.txt` 组装脚本 [`package-release.py`](scripts/package-release.py)。 |
 | [`docs/`](docs/) | [使用指南](docs/使用指南.md)、[构建与发布说明](docs/构建与发布.md) 与 [发布与更新说明](docs/发布与更新.md)。 |
 | [`.github/workflows/`](.github/workflows/) | `deskflow-win`（C++ 构建/单测与打包）与 `localsend-cli-win`（Rust 构建/单测与打包）。 |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | 本地开发环境、构建与单元测试命令、工程约定与 PR 要求。 |
 
-想从源码构建或提交 PR，请先阅读 [构建与发布](docs/构建与发布.md) 与 [贡献指南](CONTRIBUTING.md)。
+想从源码构建或打包发布，请先阅读 [构建与发布](docs/构建与发布.md)。
 
 ---
 
