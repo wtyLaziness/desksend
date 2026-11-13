@@ -381,7 +381,11 @@ void MainWindow::trayIconActivated(QSystemTrayIcon::ActivationReason reason)
 {
   if (reason != QSystemTrayIcon::Trigger)
     return;
-  isVisible() ? hide() : showAndActivate();
+  if (!isVisible() || isMinimized()) {
+    showAndActivate();
+  } else {
+    hide();
+  }
 }
 
 void MainWindow::coreProcessError(CoreProcess::Error error)
@@ -725,6 +729,7 @@ void MainWindow::setupTrayIcon()
   trayMenu->insertSeparator(m_actionMinimize);
   trayMenu->insertSeparator(m_actionTrayQuit);
   m_trayIcon->setContextMenu(trayMenu);
+  m_trayIcon->setToolTip(kAppName);
 
   setTrayIcon();
   m_trayIcon->show();
@@ -938,6 +943,12 @@ void MainWindow::closeEvent(QCloseEvent *event)
   // disconnect them before accepting the event
   disconnect(m_logDock->toggleViewAction(), &QAction::toggled, nullptr, nullptr);
 
+  if (m_trayIcon) {
+    m_trayIcon->hide();
+  }
+  QMainWindow::hide();
+  m_coreProcess.cleanup();
+
   event->accept();
   QApplication::quit();
 }
@@ -948,7 +959,7 @@ bool MainWindow::confirmInterruptActiveTransfers()
     return true;
   }
   const auto answer = QMessageBox::question(
-      this, kAppName,
+      isVisible() ? this : nullptr, kAppName,
       tr("File transfers are currently in progress. Stopping or quitting now will interrupt them.\nAre you sure you want to continue?"),
       QMessageBox::Yes | QMessageBox::No, QMessageBox::No
   );

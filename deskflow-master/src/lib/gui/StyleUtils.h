@@ -54,8 +54,9 @@ inline void updateIconTheme()
 inline QFont fixedFont()
 {
 #if defined(Q_OS_WIN)
-  QFont f({"Hack", "Liberation Mono", "Monospace", "Andale Mono"});
-  f.setStyleHint(QFont::Monospace);
+  QFont f({QStringLiteral("Consolas"), QStringLiteral("Cascadia Mono"), QStringLiteral("Courier New"), QStringLiteral("Lucida Console")});
+  f.setStyleHint(QFont::TypeWriter);
+  f.setFixedPitch(true);
 #else
   QFont f = QFontDatabase::systemFont(QFontDatabase::FixedFont);
 #endif

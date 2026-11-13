@@ -17,6 +17,8 @@
 #include <QProcess>
 #include <QTimer>
 
+class CoreProcessTests;
+
 namespace deskflow::gui {
 
 namespace ipc {
@@ -26,6 +28,7 @@ class DaemonIpcClient;
 
 class CoreProcess : public QObject
 {
+  friend class ::CoreProcessTests;
   using ConnectionState = deskflow::core::ConnectionState;
   using ProcessMode = Settings::ProcessMode;
   using ProcessState = deskflow::core::ProcessState;
@@ -39,6 +42,7 @@ public:
   };
 
   explicit CoreProcess(const ServerConfig &serverConfig);
+  ~CoreProcess() override;
 
   void start(std::optional<ProcessMode> processMode = std::nullopt);
   void stop(std::optional<ProcessMode> processMode = std::nullopt);
@@ -139,6 +143,11 @@ private:
   FileTail *m_daemonFileTail = nullptr;
   QProcess *m_process = nullptr;
   QString m_appPath;
+#ifdef Q_OS_WIN
+  bool attachToWinJobObject(qint64 pid);
+  void closeWinJobObject();
+  void *m_winJobHandle = nullptr;
+#endif
 };
 
 } // namespace deskflow::gui

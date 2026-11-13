@@ -17,3 +17,10 @@ create_test(
   SOURCE LoggerTests.cpp
   WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/gui"
 )
+
+create_test(
+  NAME StyleUtilsTests
+  DEPENDS gui
+  SOURCE StyleUtilsTests.cpp
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/gui"
+)

@@ -88,6 +88,16 @@ void IpcClient::disconnectFromServer()
   m_state = State::Unconnected;
 }
 
+void IpcClient::flush(int msecs)
+{
+  if (m_socket->state() == QLocalSocket::ConnectedState) {
+    m_socket->flush();
+    if (m_socket->bytesToWrite() > 0) {
+      m_socket->waitForBytesWritten(msecs);
+    }
+  }
+}
+
 void IpcClient::handleDisconnected()
 {
   if (m_state == State::Connecting) {

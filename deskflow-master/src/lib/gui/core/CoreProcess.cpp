@@ -20,6 +20,13 @@
 #include <sys/prctl.h>
 #endif
 
+#ifdef Q_OS_WIN
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -123,6 +130,14 @@ CoreProcess::CoreProcess(const ServerConfig &serverConfig)
   });
 }
 
+CoreProcess::~CoreProcess()
+{
+  cleanup();
+#ifdef Q_OS_WIN
+  closeWinJobObject();
+#endif
+}
+
 void CoreProcess::onProcessReadyReadStandardOutput()
 {
   if (m_process) {
@@ -149,8 +164,8 @@ void CoreProcess::checkExistingProcess()
 
   auto *client = new ipc::CoreIpcClient(this);
   connect(client, &ipc::CoreIpcClient::connected, this, [client] {
-    qInfo("existing core has matching version, leaving it running");
-    client->deleteLater();
+    qInfo("existing core has matching version, asking it to stop so GUI can take ownership");
+    client->sendStop();
   });
   connect(client, &ipc::CoreIpcClient::versionMismatch, this, [client] {
     qInfo("existing core has mismatched version, asking it to stop");
@@ -236,6 +251,9 @@ void CoreProcess::startForegroundProcess(const QStringList &args)
   m_process->start(m_appPath, args);
 
   if (m_process->waitForStarted()) {
+#ifdef Q_OS_WIN
+    attachToWinJobObject(m_process->processId());
+#endif
     setProcessState(Started);
   } else {
     setProcessState(Stopped);
@@ -303,7 +321,11 @@ void CoreProcess::stopForegroundProcess()
       }
 
       if (m_process && m_process->state() == QProcess::ProcessState::Running) {
+#ifdef Q_OS_WIN
+        m_process->kill();
+#else
         m_process->terminate();
+#endif
       }
     });
     return;
@@ -311,7 +333,11 @@ void CoreProcess::stopForegroundProcess()
 
   if (m_process->state() == QProcess::ProcessState::Running) {
     qDebug("process is running, terminating");
+#ifdef Q_OS_WIN
+    m_process->kill();
+#else
     m_process->terminate();
+#endif
   } else {
     qDebug("process is not running, skipping terminate");
   }
@@ -580,14 +606,105 @@ void CoreProcess::restart()
 
 void CoreProcess::cleanup()
 {
-  qInfo("cleaning up core process");
+  m_retryTimer.stop();
 
   const auto isDesktop = Settings::value(Settings::Core::ProcessMode).value<ProcessMode>() == ProcessMode::Desktop;
-  const auto isRunning = m_processState == ProcessState::Started;
-  if (isDesktop && isRunning) {
-    stop();
+  const bool hasChildProcess = m_process && m_process->state() != QProcess::NotRunning;
+  if (!isDesktop && !hasChildProcess) {
+    return;
+  }
+
+  if (!hasChildProcess && !m_coreIpcClient && m_processState == ProcessState::Stopped &&
+      m_connectionState == ConnectionState::Disconnected) {
+    return;
+  }
+
+  qInfo("cleaning up core process");
+
+  if (m_process) {
+    disconnect(m_process, nullptr, this, nullptr);
+  }
+
+  if (hasChildProcess) {
+    bool shouldWaitForGracefulExit = m_processState == ProcessState::Stopping;
+    if (m_coreIpcClient && m_coreIpcClient->isConnected()) {
+      qDebug("sending synchronous stop to core process");
+      m_coreIpcClient->sendStop();
+      m_coreIpcClient->flush(500);
+      shouldWaitForGracefulExit = true;
+    }
+
+    if (!shouldWaitForGracefulExit) {
+      qDebug("killing core process without active ipc");
+      m_process->kill();
+      m_process->waitForFinished(1000);
+    } else if (!m_process->waitForFinished(2000)) {
+      qWarning("core process did not exit gracefully during cleanup, forcing kill");
+      m_process->kill();
+      m_process->waitForFinished(1000);
+    }
+  }
+
+  if (m_coreIpcClient) {
+    disconnect(m_coreIpcClient, nullptr, this, nullptr);
+    m_coreIpcClient->disconnectFromServer();
+    m_coreIpcClient->deleteLater();
+    m_coreIpcClient = nullptr;
+  }
+
+  m_hasActiveFileTransfers = false;
+  setProcessState(ProcessState::Stopped);
+  setConnectionState(ConnectionState::Disconnected);
+}
+
+#ifdef Q_OS_WIN
+bool CoreProcess::attachToWinJobObject(qint64 pid)
+{
+  if (pid <= 0) {
+    return false;
+  }
+
+  if (!m_winJobHandle) {
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (!job) {
+      qWarning("failed to create Windows job object (error %lu)", GetLastError());
+      return false;
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = {};
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, sizeof(info))) {
+      qWarning("failed to configure Windows job object (error %lu)", GetLastError());
+      CloseHandle(job);
+      return false;
+    }
+    m_winJobHandle = job;
+  }
+
+  HANDLE childProcess = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));
+  if (!childProcess) {
+    qWarning("failed to open core process %lld for job assignment (error %lu)", pid, GetLastError());
+    return false;
+  }
+
+  const bool assigned = AssignProcessToJobObject(static_cast<HANDLE>(m_winJobHandle), childProcess) != FALSE;
+  if (!assigned) {
+    DWORD exitCode = 0;
+    if (GetExitCodeProcess(childProcess, &exitCode) && exitCode == STILL_ACTIVE) {
+      qWarning("failed to assign core process %lld to job object (error %lu)", pid, GetLastError());
+    }
+  }
+  CloseHandle(childProcess);
+  return assigned;
+}
+
+void CoreProcess::closeWinJobObject()
+{
+  if (m_winJobHandle) {
+    CloseHandle(static_cast<HANDLE>(m_winJobHandle));
+    m_winJobHandle = nullptr;
   }
 }
+#endif
 
 QPair<bool, QString> CoreProcess::persistServerConfig() const
 {

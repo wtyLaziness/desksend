@@ -29,6 +29,7 @@ public:
   explicit IpcClient(QObject *parent, const QString &socketName, const QString &typeName);
   void connectToServer();
   void disconnectFromServer();
+  void flush(int msecs = 500);
 
   bool isConnected() const
   {
