@@ -6,7 +6,7 @@
 
 DeskSend 将 Deskflow 的键鼠共享与 LocalSend 的局域网文件传输整合在一个界面和完整便携包中。目前发布 Windows x64 版本。
 
-**[下载最新完整包](https://github.com/wtyLaziness/desksend-releases/releases/latest)** · [详细使用方法](docs/使用指南.md) · [构建与发布](docs/构建与发布.md) · [许可证](LICENSE.md)
+**[下载最新完整包](https://github.com/wtyLaziness/desksend/releases/latest)** · [详细使用方法](docs/使用指南.md) · [构建与发布](docs/构建与发布.md) · [许可证](LICENSE.md)
 
 ## 下载后打开哪个文件
 
