@@ -24,6 +24,10 @@ pub enum Command {
         #[arg(long, value_name = "TEXT", requires = "to", conflicts_with = "paths")]
         text: Option<String>,
 
+        /// Read the one-time transfer authorization PIN/token from the first line of stdin
+        #[arg(long, requires = "to", conflicts_with = "text")]
+        pin_stdin: bool,
+
         /// Files or directories to send (directories are collected recursively)
         #[arg(value_name = "PATH", required_unless_present = "text", num_args = 1..)]
         paths: Vec<PathBuf>,
@@ -33,6 +37,10 @@ pub enum Command {
         /// Automatically accept incoming transfers from this IP (comma-separated, or `*` for any)
         #[arg(long, value_name = "IP")]
         auto_accept_from: Option<String>,
+
+        /// Require one-time authorization tokens on stdin (`GRANT <token>` / `REVOKE <token>`)
+        #[arg(long)]
+        auth_stdin: bool,
     },
 }
 

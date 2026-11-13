@@ -14,6 +14,7 @@ use localsend::discovery::{DiscoveryEvent, DiscoveryHandle};
 use localsend::http::server::common::save::FileUploadTarget;
 use localsend::http::server::v2::{PrepareUploadDecisionV2, ServerEventV2, SessionEndReasonV2};
 use std::collections::{HashMap, HashSet};
+use std::io::BufRead;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,6 +26,7 @@ pub(super) async fn run(
     mut storage: Repository,
     target: TargetSelector,
     payload: Payload,
+    pin: Option<String>,
 ) -> anyhow::Result<()> {
     let mut ui = Ui::new();
     let identity = storage.identity.clone();
@@ -75,7 +77,15 @@ pub(super) async fn run(
             AppEvent::Tick => render_progress(&mut ui, &mut send),
             AppEvent::Log { category, text } => ui.log(category, &text),
             AppEvent::DiscoveryFinished => {
-                match start_send(&mut ui, &storage, &discovery, &target, &payload, &events_tx) {
+                match start_send(
+                    &mut ui,
+                    &storage,
+                    &discovery,
+                    &target,
+                    &payload,
+                    pin.clone(),
+                    &events_tx,
+                ) {
                     Ok(state) => send = Some(state),
                     Err(reason) => break Err(anyhow::anyhow!(reason)),
                 }
@@ -117,6 +127,7 @@ fn start_send(
     discovery: &DiscoveryHandle,
     target: &TargetSelector,
     payload: &Payload,
+    pin: Option<String>,
     events_tx: &mpsc::Sender<AppEvent>,
 ) -> Result<SendState, String> {
     let fingerprint = target.resolve(&discovery.devices())?;
@@ -134,6 +145,7 @@ fn start_send(
             storage.identity.clone(),
             device,
             paths.clone(),
+            pin,
             events_tx.clone(),
         ),
         Payload::Text(text) => sending::spawn_send_text(
@@ -141,6 +153,7 @@ fn start_send(
             storage.identity.clone(),
             device,
             text.clone(),
+            pin,
             events_tx.clone(),
         ),
     }
@@ -305,10 +318,33 @@ fn is_ip_allowed(ip_str: &str, allow_spec: Option<&str>, paired_contains: bool) 
     })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum AuthCommand {
+    Grant(String),
+    Revoke(String),
+}
+
+fn parse_auth_command(line: &str) -> Option<AuthCommand> {
+    let trimmed = line.trim();
+    if let Some(token) = trimmed.strip_prefix("GRANT ") {
+        let token = token.trim();
+        if !token.is_empty() {
+            return Some(AuthCommand::Grant(token.to_string()));
+        }
+    } else if let Some(token) = trimmed.strip_prefix("REVOKE ") {
+        let token = token.trim();
+        if !token.is_empty() {
+            return Some(AuthCommand::Revoke(token.to_string()));
+        }
+    }
+    None
+}
+
 /// Runs the CLI in headless receive mode (no TTY/raw mode required).
 pub(super) async fn run_receive(
     storage: Repository,
     auto_accept_from: Option<String>,
+    auth_stdin: bool,
 ) -> anyhow::Result<()> {
     let identity = storage.identity.clone();
     let (events_tx, mut events_rx) = mpsc::channel::<AppEvent>(64);
@@ -322,6 +358,27 @@ pub(super) async fn run_receive(
         discovery_stop_tx,
     } = start_network(&identity).await?;
 
+    let mut auth_rx = if auth_stdin {
+        server.enable_v2_token_gate().await;
+        let (tx, rx) = mpsc::channel::<AuthCommand>(64);
+        std::thread::spawn(move || {
+            let stdin = std::io::stdin();
+            for line in std::io::BufReader::new(stdin.lock()).lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                if let Some(cmd) = parse_auth_command(&line)
+                    && tx.blocking_send(cmd).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        Some(rx)
+    } else {
+        None
+    };
+
     println!("LOCALSEND_RECEIVER_READY port={} dest={}", identity.port, storage.destination.display());
 
     let mut active_sessions: HashSet<String> = HashSet::new();
@@ -332,6 +389,24 @@ pub(super) async fn run_receive(
 
     loop {
         tokio::select! {
+            auth_cmd = async {
+                match auth_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match auth_cmd {
+                    Some(AuthCommand::Grant(token)) => {
+                        server.grant_v2_token(token).await;
+                    }
+                    Some(AuthCommand::Revoke(token)) => {
+                        server.revoke_v2_token(&token).await;
+                    }
+                    None => {
+                        auth_rx = None;
+                    }
+                }
+            }
             _ = tick.tick() => {
                 for (sid, state) in &progress {
                     state.report(sid);
@@ -358,10 +433,13 @@ pub(super) async fn run_receive(
                         files,
                         decision_tx,
                     } => {
+                        let has_client_cert = cert_fingerprint.is_some();
                         let fp = cert_fingerprint.unwrap_or_else(|| info.fingerprint.clone());
-                        let paired = storage.paired.contains(&fp);
+                        let paired = !auth_stdin && storage.paired.contains(&fp);
                         let ip_str = ip.to_string();
-                        if is_ip_allowed(&ip_str, auto_accept_from.as_deref(), paired) {
+                        let authorized = (!auth_stdin || has_client_cert)
+                            && is_ip_allowed(&ip_str, auto_accept_from.as_deref(), paired);
+                        if authorized {
                             let ids: HashSet<String> = files.keys().cloned().collect();
                             if decision_tx.send(PrepareUploadDecisionV2::Accept(ids)).is_ok() {
                                 println!("RECEIVE_SESSION_STARTED:{}:{}:{}", session_id, ip, files.len());
@@ -477,5 +555,25 @@ pub(super) async fn run_receive(
 
     stop_network(&server, Some(server_stop_tx), &discovery, discovery_stop_tx).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AuthCommand, parse_auth_command};
+
+    #[test]
+    fn parse_auth_command_handles_valid_and_invalid_lines() {
+        assert_eq!(
+            parse_auth_command("GRANT deadbeef0123\r\n"),
+            Some(AuthCommand::Grant("deadbeef0123".to_string()))
+        );
+        assert_eq!(
+            parse_auth_command("  REVOKE abc  "),
+            Some(AuthCommand::Revoke("abc".to_string()))
+        );
+        assert_eq!(parse_auth_command("GRANT   "), None);
+        assert_eq!(parse_auth_command("REVOKE"), None);
+        assert_eq!(parse_auth_command("UNKNOWN abc"), None);
+    }
 }
 

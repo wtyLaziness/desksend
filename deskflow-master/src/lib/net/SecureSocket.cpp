@@ -65,12 +65,14 @@ SecureSocket::SecureSocket(
 
 SecureSocket::~SecureSocket()
 {
+  getEvents()->removeHandler(EventTypes::DataSocketConnected, getEventTarget());
   freeSSL();
   free(m_writeStaticBuffer);
 }
 
 void SecureSocket::close()
 {
+  getEvents()->removeHandler(EventTypes::DataSocketConnected, getEventTarget());
   freeSSL();
   TCPSocket::close();
 }
@@ -387,6 +389,8 @@ void SecureSocket::freeSSL()
   std::scoped_lock ssl_lock{ssl_mutex_};
 
   isFatal(true);
+  m_retry = 0;
+  m_secureReady = false;
   if (m_ssl) {
     if (m_ssl->m_ssl != nullptr) {
       SSL_set_quiet_shutdown(m_ssl->m_ssl, 1);
@@ -415,23 +419,21 @@ int SecureSocket::secureAccept(int socket)
   LOG_VERBOSE("accepting secure socket");
   int r = SSL_accept(m_ssl->m_ssl);
 
-  static int retry;
-
-  checkResult(r, retry);
+  checkResult(r, m_retry);
 
   if (isFatal()) {
     // Never block here; this thread services every connected socket.
     // Historically a 1s sleep let any failed handshake DoS all clients.
     LOG_ERR("failed to accept secure socket");
     m_secureReady = false;
-    retry = 0;
+    m_retry = 0;
     return -1; // Fail
   }
 
   // If not fatal and no retry, state is good
-  if (retry == 0) {
+  if (m_retry == 0) {
     if (m_securityLevel == SecurityLevel::PeerAuth && !verifyCertFingerprint(Settings::tlsTrustedClientsDb())) {
-      retry = 0;
+      m_retry = 0;
       disconnect();
       return -1; // Fail
     }
@@ -443,7 +445,7 @@ int SecureSocket::secureAccept(int socket)
   }
 
   // If not fatal and retry is set, not ready, and return retry
-  if (retry > 0) {
+  if (m_retry > 0) {
     LOG_VERBOSE("retry accepting secure socket");
     m_secureReady = false;
     return 0;
@@ -473,24 +475,22 @@ int SecureSocket::secureConnect(int socket)
 
   int r = SSL_connect(m_ssl->m_ssl);
 
-  static int retry;
-
-  checkResult(r, retry);
+  checkResult(r, m_retry);
 
   if (isFatal()) {
     LOG_ERR("failed to connect secure socket");
-    retry = 0;
+    m_retry = 0;
     return -1;
   }
 
   // If we should retry, not ready and return 0
-  if (retry > 0) {
+  if (m_retry > 0) {
     LOG_VERBOSE("retry connect secure socket");
     m_secureReady = false;
     return 0;
   }
 
-  retry = 0;
+  m_retry = 0;
   // No error, set ready, process and return ok
   m_secureReady = true;
   if (verifyCertFingerprint(Settings::tlsTrustedServersDb())) {
@@ -670,6 +670,7 @@ ISocketMultiplexerJob *SecureSocket::serviceConnect(ISocketMultiplexerJob *const
 
   // If status < 0, error happened
   if (status < 0) {
+    sendConnectionFailedEvent("TLS handshake failed");
     return nullptr;
   }
 

@@ -60,9 +60,20 @@ pub async fn run_send(
     sources: HashMap<String, FileSource>,
     progress: Arc<AtomicU64>,
     cancel: SendCancel,
+    pin: Option<String>,
     events: mpsc::Sender<AppEvent>,
 ) {
-    let success = send_inner(identity, device, files, sources, progress, cancel, &events).await;
+    let success = send_inner(
+        identity,
+        device,
+        files,
+        sources,
+        progress,
+        cancel,
+        pin.as_deref(),
+        &events,
+    )
+    .await;
     let _ = events.send(AppEvent::SendEnded { success }).await;
 }
 
@@ -73,6 +84,7 @@ async fn send_inner(
     mut sources: HashMap<String, FileSource>,
     progress: Arc<AtomicU64>,
     cancel: SendCancel,
+    pin: Option<&str>,
     events: &mpsc::Sender<AppEvent>,
 ) -> bool {
     let alias = sanitize::single_line(&device.device.alias);
@@ -126,7 +138,7 @@ async fn send_inner(
             http.port,
             None,
             payload,
-            None,
+            pin,
             cancel.token.clone(),
         )
         .await

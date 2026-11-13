@@ -80,6 +80,7 @@ private:
   {
     std::string targetIp;
     std::vector<std::string> files;
+    std::string authToken;
   };
 
   struct DropTargetEntry
@@ -92,8 +93,9 @@ private:
   FileDropBridge() = default;
   ~FileDropBridge();
 
-  void sendFilesViaLocalSend(const std::string &targetIp, const std::vector<std::string> &files);
+  void sendFilesViaLocalSend(const std::string &targetIp, const std::vector<std::string> &files, const std::string &authToken);
   void processNextSendJob();
+  void queueReceiverAuthCommand(const std::string &command);
   void handleReceivedFileLine(const std::string &filePath);
   void handleReceiveFileFailedLine();
   void handleReceiveSessionStarted(size_t expectedFiles);
@@ -107,6 +109,7 @@ private:
   bool m_sourceButtonNeedsRelease = false;
 
   std::vector<std::string> m_activeDragFiles;
+  std::string m_activeDragToken;
   BaseClientProxy *m_dragTargetClient = nullptr;
 
   // Server-side serial send queue
@@ -114,7 +117,9 @@ private:
   bool m_sendingInProgress = false;
 
   // Client-side drop target state & session queue
+  std::string m_defaultDropFallbackDir;
   std::string m_lastResolvedDropDir;
+  std::deque<std::string> m_pendingReceiverAuthLines;
   std::deque<DropTargetEntry> m_pendingDropTargets;
   DropTargetEntry m_activeSessionTarget;
   std::vector<std::string> m_activeSessionPlacedFiles;

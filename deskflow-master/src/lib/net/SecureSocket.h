@@ -95,6 +95,7 @@ private:
   std::unique_ptr<Ssl> m_ssl;
   bool m_secureReady = false;
   bool m_fatal = false;
+  int m_retry = 0;
   SecurityLevel m_securityLevel = SecurityLevel::Encrypted;
 
   bool m_writeRetry = false;

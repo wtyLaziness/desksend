@@ -28,6 +28,7 @@ use localsend::multicast::{DEFAULT_MULTICAST_GROUP, DEFAULT_MULTICAST_GROUP_V6, 
 use localsend::util::interface::{InterfaceFilter, local_interface_addresses};
 use receive::{Answer, PendingReceive, ReceiveSession};
 use sending::{Payload, SendState};
+use std::io::BufRead;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -75,23 +76,42 @@ pub enum AppEvent {
 }
 
 pub async fn run(args: Args) -> anyhow::Result<()> {
-    if let Some(Command::Receive { auto_accept_from }) = &args.command {
+    if let Some(Command::Receive {
+        auto_accept_from,
+        auth_stdin,
+    }) = &args.command
+    {
         let storage = storage::Repository::load(&args)?;
-        return headless::run_receive(storage, auto_accept_from.clone()).await;
+        return headless::run_receive(storage, auto_accept_from.clone(), *auth_stdin).await;
     }
-    let (payload, target) = match &args.command {
-        Some(Command::Send { to, text, paths }) => {
+    let (payload, target, pin) = match &args.command {
+        Some(Command::Send {
+            to,
+            text,
+            pin_stdin,
+            paths,
+        }) => {
             let payload = match text {
                 Some(text) => Payload::Text(sending::read_text(text)?),
                 None => Payload::Files(paths.clone()),
             };
+            let pin = if *pin_stdin {
+                let mut line = String::new();
+                std::io::stdin().lock().read_line(&mut line)?;
+                let trimmed = line.trim_end_matches(&['\r', '\n'][..]).to_string();
+                anyhow::ensure!(!trimmed.is_empty(), "Empty PIN provided on stdin");
+                Some(trimmed)
+            } else {
+                None
+            };
             (
                 payload,
                 to.as_deref().map(TargetSelector::parse).transpose()?,
+                pin,
             )
         }
         Some(Command::Receive { .. }) => unreachable!(),
-        None => (Payload::Files(Vec::new()), None),
+        None => (Payload::Files(Vec::new()), None, None),
     };
     if let Payload::Files(paths) = &payload {
         for path in paths {
@@ -104,7 +124,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     }
     let storage = storage::Repository::load(&args)?;
     match (target, payload) {
-        (Some(target), payload) => headless::run(storage, target, payload).await,
+        (Some(target), payload) => headless::run(storage, target, payload, pin).await,
         (None, Payload::Files(preselected)) => run_interactive(storage, preselected).await,
         // clap only accepts `--text` together with `--to`.
         (None, Payload::Text(_)) => unreachable!("--text requires --to"),

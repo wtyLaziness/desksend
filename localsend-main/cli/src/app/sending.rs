@@ -212,6 +212,7 @@ pub(super) fn spawn_send(
     identity: Arc<Identity>,
     device: StatefulDevice,
     picked: Vec<PathBuf>,
+    pin: Option<String>,
     events_tx: mpsc::Sender<AppEvent>,
 ) -> Result<SendState, String> {
     let host = dialable_host(&device)?;
@@ -228,6 +229,7 @@ pub(super) fn spawn_send(
         device,
         host,
         (files, sources, total_bytes),
+        pin,
         events_tx,
     )
 }
@@ -240,11 +242,12 @@ pub(super) fn spawn_send_text(
     identity: Arc<Identity>,
     device: StatefulDevice,
     text: Bytes,
+    pin: Option<String>,
     events_tx: mpsc::Sender<AppEvent>,
 ) -> Result<SendState, String> {
     let host = dialable_host(&device)?;
     let transfer = text_transfer(ui, text);
-    spawn_transfer(identity, device, host, transfer, events_tx)
+    spawn_transfer(identity, device, host, transfer, pin, events_tx)
 }
 
 fn dialable_host(device: &StatefulDevice) -> Result<String, String> {
@@ -265,6 +268,7 @@ fn spawn_transfer(
     device: StatefulDevice,
     host: String,
     (files, sources, total_bytes): Transfer,
+    pin: Option<String>,
     events_tx: mpsc::Sender<AppEvent>,
 ) -> Result<SendState, String> {
     let progress = Arc::new(AtomicU64::new(0));
@@ -279,7 +283,7 @@ fn spawn_transfer(
         speed: SpeedMeter::new(),
     };
     tokio::spawn(send_task::run_send(
-        identity, device, files, sources, progress, cancel, events_tx,
+        identity, device, files, sources, progress, cancel, pin, events_tx,
     ));
     Ok(state)
 }
@@ -432,6 +436,7 @@ impl App {
             self.storage.identity.clone(),
             device,
             picked,
+            None,
             self.events_tx.clone(),
         ) {
             Ok(state) => self.send = Some(state),

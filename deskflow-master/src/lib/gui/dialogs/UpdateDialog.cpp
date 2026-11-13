@@ -53,6 +53,13 @@ UpdateDialog::~UpdateDialog()
     disconnect(m_reply, nullptr, this, nullptr);
     m_reply->abort();
   }
+  if (m_file && m_file->isOpen()) {
+    m_file->cancelWriting();
+  }
+  m_file.reset();
+  if (!m_launchedInstaller && !m_directory.isEmpty()) {
+    QDir(m_directory).removeRecursively();
+  }
 }
 void UpdateDialog::fail(const QString &message)
 {
@@ -143,6 +150,7 @@ void UpdateDialog::install()
     fail(QStringLiteral("无法启动更新程序，当前版本仍可继续使用。"));
     return;
   }
+  m_launchedInstaller = true;
   Q_EMIT installRequested();
   accept();
 #else

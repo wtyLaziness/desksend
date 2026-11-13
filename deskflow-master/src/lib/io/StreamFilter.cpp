@@ -26,7 +26,9 @@ StreamFilter::StreamFilter(IEventQueue *events, deskflow::IStream *stream, bool 
 StreamFilter::~StreamFilter()
 {
   m_events->removeHandler(EventTypes::Unknown, m_stream->getEventTarget());
+  m_events->removeHandlers(getEventTarget());
   if (m_adopted) {
+    m_events->removeHandlers(m_stream->getEventTarget());
     delete m_stream;
   }
 }

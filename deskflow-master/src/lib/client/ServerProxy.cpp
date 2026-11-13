@@ -313,7 +313,13 @@ ServerProxy::ConnectionResult ServerProxy::parseMessage(const uint8_t *code)
     uint16_t fileCount = 0;
     std::string dragInfo;
     ProtocolUtil::readf(m_stream, kMsgDDragInfo + 4, &fileCount, &dragInfo);
-    LOG_INFO("recv drag info count=%u info=\"%s\"", fileCount, dragInfo.c_str());
+    std::string logInfo = dragInfo;
+    if (dragInfo.rfind("DESKSEND_START", 0) == 0) {
+      logInfo = "DESKSEND_START:<redacted>";
+    } else if (dragInfo.rfind("DESKSEND_CANCEL", 0) == 0) {
+      logInfo = "DESKSEND_CANCEL:<redacted>";
+    }
+    LOG_INFO("recv drag info count=%u info=\"%s\"", fileCount, logInfo.c_str());
     deskflow::FileDropBridge::instance().onClientReceiveDragInfo(fileCount, dragInfo);
   }
 

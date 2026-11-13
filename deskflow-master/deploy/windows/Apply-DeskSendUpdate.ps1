@@ -79,10 +79,22 @@ try {
     }
     # 只结束当前安装目录的后台组件，不影响其他目录中的程序。
     if (!$NoRestart) {
+        $cimPaths = @{}
+        foreach ($cim in @(Get-CimInstance -ClassName Win32_Process -Filter "Name='deskflow-core.exe' OR Name='localsend-cli.exe'" -ErrorAction SilentlyContinue)) {
+            if ($cim.ExecutablePath) { $cimPaths[[int]$cim.ProcessId] = $cim.ExecutablePath }
+        }
         foreach ($process in @(Get-Process -Name 'deskflow-core','localsend-cli' -ErrorAction SilentlyContinue)) {
-            if ($process.Path -and [IO.Path]::GetDirectoryName($process.Path) -ieq $installRoot) {
-                Stop-Process -Id $process.Id -Force
-                $null = $process.WaitForExit(10000)
+            $procPath = $null
+            try { $procPath = $process.Path } catch { $procPath = $null }
+            if (!$procPath) { $procPath = $cimPaths[$process.Id] }
+            if (!$procPath) {
+                throw ('无法检查后台进程路径，请以管理员身份运行或手动退出后台组件后重试：' + $process.ProcessName + ' (' + $process.Id + ')')
+            }
+            if ([IO.Path]::GetDirectoryName($procPath).TrimEnd('\') -ieq $installRoot.TrimEnd('\')) {
+                Stop-Process -Id $process.Id -Force -ErrorAction Stop
+                if (!$process.WaitForExit(10000)) {
+                    throw ('后台进程未能在超时内退出：' + $process.ProcessName + ' (' + $process.Id + ')')
+                }
             }
         }
     }

@@ -9,18 +9,22 @@
 #include "base/DirectionTypes.h"
 #include "base/Log.h"
 #include "common/Enums.h"
+#include "common/Settings.h"
 #include "io/StreamFilter.h"
 #include "net/IDataSocket.h"
 #include "server/BaseClientProxy.h"
 
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QRandomGenerator>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
@@ -157,6 +161,51 @@ uint64_t nowMs()
 {
   using namespace std::chrono;
   return static_cast<uint64_t>(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+}
+
+std::string generateAuthToken()
+{
+  std::array<quint32, 8> words{};
+  QRandomGenerator::system()->fillRange(words.data(), static_cast<qsizetype>(words.size()));
+  const QByteArray raw(reinterpret_cast<const char *>(words.data()), static_cast<qsizetype>(words.size() * sizeof(quint32)));
+  return raw.toHex().toStdString();
+}
+
+bool hasTransferableFiles(const std::vector<std::string> &paths)
+{
+  for (const auto &p : paths) {
+    const QFileInfo info(QString::fromStdString(p));
+    if (info.isFile()) {
+      return true;
+    }
+    if (info.isDir()) {
+      QDirIterator it(info.absoluteFilePath(), QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+      if (it.hasNext()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+QString resolveLocalSendConfigDir(const char *envOverride, const QString &roleSubdir)
+{
+  if (const char *cfg = std::getenv(envOverride); cfg && cfg[0] != '\0') {
+    return QString::fromUtf8(cfg);
+  }
+  QString baseDir;
+  if (Settings::isPortableMode()) {
+    baseDir = Settings::settingsPath();
+  } else {
+    baseDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (baseDir.isEmpty()) {
+      baseDir = Settings::settingsPath();
+    }
+  }
+  if (baseDir.isEmpty()) {
+    baseDir = QDir::tempPath();
+  }
+  return QDir(baseDir).filePath(QStringLiteral("localsend/%1").arg(roleSubdir));
 }
 
 #if defined(_WIN32)
@@ -769,6 +818,7 @@ void FileDropBridge::onLeavePrimary(BaseClientProxy *dstClient)
 #endif
 
   std::vector<std::string> files;
+  std::string token;
   {
     std::scoped_lock lock(m_mutex);
     if (m_pendingFiles.empty() || (nowMs() - m_pendingTimestampMs) > 4000) {
@@ -779,10 +829,14 @@ void FileDropBridge::onLeavePrimary(BaseClientProxy *dstClient)
     m_pendingFiles.clear();
     m_activeDragFiles = files;
     m_dragTargetClient = dstClient;
+    if (dstClient) {
+      token = generateAuthToken();
+    }
+    m_activeDragToken = token;
   }
 
   if (dstClient) {
-    std::string msg = "DESKSEND_START";
+    std::string msg = "DESKSEND_START:" + token;
     for (const auto &f : files) {
       msg += "\n";
       msg += QFileInfo(QString::fromStdString(f)).fileName().toStdString();
@@ -798,6 +852,7 @@ void FileDropBridge::onLeavePrimary(BaseClientProxy *dstClient)
 void FileDropBridge::onReturnToPrimary()
 {
   BaseClientProxy *oldTarget = nullptr;
+  std::string oldToken;
   {
     std::scoped_lock lock(m_mutex);
     if (m_activeDragFiles.empty()) {
@@ -808,10 +863,12 @@ void FileDropBridge::onReturnToPrimary()
     m_canCaptureDrag = false;
     m_activeDragFiles.clear();
     oldTarget = m_dragTargetClient;
+    oldToken = std::move(m_activeDragToken);
     m_dragTargetClient = nullptr;
+    m_activeDragToken.clear();
   }
   if (oldTarget) {
-    const std::string cancelMsg = "DESKSEND_CANCEL";
+    const std::string cancelMsg = oldToken.empty() ? std::string("DESKSEND_CANCEL") : ("DESKSEND_CANCEL:" + oldToken);
     oldTarget->sendDragInfo(0, cancelMsg.data(), cancelMsg.size());
   }
 }
@@ -826,12 +883,14 @@ void FileDropBridge::onClientDisconnected(BaseClientProxy *client)
     LOG_INFO("FileDropBridge: active drag target client disconnected; clearing target pointer");
     m_dragTargetClient = nullptr;
     m_activeDragFiles.clear();
+    m_activeDragToken.clear();
   }
 }
 
 void FileDropBridge::cancelActiveDrag()
 {
   BaseClientProxy *oldTarget = nullptr;
+  std::string oldToken;
   {
     std::scoped_lock lock(m_mutex);
     LOG_INFO("FileDropBridge: Escape pressed; cancelling file drag");
@@ -839,10 +898,12 @@ void FileDropBridge::cancelActiveDrag()
     m_canCaptureDrag = false;
     m_activeDragFiles.clear();
     oldTarget = m_dragTargetClient;
+    oldToken = std::move(m_activeDragToken);
     m_dragTargetClient = nullptr;
+    m_activeDragToken.clear();
   }
   if (oldTarget) {
-    const std::string cancelMsg = "DESKSEND_CANCEL";
+    const std::string cancelMsg = oldToken.empty() ? std::string("DESKSEND_CANCEL") : ("DESKSEND_CANCEL:" + oldToken);
     oldTarget->sendDragInfo(0, cancelMsg.data(), cancelMsg.size());
   }
 }
@@ -850,30 +911,45 @@ void FileDropBridge::cancelActiveDrag()
 void FileDropBridge::onSecondaryLeftMouseUp(BaseClientProxy *activeClient, int32_t x, int32_t y)
 {
   std::vector<std::string> files;
+  std::string token;
   {
     std::scoped_lock lock(m_mutex);
     if (m_activeDragFiles.empty() || activeClient == nullptr) {
       return;
     }
     files = std::move(m_activeDragFiles);
+    token = std::move(m_activeDragToken);
     m_activeDragFiles.clear();
+    m_activeDragToken.clear();
     m_dragTargetClient = nullptr;
+  }
+
+  auto sendCancel = [&]() {
+    const std::string cancelMsg = token.empty() ? std::string("DESKSEND_CANCEL") : ("DESKSEND_CANCEL:" + token);
+    activeClient->sendDragInfo(0, cancelMsg.data(), cancelMsg.size());
+  };
+
+  if (!hasTransferableFiles(files)) {
+    LOG_WARN("FileDropBridge: dragged path(s) contain no transferable files; cancelling drop");
+    sendCancel();
+    return;
+  }
+
+  std::string peerIp = getClientPeerIp(activeClient);
+  if (peerIp.empty()) {
+    LOG_WARN("FileDropBridge: could not determine peer IP for client \"%s\"", activeClient->getName().c_str());
+    sendCancel();
+    return;
   }
 
   std::string dropMsg = "DESKSEND_DROP:" + std::to_string(x) + "," + std::to_string(y);
   activeClient->sendDragInfo(static_cast<uint32_t>(files.size()), dropMsg.data(), dropMsg.size());
 
-  std::string peerIp = getClientPeerIp(activeClient);
-  if (peerIp.empty()) {
-    LOG_WARN("FileDropBridge: could not determine peer IP for client \"%s\"", activeClient->getName().c_str());
-    return;
-  }
-
   LOG_INFO(
       "FileDropBridge: drop at (%d,%d) on \"%s\" (%s), sending %zu file(s) via LocalSend", x, y,
       activeClient->getName().c_str(), peerIp.c_str(), files.size()
   );
-  sendFilesViaLocalSend(peerIp, files);
+  sendFilesViaLocalSend(peerIp, files, token);
 }
 
 std::string FileDropBridge::getClientPeerIp(BaseClientProxy *client)
@@ -934,18 +1010,21 @@ std::string FileDropBridge::findLocalSendCliPath()
   return exeName.toStdString();
 }
 
-void FileDropBridge::sendFilesViaLocalSend(const std::string &targetIp, const std::vector<std::string> &files)
+void FileDropBridge::sendFilesViaLocalSend(
+    const std::string &targetIp, const std::vector<std::string> &files, const std::string &authToken
+)
 {
   if (auto *app = QCoreApplication::instance(); app && QThread::currentThread() != app->thread()) {
     QMetaObject::invokeMethod(
-        app, [this, targetIp, files]() { sendFilesViaLocalSend(targetIp, files); }, Qt::QueuedConnection
+        app, [this, targetIp, files, authToken]() { sendFilesViaLocalSend(targetIp, files, authToken); },
+        Qt::QueuedConnection
     );
     return;
   }
 
   {
     std::scoped_lock lock(m_mutex);
-    m_sendQueue.push_back(SendJob{targetIp, files});
+    m_sendQueue.push_back(SendJob{targetIp, files, authToken});
     if (m_sendingInProgress) {
       LOG_INFO("FileDropBridge: queued send job to %s (%zu file(s)); %zu job(s) waiting", targetIp.c_str(), files.size(), m_sendQueue.size());
       return;
@@ -968,6 +1047,13 @@ void FileDropBridge::processNextSendJob()
     m_sendQueue.pop_front();
   }
 
+  if (job.authToken.empty()) {
+    LOG_WARN("FileDropBridge: missing authorization token for send job to %s; aborting", job.targetIp.c_str());
+    transferStatus(false).finish(false, QStringLiteral("发送失败：缺少传输授权令牌"));
+    processNextSendJob();
+    return;
+  }
+
   const QString cliPath = QString::fromStdString(findLocalSendCliPath());
   QString targetPortStr = QStringLiteral("53318");
   if (const char *targetPort = std::getenv("DESKSEND_TARGET_PORT"); targetPort && targetPort[0] != '\0') {
@@ -982,7 +1068,7 @@ void FileDropBridge::processNextSendJob()
     // Use dynamic OS-assigned port (0) so concurrent or rapid consecutive sends never conflict
     args << QStringLiteral("--port") << QStringLiteral("0");
   }
-  args << QStringLiteral("send") << QStringLiteral("--to") << destination;
+  args << QStringLiteral("send") << QStringLiteral("--to") << destination << QStringLiteral("--pin-stdin");
   for (const auto &f : job.files) {
     args << QString::fromStdString(f);
   }
@@ -990,10 +1076,7 @@ void FileDropBridge::processNextSendJob()
   auto *proc = new QProcess();
   proc->setProcessChannelMode(QProcess::MergedChannels);
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-  QString senderCfgDir = QDir(QDir::tempPath()).filePath(QStringLiteral("DeskSend_SenderCfg"));
-  if (const char *senderCfg = std::getenv("DESKSEND_SENDER_CONFIG_HOME"); senderCfg && senderCfg[0] != '\0') {
-    senderCfgDir = QString::fromUtf8(senderCfg);
-  }
+  const QString senderCfgDir = resolveLocalSendConfigDir("DESKSEND_SENDER_CONFIG_HOME", QStringLiteral("sender"));
   QDir().mkpath(senderCfgDir);
   env.insert(QStringLiteral("XDG_CONFIG_HOME"), senderCfgDir);
   proc->setProcessEnvironment(env);
@@ -1012,9 +1095,16 @@ void FileDropBridge::processNextSendJob()
     }
   });
 
+  const QByteArray tokenPayload = QByteArray::fromStdString(job.authToken + "\n");
+  QObject::connect(proc, &QProcess::started, proc, [proc, tokenPayload]() {
 #if defined(_WIN32)
-  QObject::connect(proc, &QProcess::started, proc, [proc]() { assignProcessToKillOnCloseJob(proc->processId()); });
+    assignProcessToKillOnCloseJob(proc->processId());
 #endif
+    if (proc->write(tokenPayload) == tokenPayload.size()) {
+      proc->waitForBytesWritten(2000);
+    }
+    proc->closeWriteChannel();
+  });
 
   QObject::connect(proc, &QProcess::errorOccurred, proc, [this, proc, destination](QProcess::ProcessError error) {
     if (error == QProcess::FailedToStart) {
@@ -1070,6 +1160,10 @@ void FileDropBridge::startReceiver(const std::string &serverHost)
   }
 
   m_currentAllowedServerIp = serverHost;
+  m_pendingReceiverAuthLines.clear();
+  m_pendingDropTargets.clear();
+  m_activeSessionTarget = DropTargetEntry{};
+  m_lastResolvedDropDir.clear();
   QString staging = QDir(QDir::tempPath()).filePath(QStringLiteral("DeskSend_Staging"));
   QDir().mkpath(staging);
   m_stagingDir = staging.toStdString();
@@ -1082,9 +1176,7 @@ void FileDropBridge::startReceiver(const std::string &serverHost)
     defaultDrop = QString::fromUtf8(envDrop);
     QDir().mkpath(defaultDrop);
   }
-  if (m_lastResolvedDropDir.empty()) {
-    m_lastResolvedDropDir = defaultDrop.toStdString();
-  }
+  m_defaultDropFallbackDir = defaultDrop.toStdString();
 
   const QString cliPath = QString::fromStdString(findLocalSendCliPath());
   QString port = QStringLiteral("53318");
@@ -1106,26 +1198,32 @@ void FileDropBridge::startReceiver(const std::string &serverHost)
 
   QStringList args;
   args << QStringLiteral("--port") << port << QStringLiteral("--destination") << staging << QStringLiteral("receive")
-       << QStringLiteral("--auto-accept-from") << allowSpec;
+       << QStringLiteral("--auto-accept-from") << allowSpec << QStringLiteral("--auth-stdin");
 
   m_receiverProcess = new QProcess();
   m_receiverProcess->setProcessChannelMode(QProcess::MergedChannels);
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-  QString rxCfgDir = QDir(QDir::tempPath()).filePath(QStringLiteral("DeskSend_ReceiverCfg"));
-  if (const char *rxCfg = std::getenv("DESKSEND_RECEIVER_CONFIG_HOME"); rxCfg && rxCfg[0] != '\0') {
-    rxCfgDir = QString::fromUtf8(rxCfg);
-  }
+  const QString rxCfgDir = resolveLocalSendConfigDir("DESKSEND_RECEIVER_CONFIG_HOME", QStringLiteral("receiver"));
   QDir().mkpath(rxCfgDir);
   env.insert(QStringLiteral("XDG_CONFIG_HOME"), rxCfgDir);
   m_receiverProcess->setProcessEnvironment(env);
 
-#if defined(_WIN32)
   QObject::connect(m_receiverProcess, &QProcess::started, m_receiverProcess, [this]() {
+    std::deque<std::string> pending;
+    {
+      std::scoped_lock lock(m_mutex);
+      pending.swap(m_pendingReceiverAuthLines);
+    }
     if (m_receiverProcess) {
+#if defined(_WIN32)
       assignProcessToKillOnCloseJob(m_receiverProcess->processId());
+#endif
+      for (const auto &cmd : pending) {
+        const QByteArray line = QByteArray::fromStdString(cmd + "\n");
+        m_receiverProcess->write(line);
+      }
     }
   });
-#endif
 
   QObject::connect(m_receiverProcess, &QProcess::errorOccurred, m_receiverProcess, [](QProcess::ProcessError error) {
     if (error == QProcess::FailedToStart) {
@@ -1186,12 +1284,41 @@ void FileDropBridge::stopReceiver()
   }
 
   std::scoped_lock lock(m_mutex);
+  m_currentAllowedServerIp.clear();
+  m_pendingReceiverAuthLines.clear();
+  m_pendingDropTargets.clear();
+  m_activeSessionTarget = DropTargetEntry{};
+  m_lastResolvedDropDir.clear();
   if (m_receiverProcess) {
     m_receiverProcess->disconnect();
     m_receiverProcess->kill();
     m_receiverProcess->waitForFinished(1000);
     delete m_receiverProcess;
     m_receiverProcess = nullptr;
+  }
+}
+
+void FileDropBridge::queueReceiverAuthCommand(const std::string &command)
+{
+  if (auto *app = QCoreApplication::instance(); app && QThread::currentThread() != app->thread()) {
+    QMetaObject::invokeMethod(
+        app, [this, command]() { queueReceiverAuthCommand(command); }, Qt::QueuedConnection
+    );
+    return;
+  }
+
+  std::scoped_lock lock(m_mutex);
+  if (!m_receiverProcess) {
+    return;
+  }
+  if (m_receiverProcess->state() == QProcess::Running) {
+    const QByteArray line = QByteArray::fromStdString(command + "\n");
+    m_receiverProcess->write(line);
+  } else {
+    if (m_pendingReceiverAuthLines.size() >= 64) {
+      m_pendingReceiverAuthLines.pop_front();
+    }
+    m_pendingReceiverAuthLines.push_back(command);
   }
 }
 
@@ -1207,14 +1334,14 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
       std::string fallback;
       {
         std::scoped_lock lock(m_mutex);
-        fallback = m_lastResolvedDropDir;
+        fallback = !m_lastResolvedDropDir.empty() ? m_lastResolvedDropDir : m_defaultDropFallbackDir;
       }
       bool isDirectFolder = true;
       std::string resolved = resolveDropTargetDirectory(x, y, fallback, &isDirectFolder);
       {
         std::scoped_lock lock(m_mutex);
         const uint64_t now = nowMs();
-        while (!m_pendingDropTargets.empty() && (now - m_pendingDropTargets.front().timestampMs > 15000)) {
+        while (!m_pendingDropTargets.empty() && (now - m_pendingDropTargets.front().timestampMs > 300000)) {
           m_pendingDropTargets.pop_front();
         }
         m_lastResolvedDropDir = resolved;
@@ -1226,8 +1353,32 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
       );
     }
   } else if (info.rfind("DESKSEND_START", 0) == 0) {
+    const std::string startPrefix = "DESKSEND_START:";
+    if (info.rfind(startPrefix, 0) == 0) {
+      const size_t newlinePos = info.find('\n', startPrefix.size());
+      std::string token = (newlinePos == std::string::npos)
+                              ? info.substr(startPrefix.size())
+                              : info.substr(startPrefix.size(), newlinePos - startPrefix.size());
+      if (!token.empty() && token.back() == '\r') {
+        token.pop_back();
+      }
+      if (!token.empty() && token.find_first_of(" \t\r\n") == std::string::npos) {
+        queueReceiverAuthCommand("GRANT " + token);
+      }
+    }
     LOG_INFO("FileDropBridge: incoming drag started (%u file(s))", fileCount);
   } else if (info.rfind("DESKSEND_CANCEL", 0) == 0) {
+    const std::string cancelPrefix = "DESKSEND_CANCEL:";
+    if (info.rfind(cancelPrefix, 0) == 0) {
+      std::string token = info.substr(cancelPrefix.size());
+      const size_t endPos = token.find_first_of("\r\n");
+      if (endPos != std::string::npos) {
+        token.resize(endPos);
+      }
+      if (!token.empty() && token.find_first_of(" \t\r\n") == std::string::npos) {
+        queueReceiverAuthCommand("REVOKE " + token);
+      }
+    }
     LOG_INFO("FileDropBridge: incoming drag cancelled");
   }
 }
@@ -1237,7 +1388,7 @@ void FileDropBridge::handleReceiveSessionStarted(size_t expectedFiles)
   finalizeActiveSession();
   std::scoped_lock lock(m_mutex);
   const uint64_t now = nowMs();
-  while (!m_pendingDropTargets.empty() && (now - m_pendingDropTargets.front().timestampMs > 15000)) {
+  while (!m_pendingDropTargets.empty() && (now - m_pendingDropTargets.front().timestampMs > 300000)) {
     m_pendingDropTargets.pop_front();
   }
   m_activeSessionPlacedFiles.clear();
@@ -1250,7 +1401,8 @@ void FileDropBridge::handleReceiveSessionStarted(size_t expectedFiles)
     m_activeSessionTarget = std::move(m_pendingDropTargets.front());
     m_pendingDropTargets.pop_front();
   } else {
-    m_activeSessionTarget = DropTargetEntry{m_lastResolvedDropDir, false, now};
+    m_activeSessionTarget = DropTargetEntry{};
+    LOG_WARN("FileDropBridge: no pending drop target for receive session; files will remain in staging");
   }
 }
 
@@ -1337,12 +1489,11 @@ void FileDropBridge::handleReceivedFileLine(const std::string &filePath)
       targetDir = m_activeSessionTarget.dir;
     } else if (!m_pendingDropTargets.empty()) {
       targetDir = m_pendingDropTargets.front().dir;
-    } else {
-      targetDir = m_lastResolvedDropDir;
     }
     stagingDirStr = m_stagingDir;
   }
   if (targetDir.empty()) {
+    LOG_WARN("FileDropBridge: no authorized drop target for received file; keeping in staging");
     return;
   }
 

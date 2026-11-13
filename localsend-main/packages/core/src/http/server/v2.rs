@@ -4,7 +4,7 @@ use crate::http::dto_v2::{
 };
 use crate::http::server::common::collect_to_json::CollectToJson;
 use crate::http::server::common::error::AppError;
-use crate::http::server::common::pin::check_pin;
+use crate::http::server::common::pin::{check_pin, check_token_gate};
 use crate::http::server::common::query::parse_query;
 use crate::http::server::common::response::{empty_body, BoxedBody, JsonResponse};
 use crate::http::server::common::save::{FileTimestamps, FileUploadTarget, SaveResult};
@@ -234,6 +234,14 @@ pub(crate) async fn prepare_upload(
 
     check_pin(
         v2.pin.as_deref(),
+        &v2.pin_attempts,
+        &query,
+        client_info.ip.ip,
+    )
+    .await?;
+
+    check_token_gate(
+        &v2.token_gate,
         &v2.pin_attempts,
         &query,
         client_info.ip.ip,

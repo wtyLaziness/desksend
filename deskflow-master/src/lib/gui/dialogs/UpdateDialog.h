@@ -34,4 +34,5 @@ private:
   QString m_writeError;
   qint64 m_received = 0;
   bool m_ready = false;
+  bool m_launchedInstaller = false;
 };

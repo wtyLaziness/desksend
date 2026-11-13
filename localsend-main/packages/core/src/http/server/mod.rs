@@ -15,6 +15,7 @@ use crate::http::server::web::{WebConfig, WebShare};
 use crate::http::state::ClientInfo;
 use common::client_cert_verifier::CustomClientCertVerifier;
 use common::error::AppError;
+use common::pin::TokenGate;
 use common::response;
 use common::response::BoxedBody;
 use common::session::SessionStateV2;
@@ -66,6 +67,9 @@ pub(crate) struct V2State {
 
     /// Maps client IPs to the number of failed PIN attempts.
     pub(crate) pin_attempts: Mutex<LruCache<IpAddr, u32>>,
+
+    /// Optional one-time transfer authorization token gate.
+    pub(crate) token_gate: Mutex<TokenGate>,
 }
 
 #[derive(Clone)]
@@ -106,6 +110,7 @@ impl AppState {
                 event_tx: config.event_tx,
                 session: Mutex::new(None),
                 pin_attempts: Mutex::new(LruCache::new(NonZeroUsize::new(200).unwrap())),
+                token_gate: Mutex::new(TokenGate::default()),
             })
         });
 
@@ -210,6 +215,28 @@ impl ServerHandle {
             }
             _ => false,
         }
+    }
+
+    /// Enables one-time authorization token gating for incoming v2 upload preparations.
+    pub async fn enable_v2_token_gate(&self) {
+        if let Some(v2) = &self.v2 {
+            v2.token_gate.lock().await.enable();
+        }
+    }
+
+    /// Registers a one-time authorization token accepted by incoming v2 upload preparations.
+    pub async fn grant_v2_token(&self, token: String) {
+        if let Some(v2) = &self.v2 {
+            v2.token_gate.lock().await.grant(token);
+        }
+    }
+
+    /// Revokes a previously granted one-time authorization token if unused.
+    pub async fn revoke_v2_token(&self, token: &str) -> bool {
+        let Some(v2) = &self.v2 else {
+            return false;
+        };
+        v2.token_gate.lock().await.revoke(token)
     }
 }
 
