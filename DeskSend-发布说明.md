@@ -1,6 +1,6 @@
 # DeskSend 发布与更新
 
-公开发布仓库为 https://github.com/wtyLaziness/desksend-releases 。源码开发仓库保持私有；每个公开二进制 Release 同时附带对应构建源码和许可证。
+源码开发仓库为 https://github.com/wtyLaziness/desksend ，公开发布仓库为 https://github.com/wtyLaziness/desksend-releases 。每个公开二进制 Release 同时附带对应构建源码和许可证。
 
 产品版本在 `deskflow-master/cmake/DeskSendVersion.cmake` 中维护。主界面、托盘、关于窗口与 Windows 程序图标统一使用 DeskSend；底层核心、协议、配置和证书路径保留兼容名称。
 

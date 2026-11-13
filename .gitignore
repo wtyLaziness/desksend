@@ -1,2 +1,25 @@
 deskflow-bin/
 phase0/bin/
+
+# 本机运行设置、生成文件与私密材料；源码中的 settings 页面不受影响。
+/settings/
+**/settings/Deskflow.conf
+**/settings/Deskflow.state
+**/settings/tls/
+*.log
+*.pem
+*.key
+*.pfx
+*.p12
+*.jks
+*.p8
+*.keystore
+*.crt
+*.cer
+*.der
+.env
+.env.*
+!.env.example
+!.env.sample
+__pycache__/
+*.pyc
