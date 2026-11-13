@@ -176,11 +176,6 @@ for ($i = 0; $i -lt 30; $i++) {
   if ((Test-Path $proxyLog) -and ((Get-Content $proxyLog -Raw) -match 'PROXY_READY')) { break }
   Start-Sleep -Milliseconds 100
 }
-$controlProxy = Start-Process python -ArgumentList '-u',"$PSScriptRoot\input-proxy.py",([string]([int]([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width / 2))),([string]([int]([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height / 2))) -PassThru -WindowStyle Hidden -RedirectStandardOutput "$script:out\control-proxy.log" -RedirectStandardError "$script:out\control-proxy.err"
-for ($i = 0; $i -lt 30; $i++) {
-  if ((Test-Path "$script:out\control-proxy.log") -and ((Get-Content "$script:out\control-proxy.log" -Raw) -match 'CONTROL_PROXY_READY')) { break }
-  Start-Sleep -Milliseconds 100
-}
 
 @"
 section: links
@@ -197,6 +192,11 @@ $layout = ("$script:out\layout.cfg") -replace '\\','/'
 $tlsFlag = if ($TlsEnabled) { 'true' } else { 'false' }
 $srvCertLine = ''
 $cliCertLine = ''
+$controlProxyArgs = @(
+  '-u', "$PSScriptRoot\input-proxy.py",
+  ([string]([int]([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width / 2))),
+  ([string]([int]([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height / 2)))
+)
 if ($TlsEnabled) {
   $tlsDir = "$script:out\tls"
   New-Item -ItemType Directory -Force $tlsDir | Out-Null
@@ -225,7 +225,14 @@ if ($TlsEnabled) {
   [IO.File]::WriteAllText("$tlsDir\trusted-clients", ($cliFp + "`n"), $utf8NoBom)
   $srvCertLine = "`ncertificate=$($srvPem -replace '\\','/')"
   $cliCertLine = "`ncertificate=$($cliPem -replace '\\','/')"
+  $controlProxyArgs += @('--tls-server-cert', $srvPem, '--tls-client-cert', $cliPem)
   Log "Generated TLS certificates: server=$srvFp client=$cliFp"
+}
+
+$controlProxy = Start-Process python -ArgumentList $controlProxyArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput "$script:out\control-proxy.log" -RedirectStandardError "$script:out\control-proxy.err"
+for ($i = 0; $i -lt 30; $i++) {
+  if ((Test-Path "$script:out\control-proxy.log") -and ((Get-Content "$script:out\control-proxy.log" -Raw) -match 'CONTROL_PROXY_READY')) { break }
+  Start-Sleep -Milliseconds 100
 }
 @"
 [core]

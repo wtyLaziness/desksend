@@ -2,12 +2,13 @@
 
 源端原生拖拽、逻辑切屏坐标、拖拽协议与文件传输保持真实路径。
 只将发往副机的 CINN/DMMV 物理位置改为主机光标中心。
-格式依据 ProtocolTypes.cpp 和 PacketStreamFilter.cpp；测试使用明文协议。
+格式依据 ProtocolTypes.cpp 和 PacketStreamFilter.cpp；可选通过 --tls-server-cert/--tls-client-cert 转发 mTLS。
 """
 
+import argparse
 import asyncio
+import ssl
 import struct
-import sys
 
 
 async def raw(reader, writer):
@@ -33,17 +34,56 @@ async def frames(reader, writer, center):
         writer.close()
 
 
+def build_tls_contexts(server_cert, client_cert):
+    if not server_cert and not client_cert:
+        return None, None
+    if not server_cert or not client_cert:
+        raise ValueError("Both --tls-server-cert and --tls-client-cert must be supplied together")
+
+    strict_flag = getattr(ssl, "VERIFY_X509_STRICT", 0)
+
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(certfile=server_cert, keyfile=server_cert)
+    server_ctx.verify_flags &= ~strict_flag
+    server_ctx.load_verify_locations(cafile=client_cert)
+    server_ctx.verify_mode = ssl.CERT_REQUIRED
+
+    client_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    client_ctx.check_hostname = False
+    client_ctx.load_cert_chain(certfile=client_cert, keyfile=client_cert)
+    client_ctx.verify_flags &= ~strict_flag
+    client_ctx.load_verify_locations(cafile=server_cert)
+    client_ctx.verify_mode = ssl.CERT_REQUIRED
+
+    return server_ctx, client_ctx
+
+
 async def main():
-    center = struct.pack(">HH", int(sys.argv[1]), int(sys.argv[2]))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("x", type=int)
+    parser.add_argument("y", type=int)
+    parser.add_argument("--tls-server-cert")
+    parser.add_argument("--tls-client-cert")
+    args = parser.parse_args()
+
+    center = struct.pack(">HH", args.x, args.y)
+    server_ctx, client_ctx = build_tls_contexts(args.tls_server_cert, args.tls_client_cert)
 
     async def accept(reader, writer):
+        upstream_writer = None
         try:
-            upstream_reader, upstream_writer = await asyncio.open_connection("127.0.0.1", 24800)
+            upstream_reader, upstream_writer = await asyncio.open_connection(
+                "127.0.0.1", 24800, ssl=client_ctx
+            )
             await asyncio.gather(raw(reader, upstream_writer), frames(upstream_reader, writer, center))
-        except (ConnectionError, OSError, asyncio.IncompleteReadError):
+        except (ConnectionError, OSError, asyncio.IncompleteReadError, ssl.SSLError):
+            pass
+        finally:
             writer.close()
+            if upstream_writer is not None:
+                upstream_writer.close()
 
-    server = await asyncio.start_server(accept, "127.0.0.1", 24801)
+    server = await asyncio.start_server(accept, "127.0.0.1", 24801, ssl=server_ctx)
     print("CONTROL_PROXY_READY", flush=True)
     async with server:
         await server.serve_forever()

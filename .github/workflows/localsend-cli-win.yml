@@ -22,7 +22,9 @@ jobs:
         working-directory: localsend-main
         run: |
           cargo test --release --package localsend --package localsend-cli
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo build --release --package localsend-cli
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: End-to-end headless receive & send test
         working-directory: localsend-main
         run: |

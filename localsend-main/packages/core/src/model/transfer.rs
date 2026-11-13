@@ -256,9 +256,19 @@ mod tests {
 
     #[test]
     fn formats_nanosecond_timestamp() {
-        let time = SystemTime::UNIX_EPOCH + Duration::from_nanos(123_456_789);
+        // Windows SystemTime uses 100 ns FILETIME ticks.
+        #[cfg(windows)]
+        let (time, expected) = (
+            SystemTime::UNIX_EPOCH + Duration::from_nanos(123_456_700),
+            "1970-01-01T00:00:00.1234567Z",
+        );
+        #[cfg(not(windows))]
+        let (time, expected) = (
+            SystemTime::UNIX_EPOCH + Duration::from_nanos(123_456_789),
+            "1970-01-01T00:00:00.123456789Z",
+        );
         let formatted = format_timestamp(time).unwrap();
-        assert_eq!(formatted, "1970-01-01T00:00:00.123456789Z");
+        assert_eq!(formatted, expected);
         assert_eq!(parse_timestamp(&formatted), Some(time));
     }
 
