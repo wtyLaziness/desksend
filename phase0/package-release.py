@@ -58,7 +58,7 @@ DeskSend 已整合键鼠共享与局域网文件传输，无需单独安装 Loca
 便携版不包含系统服务，不能控制 UAC 提示和 Windows 登录界面。
 
 更新和对应源码：https://github.com/wtyLaziness/desksend-releases/releases
-DeskSend 基于 Deskflow（GPLv2 + OpenSSL exception）及 LocalSend（MIT）。
+DeskSend 基于 Deskflow（GPLv2 + OpenSSL exception）及 LocalSend（Apache-2.0）。
 版权和许可证随包附带，对应构建源码作为同一 Release 附件提供。
 '''.format(version=version), encoding='utf-8')
 shutil.copy2(repo / 'localsend-main/LICENSE', root / 'LocalSend-LICENSE.txt')
