@@ -126,6 +126,7 @@ impl App {
                 cert_fingerprint,
                 files,
                 decision_tx,
+                ..
             } => {
                 // The sender is clearly reachable; make sure it has a slot.
                 self.device_confirmed(ip.to_string(), info.clone());

@@ -479,6 +479,16 @@ void MainWindow::openAboutDialog()
 void MainWindow::openGetNewVersionUrl()
 {
   UpdateDialog dialog(this);
+  dialog.setConfirmInstall([this, &dialog]() {
+    if (!m_coreProcess.hasActiveFileTransfers()) {
+      return true;
+    }
+    return QMessageBox::question(
+               &dialog, kAppName,
+               tr("File transfers are currently in progress. Installing the update will stop active transfers.\nContinue?"),
+               QMessageBox::Yes | QMessageBox::No, QMessageBox::No
+           ) == QMessageBox::Yes;
+  });
   connect(&dialog, &UpdateDialog::installRequested, this, [this]() {
     Settings::setValue(Settings::Gui::AutoStartCore, m_coreProcess.isStarted());
     saveSettings();
@@ -690,7 +700,7 @@ void MainWindow::createMenuBar()
 
   m_menuView->addAction(m_logDock->toggleViewAction());
 
-  auto updates = m_menuHelp->addAction(QStringLiteral("检查 DeskSend 更新…"));
+  auto updates = m_menuHelp->addAction(tr("Check for DeskSend Updates..."));
   updates->setObjectName("actionDeskSendUpdates");
   connect(updates, &QAction::triggered, this, &MainWindow::openGetNewVersionUrl);
   m_menuHelp->addSeparator();
@@ -939,7 +949,7 @@ bool MainWindow::confirmInterruptActiveTransfers()
   }
   const auto answer = QMessageBox::question(
       this, kAppName,
-      QStringLiteral("当前仍有文件正在传输，停止或退出将中断传输。\n确定要继续吗？"),
+      tr("File transfers are currently in progress. Stopping or quitting now will interrupt them.\nAre you sure you want to continue?"),
       QMessageBox::Yes | QMessageBox::No, QMessageBox::No
   );
   return answer == QMessageBox::Yes;

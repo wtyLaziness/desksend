@@ -747,6 +747,22 @@ Additionally, check you are able to %1 the server config file: %2</source>
         <source>&lt;p&gt;Keyboard layout support requires matching layouts on all computers. The following layouts from the other computer are not installed on this computer:&lt;/p&gt;&lt;p&gt;&lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Please install them to enable support for these layouts.&lt;/p&gt;</source>
         <translation type="unfinished"></translation>
     </message>
+    <message>
+        <source>Check for DeskSend Updates...</source>
+        <translation>检查 DeskSend 更新…</translation>
+    </message>
+    <message>
+        <source>File transfers are currently in progress. Installing the update will stop active transfers.
+Continue?</source>
+        <translation>当前仍有文件正在传输，安装更新会中断传输。
+确定要继续吗？</translation>
+    </message>
+    <message>
+        <source>File transfers are currently in progress. Stopping or quitting now will interrupt them.
+Are you sure you want to continue?</source>
+        <translation>当前仍有文件正在传输，停止或退出将中断传输。
+确定要继续吗？</translation>
+    </message>
 </context>
 <context>
     <name>NewComputerWidget</name>
@@ -1437,6 +1453,213 @@ Enabling this setting will disable the server config GUI.</source>
     <message>
         <source>A computer with this name already exists</source>
         <translation type="unfinished">一台同名的计算机已经存在</translation>
+    </message>
+</context>
+<context>
+    <name>FileDropBridge</name>
+    <message>
+        <source>DeskSend · Receiving</source>
+        <translation>DeskSend · 接收文件</translation>
+    </message>
+    <message>
+        <source>DeskSend · Sending</source>
+        <translation>DeskSend · 发送文件</translation>
+    </message>
+    <message>
+        <source>File transfer progress</source>
+        <translation>文件传输进度</translation>
+    </message>
+    <message>
+        <source>Preparing transfer...</source>
+        <translation>正在准备传输…</translation>
+    </message>
+    <message>
+        <source>%1 s</source>
+        <translation>%1 秒</translation>
+    </message>
+    <message>
+        <source>estimating</source>
+        <translation>估算中</translation>
+    </message>
+    <message>
+        <source>%1 / %2
+%3/s · Elapsed %4 s · Remaining %5</source>
+        <translation>%1 / %2
+%3/s · 已用 %4 秒 · 预计剩余 %5</translation>
+    </message>
+    <message>
+        <source>Check network connection, receiver port, and localsend-cli.exe; see logs for details.</source>
+        <translation>请检查网络、接收端口和 localsend-cli.exe；详细原因见日志。</translation>
+    </message>
+    <message>
+        <source>Send failed: missing transfer authorization token</source>
+        <translation>发送失败：缺少传输授权令牌</translation>
+    </message>
+    <message>
+        <source>Sending to %1</source>
+        <translation>正在发送到 %1</translation>
+    </message>
+    <message>
+        <source>Send failed: unable to launch localsend-cli.exe</source>
+        <translation>发送失败：无法启动 localsend-cli.exe</translation>
+    </message>
+    <message>
+        <source>File transfer completed</source>
+        <translation>文件发送完成</translation>
+    </message>
+    <message>
+        <source>File transfer failed</source>
+        <translation>文件发送失败</translation>
+    </message>
+    <message>
+        <source>Receiver failed to start: unable to launch localsend-cli.exe</source>
+        <translation>接收端启动失败：无法启动 localsend-cli.exe</translation>
+    </message>
+    <message>
+        <source>File receiver stopped unexpectedly, attempting automatic recovery...</source>
+        <translation>文件接收监听意外停止，正在尝试自动恢复…</translation>
+    </message>
+    <message>
+        <source>File receiver stopped; verify that the port is available</source>
+        <translation>文件接收监听已停止，请检查端口是否被占用</translation>
+    </message>
+    <message>
+        <source>Receiving %1 file(s)</source>
+        <translation>正在接收 %1 个文件</translation>
+    </message>
+    <message>
+        <source>File receive failed or transfer was cancelled</source>
+        <translation>文件接收失败或传输已取消</translation>
+    </message>
+    <message>
+        <source>File receive completed</source>
+        <translation>文件接收完成</translation>
+    </message>
+</context>
+<context>
+    <name>UpdateDialog</name>
+    <message>
+        <source>DeskSend Update</source>
+        <translation>DeskSend 更新</translation>
+    </message>
+    <message>
+        <source>Checking for official DeskSend releases...</source>
+        <translation>正在检查 DeskSend 正式版…</translation>
+    </message>
+    <message>
+        <source>Updates include keyboard/mouse sharing and file transfer components. Connections will pause briefly during installation; settings, certificates, and pairings are preserved.</source>
+        <translation>更新包含键鼠共享和文件传输组件。安装时会暂时断开连接；原有配置、证书和配对会保留。</translation>
+    </message>
+    <message>
+        <source>Download update</source>
+        <translation>下载更新</translation>
+    </message>
+    <message>
+        <source>Close</source>
+        <translation>关闭</translation>
+    </message>
+    <message>
+        <source>DeskSend %1 is available (full package %2 MiB).</source>
+        <translation>发现 DeskSend %1，完整更新包 %2 MiB。</translation>
+    </message>
+    <message>
+        <source>You are running the latest official DeskSend release.</source>
+        <translation>当前已是最新的 DeskSend 正式版。</translation>
+    </message>
+    <message>
+        <source>Retry download</source>
+        <translation>重试下载</translation>
+    </message>
+    <message>
+        <source>Unable to create temporary update directory.</source>
+        <translation>无法创建更新临时目录。</translation>
+    </message>
+    <message>
+        <source>Unable to write update package: %1</source>
+        <translation>无法写入更新包：%1</translation>
+    </message>
+    <message>
+        <source>Downloading update...</source>
+        <translation>正在下载更新…</translation>
+    </message>
+    <message>
+        <source>Unexpected update package size or disk write failure.</source>
+        <translation>更新包大小异常或磁盘写入失败。</translation>
+    </message>
+    <message>
+        <source>Downloaded %1 / %2 MiB</source>
+        <translation>已下载 %1 / %2 MiB</translation>
+    </message>
+    <message>
+        <source>Download failed: %1</source>
+        <translation>下载失败：%1</translation>
+    </message>
+    <message>
+        <source>Update package SHA-256 verification failed. Please retry.</source>
+        <translation>更新包 SHA-256 校验失败，请重试。</translation>
+    </message>
+    <message>
+        <source>Failed to save update package: %1</source>
+        <translation>更新包保存失败：%1</translation>
+    </message>
+    <message>
+        <source>I/O error</source>
+        <translation>I/O 错误</translation>
+    </message>
+    <message>
+        <source>Update package downloaded and verified (SHA-256). Ready to install.</source>
+        <translation>更新包已下载并通过 SHA-256 校验，可以安装。</translation>
+    </message>
+    <message>
+        <source>Install and restart</source>
+        <translation>安装并重启</translation>
+    </message>
+    <message>
+        <source>Built-in updates apply to the portable package. Please download the full archive from the DeskSend releases page.</source>
+        <translation>内置更新适用于便携版。请从 DeskSend 发布页下载完整包。</translation>
+    </message>
+    <message>
+        <source>The application directory is not writable. Please extract the full package to a writable folder.</source>
+        <translation>程序目录不可写。请将完整包解压到可写目录后运行。</translation>
+    </message>
+    <message>
+        <source>Unable to prepare updater script.</source>
+        <translation>无法准备更新程序。</translation>
+    </message>
+    <message>
+        <source>Unable to start updater; you can continue using the current version.</source>
+        <translation>无法启动更新程序，当前版本仍可继续使用。</translation>
+    </message>
+    <message>
+        <source>This update package is only available for Windows x64.</source>
+        <translation>此更新包仅适用于 Windows x64。</translation>
+    </message>
+</context>
+<context>
+    <name>VersionChecker</name>
+    <message>
+        <source>Invalid release metadata; no stable release found.</source>
+        <translation>发布信息无效，未找到正式版。</translation>
+    </message>
+    <message>
+        <source>Invalid update package URL, size, or SHA-256 digest.</source>
+        <translation>更新包地址、大小或 SHA-256 校验信息无效。</translation>
+    </message>
+    <message>
+        <source>This release does not provide a complete Windows x64 update package.</source>
+        <translation>此版本未提供完整的 Windows x64 更新包。</translation>
+    </message>
+    <message>
+        <source>GitHub API rate limit reached; please try again after %1.</source>
+        <translation>已达到 GitHub API 请求限制，请在 %1 后重试。</translation>
+    </message>
+    <message>
+        <source>GitHub API rate limit reached; please try again later.</source>
+        <translation>已达到 GitHub API 请求限制，请稍后重试。</translation>
+    </message>
+    <message>
+        <source>Unable to check for DeskSend updates: %1</source>
+        <translation>无法检查 DeskSend 更新：%1</translation>
     </message>
 </context>
 </TS>

@@ -113,7 +113,11 @@ try {
                 throw ('无法检查后台进程路径，请以管理员身份运行或手动退出后台组件后重试：' + $process.ProcessName + ' (' + $process.Id + ')')
             }
             if ([IO.Path]::GetDirectoryName($procPath).TrimEnd('\') -ieq $installRoot.TrimEnd('\')) {
-                Stop-Process -Id $process.Id -Force -ErrorAction Stop
+                try {
+                    Stop-Process -Id $process.Id -Force -ErrorAction Stop
+                } catch [System.ComponentModel.Win32Exception], [UnauthorizedAccessException] {
+                    throw ('无法结束高权限后台进程，请以管理员身份运行或手动退出后台组件后重试：' + $process.ProcessName + ' (' + $process.Id + ')')
+                }
                 if (!$process.WaitForExit(10000)) {
                     throw ('后台进程未能在超时内退出：' + $process.ProcessName + ' (' + $process.Id + ')')
                 }

@@ -19,6 +19,10 @@ public:
   void checkLatest();
   static bool parseRelease(const QByteArray &json, Release &release, QString &error);
   static bool isNewer(const QString &current, const QString &candidate);
+  static QString formatHttpFailure(
+      int statusCode, const QByteArray &rateLimitRemaining, const QByteArray &rateLimitResetEpoch,
+      const QString &networkError
+  );
   const Release &release() const { return m_release; }
 Q_SIGNALS:
   void updateFound(const QString &version);
@@ -28,5 +32,8 @@ private:
   void replyFinished(QNetworkReply *reply);
   QNetworkAccessManager *m_network;
   Release m_release;
+  Release m_cachedRelease;
+  QString m_etag;
+  bool m_hasCachedRelease = false;
   bool m_checking = false;
 };

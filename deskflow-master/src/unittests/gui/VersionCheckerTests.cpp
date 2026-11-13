@@ -56,6 +56,16 @@ private Q_SLOTS:
     QVERIFY(!VersionChecker::parseRelease(QJsonDocument(release).toJson(), parsed, error));
     QVERIFY(!VersionChecker::parseRelease("not json", parsed, error));
   }
+  void httpRateLimitFormatting()
+  {
+    const QString rateLimited = VersionChecker::formatHttpFailure(403, "0", "1700000000", "Forbidden");
+    QVERIFY(rateLimited.contains(QStringLiteral("rate limit"), Qt::CaseInsensitive));
+    QVERIFY(rateLimited.contains(':'));
+    const QString tooMany = VersionChecker::formatHttpFailure(429, "", "", "Too Many Requests");
+    QVERIFY(tooMany.contains(QStringLiteral("rate limit"), Qt::CaseInsensitive));
+    const QString genericErr = VersionChecker::formatHttpFailure(500, "59", "", "Internal Server Error");
+    QVERIFY(genericErr.contains(QStringLiteral("Internal Server Error")));
+  }
 };
 QTEST_MAIN(VersionCheckerTests)
 #include "VersionCheckerTests.moc"

@@ -65,6 +65,9 @@ pub enum ServerEventV2 {
         /// The offered files, mapped by file ID.
         files: HashMap<String, FileDto>,
 
+        /// Non-secret SHA-256 hex tag (16 chars) of the supplied PIN/token, if any.
+        pin_tag: Option<String>,
+
         /// Channel to send the decision (accept all, a subset, or decline).
         decision_tx: oneshot::Sender<PrepareUploadDecisionV2>,
     },
@@ -285,6 +288,11 @@ pub(crate) async fn prepare_upload(
     // Frees the slot again if this request is aborted before a session is created.
     let mut pending_guard = PendingSessionGuard::new(v2.clone(), session_id.clone());
 
+    let pin_tag = query
+        .get("pin")
+        .filter(|pin| !pin.is_empty())
+        .map(|pin| crate::crypto::hash::sha256_hex(pin.as_bytes())[..16].to_string());
+
     let (decision_tx, decision_rx) = oneshot::channel();
     let event = ServerEventV2::PrepareUpload {
         session_id: session_id.clone(),
@@ -292,6 +300,7 @@ pub(crate) async fn prepare_upload(
         info: payload.info,
         cert_fingerprint: client_info.cert_fingerprint(),
         files: payload.files.clone(),
+        pin_tag,
         decision_tx,
     };
     if v2.event_tx.send(event).await.is_err() {

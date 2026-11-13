@@ -4,8 +4,10 @@
 #include <QDialog>
 #include <QCryptographicHash>
 #include <QSaveFile>
+#include <functional>
 #include <memory>
 class QLabel;
+class QNetworkAccessManager;
 class QProgressBar;
 class QPushButton;
 class QNetworkReply;
@@ -15,18 +17,25 @@ class UpdateDialog : public QDialog
 public:
   explicit UpdateDialog(QWidget *parent = nullptr);
   ~UpdateDialog() override;
+  void setConfirmInstall(std::function<bool()> confirm);
 Q_SIGNALS:
   void installRequested();
+public Q_SLOTS:
+  void reject() override;
 private:
+  void abortDownloadAndCleanup();
+  void cleanupTempDirectory();
   void download();
   void install();
   void fail(const QString &message);
   VersionChecker m_checker;
+  QNetworkAccessManager *m_network;
   QLabel *m_status;
   QProgressBar *m_progress;
   QPushButton *m_action;
   QPushButton *m_close;
   QNetworkReply *m_reply = nullptr;
+  std::function<bool()> m_confirmInstall;
   std::unique_ptr<QSaveFile> m_file;
   QCryptographicHash m_hash{QCryptographicHash::Sha256};
   QString m_directory;

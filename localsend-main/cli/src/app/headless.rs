@@ -433,6 +433,7 @@ pub(super) async fn run_receive(
                         info,
                         cert_fingerprint,
                         files,
+                        pin_tag,
                         decision_tx,
                     } => {
                         let has_client_cert = cert_fingerprint.is_some();
@@ -444,7 +445,21 @@ pub(super) async fn run_receive(
                         if authorized {
                             let ids: HashSet<String> = files.keys().cloned().collect();
                             if decision_tx.send(PrepareUploadDecisionV2::Accept(ids)).is_ok() {
-                                println!("RECEIVE_SESSION_STARTED:{}:{}:{}", session_id, ip, files.len());
+                                match pin_tag.as_deref() {
+                                    Some(tag) => println!(
+                                        "RECEIVE_SESSION_STARTED:{}:{}:{}:tok={}",
+                                        session_id,
+                                        ip,
+                                        files.len(),
+                                        tag
+                                    ),
+                                    None => println!(
+                                        "RECEIVE_SESSION_STARTED:{}:{}:{}",
+                                        session_id,
+                                        ip,
+                                        files.len()
+                                    ),
+                                }
                                 let state = ReceiveProgress {
                                     total: files.values().map(|f| f.size).sum(),
                                     pending: files.len(),

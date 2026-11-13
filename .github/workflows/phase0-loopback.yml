@@ -46,6 +46,10 @@ jobs:
         run: |
           $dfDir = (Get-ChildItem df -Directory | Select-Object -First 1).FullName
           pwsh -STA -NoProfile -File ./phase0/loopback-test.ps1 -DeskflowDir $dfDir -LocalSendCliExe "$PWD\ls\localsend-cli.exe" -OutDir "$PWD\out" -DisableLock "false"
+      - name: Full E2E DeskSend drag-and-drop transfer over mTLS (connect + reconnect)
+        run: |
+          $dfDir = (Get-ChildItem df -Directory | Select-Object -First 1).FullName
+          pwsh -STA -NoProfile -File ./phase0/loopback-test.ps1 -DeskflowDir $dfDir -LocalSendCliExe "$PWD\ls\localsend-cli.exe" -OutDir "$PWD\out-tls" -DisableLock "false" -TlsEnabled
       - name: Esc cancels drag without transferring or moving source files
         run: |
           $dfDir = (Get-ChildItem df -Directory | Select-Object -First 1).FullName
@@ -80,6 +84,10 @@ jobs:
             out/*.stdout
             out/*.stderr
             out/*.png
+            out-tls/*.log
+            out-tls/*.stdout
+            out-tls/*.stderr
+            out-tls/*.png
             out-cancel/*.log
             out-cancel/*.stdout
             out-cancel/*.stderr

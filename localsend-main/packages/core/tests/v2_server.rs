@@ -1520,3 +1520,85 @@ async fn test_pin_too_many_attempts() {
         .await;
     assert_status(result, 429);
 }
+
+#[tokio::test]
+async fn test_prepare_upload_emits_non_secret_pin_tag() {
+    let (event_tx, mut event_rx) = mpsc::channel::<ServerEventV2>(16);
+    let (_stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    let handle = start_with_port(
+        0,
+        None,
+        ClientInfo {
+            alias: "Test Server".to_string(),
+            version: "2.2".to_string(),
+            device_model: None,
+            device_type: None,
+            token: "server-fingerprint".to_string(),
+        },
+        None,
+        Some(ServerConfigV2 {
+            pin: None,
+            verify_checksums: true,
+            event_tx,
+        }),
+        WebConfig::default(),
+        stop_rx,
+    )
+    .await
+    .expect("Failed to start server");
+
+    let client = LsHttpClientV2::try_new_without_cert().unwrap();
+    let req_no_pin = client.prepare_upload(
+        ProtocolType::Http,
+        "127.0.0.1",
+        handle.port(),
+        None,
+        prepare_upload_request(&[file_dto("file-a", "a.txt", 5)]),
+        None,
+        CancellationToken::new(),
+    );
+    let obs_no_pin = async {
+        loop {
+            if let Some(ServerEventV2::PrepareUpload {
+                pin_tag,
+                decision_tx,
+                ..
+            }) = event_rx.recv().await
+            {
+                let _ = decision_tx.send(PrepareUploadDecisionV2::Decline);
+                return pin_tag;
+            }
+        }
+    };
+    let (res1, tag1) = tokio::join!(req_no_pin, obs_no_pin);
+    assert_status(res1, 403);
+    assert_eq!(tag1, None);
+
+    let secret = "desksend-secret-token-42";
+    handle.grant_v2_token(secret.to_string()).await;
+    let req_with_pin = client.prepare_upload(
+        ProtocolType::Http,
+        "127.0.0.1",
+        handle.port(),
+        None,
+        prepare_upload_request(&[file_dto("file-a", "a.txt", 5)]),
+        Some(secret),
+        CancellationToken::new(),
+    );
+    let obs_with_pin = async {
+        loop {
+            if let Some(ServerEventV2::PrepareUpload {
+                pin_tag,
+                decision_tx,
+                ..
+            }) = event_rx.recv().await
+            {
+                let _ = decision_tx.send(PrepareUploadDecisionV2::Decline);
+                return pin_tag;
+            }
+        }
+    };
+    let (res2, tag2) = tokio::join!(req_with_pin, obs_with_pin);
+    assert_status(res2, 403);
+    assert_eq!(tag2, Some(sha256_hex(secret.as_bytes())[..16].to_string()));
+}

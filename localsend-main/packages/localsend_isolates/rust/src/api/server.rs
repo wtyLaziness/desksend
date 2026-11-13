@@ -374,6 +374,7 @@ impl RsHttpServer {
                 cert_fingerprint,
                 files,
                 decision_tx,
+                ..
             } => {
                 *self.pending_decision.lock().await = Some((session_id.clone(), decision_tx));
                 sink.add(RsServerEvent::PrepareUpload {

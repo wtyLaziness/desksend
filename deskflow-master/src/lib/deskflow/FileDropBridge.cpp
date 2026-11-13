@@ -16,6 +16,7 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
@@ -72,7 +73,10 @@ class TransferStatus : public QWidget
 public:
   explicit TransferStatus(bool receiving) : QWidget(nullptr, Qt::Tool | Qt::WindowStaysOnTopHint), m_receiving(receiving)
   {
-    setWindowTitle(receiving ? QStringLiteral("DeskSend · 接收文件") : QStringLiteral("DeskSend · 发送文件"));
+    setWindowTitle(
+        receiving ? QCoreApplication::translate("FileDropBridge", "DeskSend · Receiving")
+                  : QCoreApplication::translate("FileDropBridge", "DeskSend · Sending")
+    );
     setAttribute(Qt::WA_ShowWithoutActivating);
     setWindowFlag(Qt::WindowDoesNotAcceptFocus);
     setMinimumWidth(380);
@@ -81,7 +85,7 @@ public:
     m_title = new QLabel(this);
     m_title->setWordWrap(true);
     m_bar = new QProgressBar(this);
-    m_bar->setAccessibleName(QStringLiteral("文件传输进度"));
+    m_bar->setAccessibleName(QCoreApplication::translate("FileDropBridge", "File transfer progress"));
     m_details = new QLabel(this);
     m_details->setWordWrap(true);
     layout->addWidget(m_title);
@@ -99,7 +103,7 @@ public:
     m_total = 0;
     m_title->setText(description);
     m_bar->setRange(0, 0);
-    m_details->setText(QStringLiteral("正在准备传输…"));
+    m_details->setText(QCoreApplication::translate("FileDropBridge", "Preparing transfer..."));
     adjustSize();
     if (auto *screen = QGuiApplication::primaryScreen()) {
       const auto area = screen->availableGeometry();
@@ -116,13 +120,21 @@ public:
     m_bar->setValue(total ? static_cast<int>(100.0 * m_done / total) : 0);
     const double seconds = qMax<qint64>(1, m_elapsed.elapsed()) / 1000.0;
     const double speed = m_done / seconds;
-    const QString eta = speed > 0 ? QStringLiteral("%1 秒").arg(static_cast<quint64>((total - m_done) / speed))
-                                  : QStringLiteral("估算中");
+    const QString eta = speed > 0
+                            ? QCoreApplication::translate("FileDropBridge", "%1 s").arg(
+                                  static_cast<quint64>((total - m_done) / speed)
+                              )
+                            : QCoreApplication::translate("FileDropBridge", "estimating");
     const QLocale locale;
-    m_details->setText(QStringLiteral("%1 / %2\n%3/s · 已用 %4 秒 · 预计剩余 %5")
-        .arg(locale.formattedDataSize(m_done), locale.formattedDataSize(total),
-             locale.formattedDataSize(static_cast<qint64>(speed)))
-        .arg(static_cast<quint64>(seconds)).arg(eta));
+    m_details->setText(
+        QCoreApplication::translate("FileDropBridge", "%1 / %2\n%3/s · Elapsed %4 s · Remaining %5")
+            .arg(
+                locale.formattedDataSize(m_done), locale.formattedDataSize(total),
+                locale.formattedDataSize(static_cast<qint64>(speed))
+            )
+            .arg(static_cast<quint64>(seconds))
+            .arg(eta)
+    );
   }
 
   void finish(bool success, const QString &message)
@@ -135,7 +147,11 @@ public:
     }
     m_title->setText(message);
     if (!success) {
-      m_details->setText(QStringLiteral("请检查网络、接收端口和 localsend-cli.exe；详细原因见日志。"));
+      m_details->setText(
+          QCoreApplication::translate(
+              "FileDropBridge", "Check network connection, receiver port, and localsend-cli.exe; see logs for details."
+          )
+      );
     }
     show();
     m_hide.start(success ? 8000 : 20000);
@@ -161,7 +177,11 @@ TransferStatus &transferStatus(bool receiving)
 
 void transferBegin(bool receiving, const QString &description)
 {
-  if (auto *app = QCoreApplication::instance(); app && QThread::currentThread() != app->thread()) {
+  auto *app = QCoreApplication::instance();
+  if (!app || !app->inherits("QApplication")) {
+    return;
+  }
+  if (QThread::currentThread() != app->thread()) {
     QMetaObject::invokeMethod(
         app, [receiving, description]() { transferStatus(receiving).begin(description); }, Qt::QueuedConnection
     );
@@ -172,7 +192,11 @@ void transferBegin(bool receiving, const QString &description)
 
 void transferProgress(bool receiving, quint64 done, quint64 total)
 {
-  if (auto *app = QCoreApplication::instance(); app && QThread::currentThread() != app->thread()) {
+  auto *app = QCoreApplication::instance();
+  if (!app || !app->inherits("QApplication")) {
+    return;
+  }
+  if (QThread::currentThread() != app->thread()) {
     QMetaObject::invokeMethod(
         app, [receiving, done, total]() { transferStatus(receiving).progress(done, total); }, Qt::QueuedConnection
     );
@@ -183,7 +207,11 @@ void transferProgress(bool receiving, quint64 done, quint64 total)
 
 void transferFinish(bool receiving, bool success, const QString &message)
 {
-  if (auto *app = QCoreApplication::instance(); app && QThread::currentThread() != app->thread()) {
+  auto *app = QCoreApplication::instance();
+  if (!app || !app->inherits("QApplication")) {
+    return;
+  }
+  if (QThread::currentThread() != app->thread()) {
     QMetaObject::invokeMethod(
         app, [receiving, success, message]() { transferStatus(receiving).finish(success, message); },
         Qt::QueuedConnection
@@ -946,7 +974,6 @@ void FileDropBridge::onLeavePrimary(BaseClientProxy *dstClient)
 #endif
 
   std::vector<std::string> files;
-  std::string token;
   {
     std::scoped_lock lock(m_mutex);
     if (m_pendingFiles.empty() || (nowMs() - m_pendingTimestampMs) > 4000) {
@@ -955,6 +982,16 @@ void FileDropBridge::onLeavePrimary(BaseClientProxy *dstClient)
     }
     files = std::move(m_pendingFiles);
     m_pendingFiles.clear();
+  }
+
+  if (!hasTransferableFiles(files)) {
+    LOG_INFO("FileDropBridge: dragged path(s) contain no transferable files; skipping cross-screen drag");
+    return;
+  }
+
+  std::string token;
+  {
+    std::scoped_lock lock(m_mutex);
     m_activeDragFiles = files;
     m_dragTargetClient = dstClient;
     if (dstClient) {
@@ -1071,6 +1108,10 @@ void FileDropBridge::onSecondaryLeftMouseUp(BaseClientProxy *activeClient, int32
   }
 
   std::string dropMsg = "DESKSEND_DROP:" + std::to_string(x) + "," + std::to_string(y);
+  const std::string tag = computeTokenTag(token);
+  if (!tag.empty()) {
+    dropMsg += ":" + tag;
+  }
   activeClient->sendDragInfo(static_cast<uint32_t>(files.size()), dropMsg.data(), dropMsg.size());
 
   LOG_INFO(
@@ -1138,6 +1179,17 @@ std::string FileDropBridge::findLocalSendCliPath()
   return exeName.toStdString();
 }
 
+std::string FileDropBridge::computeTokenTag(const std::string &token)
+{
+  if (token.empty()) {
+    return {};
+  }
+  const QByteArray digest = QCryptographicHash::hash(
+      QByteArray::fromRawData(token.data(), static_cast<qsizetype>(token.size())), QCryptographicHash::Sha256
+  );
+  return digest.toHex().left(16).toStdString();
+}
+
 void FileDropBridge::sendFilesViaLocalSend(
     const std::string &targetIp, const std::vector<std::string> &files, const std::string &authToken
 )
@@ -1183,7 +1235,7 @@ void FileDropBridge::processNextSendJob()
 
   if (job.authToken.empty()) {
     LOG_WARN("FileDropBridge: missing authorization token for send job to %s; aborting", job.targetIp.c_str());
-    transferFinish(false, false, QStringLiteral("发送失败：缺少传输授权令牌"));
+    transferFinish(false, false, QCoreApplication::translate("FileDropBridge", "Send failed: missing transfer authorization token"));
     processNextSendJob();
     return;
   }
@@ -1223,7 +1275,7 @@ void FileDropBridge::processNextSendJob()
   QDir().mkpath(senderCfgDir);
   env.insert(QStringLiteral("XDG_CONFIG_HOME"), senderCfgDir);
   proc->setProcessEnvironment(env);
-  transferBegin(false, QStringLiteral("正在发送到 %1").arg(destination));
+  transferBegin(false, QCoreApplication::translate("FileDropBridge", "Sending to %1").arg(destination));
   QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [proc]() {
     while (proc->canReadLine()) {
       const QString line = QString::fromUtf8(proc->readLine()).trimmed();
@@ -1251,7 +1303,7 @@ void FileDropBridge::processNextSendJob()
   QObject::connect(proc, &QProcess::errorOccurred, proc, [this, proc, destination](QProcess::ProcessError error) {
     if (error == QProcess::FailedToStart) {
       LOG_WARN("FileDropBridge: failed to start localsend-cli for %s", destination.toStdString().c_str());
-      transferFinish(false, false, QStringLiteral("发送失败：无法启动 localsend-cli.exe"));
+      transferFinish(false, false, QCoreApplication::translate("FileDropBridge", "Send failed: unable to launch localsend-cli.exe"));
       proc->deleteLater();
       processNextSendJob();
     }
@@ -1261,7 +1313,11 @@ void FileDropBridge::processNextSendJob()
     const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
     const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
     const bool success = exitCode == 0 && status == QProcess::NormalExit;
-    transferFinish(false, success, success ? QStringLiteral("文件发送完成") : QStringLiteral("文件发送失败"));
+    transferFinish(
+        false, success,
+        success ? QCoreApplication::translate("FileDropBridge", "File transfer completed")
+                : QCoreApplication::translate("FileDropBridge", "File transfer failed")
+    );
     if (success) {
       LOG_INFO("FileDropBridge: LocalSend transfer to %s succeeded", destination.toStdString().c_str());
     } else {
@@ -1407,7 +1463,10 @@ void FileDropBridge::startReceiverInternal(const std::string &serverHost, bool i
       }
       proc->deleteLater();
       if (shouldWarn) {
-        transferFinish(true, false, QStringLiteral("接收端启动失败：无法启动 localsend-cli.exe"));
+        transferFinish(
+            true, false,
+            QCoreApplication::translate("FileDropBridge", "Receiver failed to start: unable to launch localsend-cli.exe")
+        );
       }
     }
   });
@@ -1447,8 +1506,11 @@ void FileDropBridge::startReceiverInternal(const std::string &serverHost, bool i
         }
         transferFinish(
             true, false,
-            shouldRestart ? QStringLiteral("文件接收监听意外停止，正在尝试自动恢复…")
-                          : QStringLiteral("文件接收监听已停止，请检查端口是否被占用")
+            shouldRestart
+                ? QCoreApplication::translate(
+                      "FileDropBridge", "File receiver stopped unexpectedly, attempting automatic recovery..."
+                  )
+                : QCoreApplication::translate("FileDropBridge", "File receiver stopped; verify that the port is available")
         );
         if (shouldRestart) {
           LOG_WARN(
@@ -1498,12 +1560,19 @@ void FileDropBridge::startReceiverInternal(const std::string &serverHost, bool i
       } else if (line.startsWith(QStringLiteral("RECEIVE_FILE_FAILED:"))) {
         handleReceiveFileFailedLine();
       } else if (line.startsWith(startPrefix)) {
-        size_t expectedCount = 0;
-        const int lastColon = line.lastIndexOf(':');
-        if (lastColon > 0) {
-          expectedCount = static_cast<size_t>(line.mid(lastColon + 1).toUInt());
+        QString header = line;
+        std::string tokenTag;
+        const int tokSep = header.lastIndexOf(QStringLiteral(":tok="));
+        if (tokSep > 0) {
+          tokenTag = header.mid(tokSep + 5).toStdString();
+          header = header.left(tokSep);
         }
-        handleReceiveSessionStarted(expectedCount);
+        size_t expectedCount = 0;
+        const int lastColon = header.lastIndexOf(':');
+        if (lastColon > 0) {
+          expectedCount = static_cast<size_t>(header.mid(lastColon + 1).toUInt());
+        }
+        handleReceiveSessionStarted(expectedCount, tokenTag);
       } else if (line.startsWith(QStringLiteral("RECEIVE_SESSION_FINISHED:"))) {
         handleReceiveSessionFinished(false);
       } else if (line.startsWith(QStringLiteral("RECEIVE_SESSION_CANCELLED:"))) {
@@ -1587,7 +1656,14 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
     auto comma = coords.find(',');
     if (comma != std::string::npos) {
       int32_t x = std::atoi(coords.substr(0, comma).c_str());
-      int32_t y = std::atoi(coords.substr(comma + 1).c_str());
+      const std::string rest = coords.substr(comma + 1);
+      const auto tagSep = rest.find(':');
+      const int32_t y = std::atoi((tagSep == std::string::npos ? rest : rest.substr(0, tagSep)).c_str());
+      std::string tokenTag = (tagSep == std::string::npos) ? std::string{} : rest.substr(tagSep + 1);
+      const size_t nl = tokenTag.find_first_of("\r\n");
+      if (nl != std::string::npos) {
+        tokenTag.resize(nl);
+      }
       std::string fallback;
       {
         std::scoped_lock lock(m_mutex);
@@ -1602,7 +1678,7 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
           m_pendingDropTargets.pop_front();
         }
         m_lastResolvedDropDir = resolved;
-        m_pendingDropTargets.push_back(DropTargetEntry{resolved, !isDirectFolder, now});
+        m_pendingDropTargets.push_back(DropTargetEntry{resolved, !isDirectFolder, now, tokenTag});
       }
       LOG_INFO(
           "FileDropBridge: remote drop at (%d,%d) for %u file(s) -> target folder \"%s\" (directFolder=%d)", x, y,
@@ -1634,13 +1710,20 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
       }
       if (!token.empty() && token.find_first_of(" \t\r\n") == std::string::npos) {
         queueReceiverAuthCommand("REVOKE " + token);
+        const std::string cancelTag = computeTokenTag(token);
+        if (!cancelTag.empty()) {
+          std::scoped_lock lock(m_mutex);
+          std::erase_if(m_pendingDropTargets, [&cancelTag](const DropTargetEntry &entry) {
+            return entry.tokenTag == cancelTag;
+          });
+        }
       }
     }
     LOG_INFO("FileDropBridge: incoming drag cancelled");
   }
 }
 
-void FileDropBridge::handleReceiveSessionStarted(size_t expectedFiles)
+void FileDropBridge::handleReceiveSessionStarted(size_t expectedFiles, const std::string &tokenTag)
 {
   finalizeActiveSession();
   {
@@ -1656,7 +1739,26 @@ void FileDropBridge::handleReceiveSessionStarted(size_t expectedFiles)
     m_activeSessionFailed = false;
     m_activeReceiveSession = true;
     notifyActiveTransfersChangedLocked();
-    if (!m_pendingDropTargets.empty()) {
+    if (!tokenTag.empty()) {
+      auto it = std::find_if(
+          m_pendingDropTargets.begin(), m_pendingDropTargets.end(),
+          [&tokenTag](const DropTargetEntry &entry) { return entry.tokenTag == tokenTag; }
+      );
+      if (it == m_pendingDropTargets.end()) {
+        // Legacy fallback when the drop message had no token tag
+        it = std::find_if(
+            m_pendingDropTargets.begin(), m_pendingDropTargets.end(),
+            [](const DropTargetEntry &entry) { return entry.tokenTag.empty(); }
+        );
+      }
+      if (it != m_pendingDropTargets.end()) {
+        m_activeSessionTarget = std::move(*it);
+        m_pendingDropTargets.erase(m_pendingDropTargets.begin(), std::next(it));
+      } else {
+        m_activeSessionTarget = DropTargetEntry{};
+        LOG_WARN("FileDropBridge: no matching pending drop target for token tag; files will remain in staging");
+      }
+    } else if (!m_pendingDropTargets.empty()) {
       m_activeSessionTarget = std::move(m_pendingDropTargets.front());
       m_pendingDropTargets.pop_front();
     } else {
@@ -1664,7 +1766,10 @@ void FileDropBridge::handleReceiveSessionStarted(size_t expectedFiles)
       LOG_WARN("FileDropBridge: no pending drop target for receive session; files will remain in staging");
     }
   }
-  transferBegin(true, QStringLiteral("正在接收 %1 个文件").arg(static_cast<qulonglong>(expectedFiles)));
+  transferBegin(
+      true,
+      QCoreApplication::translate("FileDropBridge", "Receiving %1 file(s)").arg(static_cast<qulonglong>(expectedFiles))
+  );
 }
 
 void FileDropBridge::handleReceiveSessionFinished(bool cancelled)
@@ -1732,7 +1837,8 @@ void FileDropBridge::finalizeActiveSession()
   if (sessionEnded) {
     transferFinish(
         true, !sessionFailed,
-        sessionFailed ? QStringLiteral("文件接收失败或传输已取消") : QStringLiteral("文件接收完成")
+        sessionFailed ? QCoreApplication::translate("FileDropBridge", "File receive failed or transfer was cancelled")
+                      : QCoreApplication::translate("FileDropBridge", "File receive completed")
     );
   }
 

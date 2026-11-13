@@ -14,6 +14,7 @@
 
 class BaseClientProxy;
 class QProcess;
+class FileDropBridgeTests;
 
 namespace deskflow {
 
@@ -79,7 +80,12 @@ public:
   // Locates localsend-cli binary next to current executable or via DESKSEND_LOCALSEND_CLI
   static std::string findLocalSendCliPath();
 
+  // Computes a 16-hex-char SHA-256 correlation tag for a transfer auth token
+  static std::string computeTokenTag(const std::string &token);
+
 private:
+  friend class ::FileDropBridgeTests;
+
   struct SendJob
   {
     std::string targetIp;
@@ -92,6 +98,7 @@ private:
     std::string dir;
     bool copyToClipboard = false;
     uint64_t timestampMs = 0;
+    std::string tokenTag;
   };
 
   FileDropBridge() = default;
@@ -103,7 +110,7 @@ private:
   void queueReceiverAuthCommand(const std::string &command);
   void handleReceivedFileLine(const std::string &filePath);
   void handleReceiveFileFailedLine();
-  void handleReceiveSessionStarted(size_t expectedFiles);
+  void handleReceiveSessionStarted(size_t expectedFiles, const std::string &tokenTag = {});
   void handleReceiveSessionFinished(bool cancelled);
   void finalizeActiveSession();
   void notifyActiveTransfersChangedLocked();

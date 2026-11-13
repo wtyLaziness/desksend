@@ -4,7 +4,8 @@
   [string]$OutDir,
   [string]$DisableLock = 'false',
   [switch]$CancelDrag,
-  [switch]$ReturnBeforeRelease
+  [switch]$ReturnBeforeRelease,
+  [switch]$TlsEnabled
 )
 $ErrorActionPreference = 'Continue'
 New-Item -ItemType Directory -Force $OutDir | Out-Null
@@ -193,6 +194,39 @@ end
 "@ | Set-Content "$script:out\layout.cfg" -Encoding ASCII
 
 $layout = ("$script:out\layout.cfg") -replace '\\','/'
+$tlsFlag = if ($TlsEnabled) { 'true' } else { 'false' }
+$srvCertLine = ''
+$cliCertLine = ''
+if ($TlsEnabled) {
+  $tlsDir = "$script:out\tls"
+  New-Item -ItemType Directory -Force $tlsDir | Out-Null
+  $utf8NoBom = [Text.UTF8Encoding]::new($false)
+  function New-LoopbackTlsCert([string]$cn, [string]$pemPath) {
+    $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+    $req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+      "CN=$cn", $rsa, [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+      [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+    )
+    $cert = $req.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1), [DateTimeOffset]::UtcNow.AddDays(30))
+    try {
+      $pem = $cert.ExportCertificatePem() + "`n" + $rsa.ExportPkcs8PrivateKeyPem()
+      [IO.File]::WriteAllText($pemPath, $pem, $utf8NoBom)
+      return ('v2:sha256:' + $cert.GetCertHashString([System.Security.Cryptography.HashAlgorithmName]::SHA256).ToLowerInvariant())
+    } finally {
+      $cert.Dispose()
+      $rsa.Dispose()
+    }
+  }
+  $srvPem = "$tlsDir\server.pem"
+  $cliPem = "$tlsDir\client.pem"
+  $srvFp = New-LoopbackTlsCert 'DeskSendLoopbackServer' $srvPem
+  $cliFp = New-LoopbackTlsCert 'DeskSendLoopbackClient' $cliPem
+  [IO.File]::WriteAllText("$tlsDir\trusted-servers", ($srvFp + "`n"), $utf8NoBom)
+  [IO.File]::WriteAllText("$tlsDir\trusted-clients", ($cliFp + "`n"), $utf8NoBom)
+  $srvCertLine = "`ncertificate=$($srvPem -replace '\\','/')"
+  $cliCertLine = "`ncertificate=$($cliPem -replace '\\','/')"
+  Log "Generated TLS certificates: server=$srvFp client=$cliFp"
+}
 @"
 [core]
 computerName=host
@@ -200,8 +234,8 @@ port=24800
 coreMode=2
 interface=127.0.0.1
 [security]
-tlsEnabled=false
-checkPeerFingerprints=false
+tlsEnabled=$tlsFlag
+checkPeerFingerprints=$tlsFlag$srvCertLine
 [server]
 externalConfig=true
 externalConfigFile=$layout
@@ -225,8 +259,8 @@ coreMode=1
 [client]
 remoteHost=127.0.0.1
 [security]
-tlsEnabled=false
-checkPeerFingerprints=false
+tlsEnabled=$tlsFlag
+checkPeerFingerprints=$tlsFlag$cliCertLine
 [log]
 level=DEBUG
 toFile=true
@@ -267,6 +301,14 @@ for ($i = 0; $i -lt 30; $i++) {
 if (!$reconnected) { throw 'Client did not reconnect automatically after server restart' }
 $afterIds = @(Get-Process localsend-cli -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
 if (@(Compare-Object $receiverIds $afterIds).Count -ne 0) { throw 'Receiver was duplicated or restarted on reconnect' }
+if ($TlsEnabled) {
+  $tlsClients = @(Select-String -Path "$script:out\client.log" -Pattern 'connected to secure socket').Count
+  $tlsServers = @(Select-String -Path "$script:out\server.log" -Pattern 'accepted secure socket').Count
+  if ($tlsClients -lt 2 -or $tlsServers -lt 2) {
+    throw "Expected TLS handshake on initial connect and reconnect (client=$tlsClients server=$tlsServers)"
+  }
+  Log "Verified mTLS handshake on connect and reconnect (client=$tlsClients server=$tlsServers)"
+}
 Log 'Client waited for late server, reconnected after restart, and reused the receiver'
 $sh = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height
 Log "server alive=$(-not $srv.HasExited) client alive=$(-not $cli.HasExited) DisableLock=$DisableLock screen=${sw}x${sh}"

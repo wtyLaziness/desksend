@@ -609,6 +609,8 @@ void SecureSocket::checkResult(int status, int &retry)
 void SecureSocket::disconnect()
 {
   using enum EventTypes;
+  m_retry = 0;
+  m_secureReady = false;
   sendEvent(SocketDisconnected);
   sendEvent(StreamInputShutdown);
 }
