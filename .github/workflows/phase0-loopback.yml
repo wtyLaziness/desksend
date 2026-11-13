@@ -2,6 +2,11 @@ name: phase0-loopback
 on:
   workflow_dispatch:
     inputs:
+      compare_1_0_0:
+        description: "Verify the reverse-jitter regression fails on the original 1.0.0 binaries"
+        required: false
+        type: boolean
+        default: false
       binaries_commit:
         description: "Optional commit with identical production sources and successful builds"
         required: false
@@ -49,6 +54,23 @@ jobs:
         run: |
           $dfDir = (Get-ChildItem df -Directory | Select-Object -First 1).FullName
           pwsh -STA -NoProfile -File ./phase0/loopback-test.ps1 -DeskflowDir $dfDir -LocalSendCliExe "$PWD\ls\localsend-cli.exe" -OutDir "$PWD\out-return" -DisableLock "false" -ReturnBeforeRelease
+      - name: Confirm reverse jitter fails on the original 1.0.0 build
+        if: ${{ inputs.compare_1_0_0 }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 43056794092 -n deskflow-win-x64 -D df-original
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot download original baseline' }
+          Expand-Archive (Get-ChildItem df-original\*.zip).FullName -DestinationPath df-original
+          $original = (Get-ChildItem df-original -Directory | Select-Object -First 1).FullName
+          pwsh -STA -NoProfile -File ./phase0/loopback-test.ps1 -DeskflowDir $original -LocalSendCliExe "$PWD\ls\localsend-cli.exe" -OutDir "$PWD\out-original" -DisableLock "false"
+          $result = $LASTEXITCODE
+          $log = Get-Content out-original/test.log -Raw
+          if ($result -eq 0 -or !$log.Contains('File drag bounced back immediately after screen handoff')) {
+            throw 'Original build did not fail for the expected reverse-jitter reason'
+          }
+          Write-Output 'BOUNCE_NEGATIVE_CONTROL_PASSED: original 1.0.0 cancelled the drag on reverse jitter'
+          exit 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -58,3 +80,4 @@ jobs:
             out-cancel/
             out-return/
             out-branding/
+            out-original/
