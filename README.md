@@ -5,7 +5,6 @@
   <p>
     <a href="https://github.com/wtyLaziness/desksend/actions/workflows/deskflow-win.yml"><img src="https://github.com/wtyLaziness/desksend/actions/workflows/deskflow-win.yml/badge.svg" alt="deskflow-win"></a>
     <a href="https://github.com/wtyLaziness/desksend/actions/workflows/localsend-cli-win.yml"><img src="https://github.com/wtyLaziness/desksend/actions/workflows/localsend-cli-win.yml/badge.svg" alt="localsend-cli-win"></a>
-    <a href="https://github.com/wtyLaziness/desksend/actions/workflows/e2e-loopback.yml"><img src="https://github.com/wtyLaziness/desksend/actions/workflows/e2e-loopback.yml/badge.svg" alt="e2e-loopback"></a>
   </p>
   <p>
     <a href="https://github.com/wtyLaziness/desksend/releases/latest">下载最新完整包</a> ·
@@ -131,10 +130,9 @@ flowchart LR
 | [`deskflow-master/`](deskflow-master/) | DeskSend GUI、`deskflow-core`、跨屏拖拽桥接 `FileDropBridge`、内建更新器与版本定义 [`DeskSendVersion.cmake`](deskflow-master/cmake/DeskSendVersion.cmake)。 |
 | [`localsend-main/`](localsend-main/) | 精简后的 Rust 工作区，仅保留后台文件收发进程 [`cli/`](localsend-main/cli/) 与 LocalSend 协议实现 [`packages/core/`](localsend-main/packages/core/)。 |
 | [`scripts/`](scripts/) | 完整发布包、对应源码归档与 `SHA256SUMS.txt` 组装脚本 [`package-release.py`](scripts/package-release.py)。 |
-| [`tests/`](tests/) | 便携更新器自测 [`update-test.ps1`](tests/update-test.ps1)、品牌检查 [`branding-test.ps1`](tests/branding-test.ps1)、双角色拖拽回环 E2E [`loopback-test.ps1`](tests/loopback-test.ps1) 及代理脚本 [`input-proxy.py`](tests/input-proxy.py) / [`slow-proxy.py`](tests/slow-proxy.py)。 |
 | [`docs/`](docs/) | [使用指南](docs/使用指南.md)、[构建与发布说明](docs/构建与发布.md) 与 [发布与更新说明](docs/发布与更新.md)。 |
-| [`.github/workflows/`](.github/workflows/) | `deskflow-win`（C++ 构建/单测/更新验证）、`localsend-cli-win`（Rust 构建/单测/32 MiB 收发验证）、`e2e-loopback`（常规/mTLS/取消/回切跨屏回环 E2E）。 |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | 本地开发环境、单元测试与 E2E 运行命令、工程约定与 PR 要求。 |
+| [`.github/workflows/`](.github/workflows/) | `deskflow-win`（C++ 构建/单测与打包）与 `localsend-cli-win`（Rust 构建/单测与打包）。 |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | 本地开发环境、构建与单元测试命令、工程约定与 PR 要求。 |
 
 想从源码构建或提交 PR，请先阅读 [构建与发布](docs/构建与发布.md) 与 [贡献指南](CONTRIBUTING.md)。
 
@@ -144,4 +142,4 @@ flowchart LR
 
 - **Deskflow 键鼠共享核心、GUI 及对应修改**：`GPL-2.0-only WITH LicenseRef-OpenSSL-Exception`（[GPLv2](deskflow-master/LICENSE)、[OpenSSL 链接例外](deskflow-master/LICENSES/LicenseRef-OpenSSL-Exception.txt)）
 - **LocalSend 文件传输组件及对应修改**：`Apache-2.0`（[LocalSend LICENSE](localsend-main/LICENSE)）
-- **构建与测试辅助脚本**：按各文件头部 SPDX 声明或上游原始许可提供，完整许可说明见 [许可证索引](LICENSE.md)。
+- **构建与发布脚本**：按各文件头部 SPDX 声明或上游原始许可提供，完整许可说明见 [许可证索引](LICENSE.md)。

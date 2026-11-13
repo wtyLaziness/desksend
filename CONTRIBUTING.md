@@ -12,7 +12,7 @@ DeskSend 仓库由多个相对独立的子模块组成，请按修改位置准�
 | --- | --- | --- | --- |
 | [`deskflow-master/`](deskflow-master/) | C++20 / Qt 6 | MSVC x64、CMake、Ninja、Qt `6.8.*`、vcpkg | `GPL-2.0-only WITH LicenseRef-OpenSSL-Exception` |
 | [`localsend-main/`](localsend-main/) | Rust (Cargo Workspace：`cli/` + `packages/core/`) | [`localsend-main/rust-toolchain.toml`](localsend-main/rust-toolchain.toml) 指定工具链（`1.97.1` + `clippy`） | `Apache-2.0` |
-| [`scripts/`](scripts/) 与 [`tests/`](tests/) | Python / PowerShell | PowerShell 7（`pwsh -STA`）、Python 3 | 见各文件 SPDX 头（如 `MIT`） |
+| [`scripts/`](scripts/) | Python | Python 3 | `MIT` / 见文件头声明 |
 | [`docs/`](docs/) 与根目录文档 | Markdown | — | 与所属项目一致 |
 
 ---
@@ -66,35 +66,7 @@ cargo test --features full
 Pop-Location
 ```
 
-### 3. 更新器、品牌校验与端到端回环（`tests/`）
-
-- **便携更新器自测**（覆盖正常安装、过期文件清理与备份修剪、外层/内层哈希错误、缺失组件、Zip-Slip 路径穿越共 6 项用例，不会改动现有工作区设置）：
-
-  ```powershell
-  pwsh -NoProfile -File tests/update-test.ps1
-  ```
-
-- **品牌与可执行身份检查**：
-
-  ```powershell
-  pwsh -NoProfile -File tests/branding-test.ps1 -DeskflowDir <解压后的便携包目录> -OutDir <临时输出目录>
-  ```
-
-- **完整跨屏拖拽回环 E2E**（需要桌面交互会话、`pwsh -STA`、基础 Deskflow 解压目录与 `localsend-cli.exe`）：
-
-  ```powershell
-  # 常规拖放
-  pwsh -STA -NoProfile -File tests/loopback-test.ps1 -DeskflowDir <目录> -LocalSendCliExe <localsend-cli.exe> -OutDir <临时目录> -DisableLock "false"
-
-  # mTLS 连接 + 断线重连拖放
-  pwsh -STA -NoProfile -File tests/loopback-test.ps1 -DeskflowDir <目录> -LocalSendCliExe <localsend-cli.exe> -OutDir <临时目录> -DisableLock "false" -TlsEnabled
-
-  # Esc 取消 / 拖回主屏松手取消
-  pwsh -STA -NoProfile -File tests/loopback-test.ps1 -DeskflowDir <目录> -LocalSendCliExe <localsend-cli.exe> -OutDir <临时目录> -DisableLock "false" -CancelDrag
-  pwsh -STA -NoProfile -File tests/loopback-test.ps1 -DeskflowDir <目录> -LocalSendCliExe <localsend-cli.exe> -OutDir <临时目录> -DisableLock "false" -ReturnBeforeRelease
-  ```
-
-> `.gitignore` 已忽略 `deskflow-master/build/`、`deskflow-bin/`、`tests/bin/` 与 `localsend-main/target/`；提交前仍应检查并清理额外的临时目录或 Python `__pycache__`。
+> `.gitignore` 已忽略 `deskflow-master/build/`、`deskflow-bin/` 与 `localsend-main/target/`；提交前仍应检查并清理额外的临时目录或 Python `__pycache__`。涉及拖拽、取消或更新安装的改动，请在真实双机环境中覆盖成功传输、取消、回切与重连场景。
 
 ---
 
@@ -129,18 +101,15 @@ GitHub Actions 包含以下主要工作流：
 
 | 工作流 | 触发范围 | 验证内容 |
 | --- | --- | --- |
-| [`deskflow-win`](.github/workflows/deskflow-win.yml) | `deskflow-master/**`、`tests/update-test.ps1` | MSVC x64 + Qt 6.8 构建、打包 ZIP、全部 CTest、以及 `tests/update-test.ps1`。 |
+| [`deskflow-win`](.github/workflows/deskflow-win.yml) | `deskflow-master/**` | MSVC x64 + Qt 6.8 构建、全部 CTest 单元测试与打包 ZIP。 |
 | [`localsend-cli-win`](.github/workflows/localsend-cli-win.yml) | `localsend-main/cli/**`、`localsend-main/packages/core/**` 与 Rust 清单 | Rust 单元与集成测试、`localsend-cli.exe` 发布构建、以及 32 MiB 同机与 `--auth-stdin` 收发 E2E。 |
-| [`e2e-loopback`](.github/workflows/e2e-loopback.yml) | 手动触发（`workflow_dispatch`） | 品牌烟测、常规跨屏传输、mTLS 连接/重连传输、`Esc` 取消与回主屏取消 E2E。 |
-
-> 仅修改 `tests/` 测试或代理脚本而未改动生产源码时，触发 `e2e-loopback` 可将输入参数 `binaries_commit` 指向生产源码完全相同的已有构建提交，工作流会自动校验 `git diff` 并复用其产物。
 
 ### 提交前检查清单
 
 - [ ] 改动围绕单一目标，未包含无关格式化或废弃文件。
 - [ ] 已运行与修改相匹配的本地测试或 GitHub Actions 工作流；文档类改动已核对链接和命令行可用性。
 - [ ] 使用独立临时目录和虚构数据进行测试，不读取个人真实资料或生产证书。
-- [ ] 确认 `git status` 不含运行目录、构建输出、`settings/`、`deskflow-bin/`、`tests/bin/`、`*.pem`、`*.key`、`*.log` 或任何密钥/token。
+- [ ] 确认 `git status` 不含运行目录、构建输出、`settings/`、`deskflow-bin/`、`*.pem`、`*.key`、`*.log` 或任何密钥/token。
 - [ ] 提交说明和 PR 描述中写清背景、行为变化以及**实际执行过**的验证方式与范围。
 
 ---
