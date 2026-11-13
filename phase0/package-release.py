@@ -42,7 +42,7 @@ settings = root / 'settings'
 settings.mkdir(exist_ok=True)
 if any(p.is_file() and p.name != 'Deskflow.conf' for p in settings.rglob('*')):
     raise ValueError('构建产物中混入了本机配置或证书')
-(settings / 'Deskflow.conf').write_text('[gui]\nenableUpdateCheck=true\n[core]\nlanguage=简体中文\n', encoding='utf-8')
+(settings / 'Deskflow.conf').write_text('[gui]\nenableUpdateCheck=true\n[core]\nlanguage=zh_CN\n', encoding='utf-8')
 (root / 'README.txt').write_text('''DeskSend {version} Windows x64 便携版
 
 解压完整目录，运行 DeskSend.exe。两台电脑均使用此完整包。

@@ -39,7 +39,11 @@ void I18NTests::initTestCase()
 
 void I18NTests::creationTest()
 {
+  Settings::setValue(Settings::Core::Language, QStringLiteral("\u7b80\u4f53\u4e2d\u6587"));
   QVERIFY(I18N::instance());
+  QCOMPARE(I18N::currentLanguage(), QStringLiteral("zh_CN"));
+  QCOMPARE(Settings::value(Settings::Core::Language).toString(), QStringLiteral("zh_CN"));
+  QCOMPARE(QCoreApplication::translate("MainWindow", "&Help"), QStringLiteral("\u5e2e\u52a9(&H)"));
 }
 
 void I18NTests::detectedLangTest()

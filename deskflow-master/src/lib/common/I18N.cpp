@@ -100,6 +100,14 @@ I18N::I18N(QObject *parent) : QObject{parent}
     }
   } else {
     m_currentLang = Settings::value(Settings::Core::Language).toString();
+    // 修复 1.0.0 默认配置误把语言显示名称保存为语言代码的问题。
+    if (!m_translations.contains(m_currentLang)) {
+      const auto code = m_nameMap.key(m_currentLang);
+      if (!code.isEmpty()) {
+        m_currentLang = code;
+        Settings::setValue(Settings::Core::Language, code);
+      }
+    }
     const auto translations = m_translations.value(m_currentLang);
     for (const auto &translation : translations) {
       auto translator = new QTranslator(this);

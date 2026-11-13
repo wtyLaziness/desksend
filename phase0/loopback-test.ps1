@@ -30,6 +30,7 @@ public class MouseDriver {
   public const uint WM_CLOSE = 0x0010;
   public static readonly UIntPtr MAGIC_EXTRA = new UIntPtr(0x44534B53);
   public static string ProxyLog;
+  public static string ServerLog;
   public static volatile bool NativeDragEnded;
   public static bool CancelDrag;
   public static bool ReturnBeforeRelease;
@@ -80,6 +81,14 @@ public class MouseDriver {
           MoveAbs(sw - 1, startY, sw, sh);
           Thread.Sleep(30);
         }
+
+        // 复现真机首次反向抖动，文件仍应留在副屏等待松手。
+        MoveAbs(sw / 2 - 11, sh / 2, sw, sh);
+        Thread.Sleep(80);
+        if (ReadShared(ServerLog).Contains("cursor returned to primary before release; cancelling file drag")) {
+          throw new Exception("File drag bounced back immediately after screen handoff");
+        }
+        System.IO.File.AppendAllText(logPath, "[Thread] Reverse jitter after handoff did not cancel drag\r\n");
 
         // 3. Move slightly on the client screen relative to server center (sw/2, sh/2), then release left mouse button
         for (int i = 0; i < 6; i++) {
@@ -160,6 +169,7 @@ $env:DESKSEND_DEFAULT_DROP_DIR = $dropDest
 $env:DESKSEND_TARGET_PORT = '53320'
 $proxyLog = "$script:out\proxy.log"
 [MouseDriver]::ProxyLog = $proxyLog
+[MouseDriver]::ServerLog = "$script:out\server.log"
 $proxy = Start-Process python -ArgumentList '-u',"$PSScriptRoot\slow-proxy.py" -PassThru -WindowStyle Hidden -RedirectStandardOutput $proxyLog -RedirectStandardError "$script:out\proxy.err"
 for ($i = 0; $i -lt 30; $i++) {
   if ((Test-Path $proxyLog) -and ((Get-Content $proxyLog -Raw) -match 'PROXY_READY')) { break }

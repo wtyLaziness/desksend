@@ -14,6 +14,7 @@
 #include "deskflow/Computer.h"
 #include "deskflow/DeskflowException.h"
 #include "deskflow/FileDropBridge.h"
+#include "deskflow/DragHandoff.h"
 #include "deskflow/IPlatformComputer.h"
 #include "deskflow/OptionTypes.h"
 #include "deskflow/PacketStreamFilter.h"
@@ -418,6 +419,13 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
   int32_t dw;
   int32_t dh;
   dst->getShape(dx, dy, dw, dh);
+
+  if (m_active == m_primaryClient && dst != m_primaryClient &&
+      deskflow::FileDropBridge::instance().hasPendingDragFiles()) {
+    x = deskflow::fileDragEntryCoordinate(x, dx, dw);
+    y = deskflow::fileDragEntryCoordinate(y, dy, dh);
+    LOG_INFO("FileDropBridge: entering destination inside edge at %d,%d", x, y);
+  }
 
   // any of these conditions seem to trigger when the portal permission dialog
   // is visible on wayland. this was previously an assert, but that's pretty
