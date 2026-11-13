@@ -17,6 +17,19 @@ function Run-Case([string]$Name, [string]$Fault = '') {
     [IO.File]::WriteAllText((Join-Path $install 'DeskSend.exe'), 'old-gui')
     [IO.File]::WriteAllText((Join-Path $install 'settings/Deskflow.conf'), 'existing-pair-and-layout')
     [IO.File]::WriteAllText((Join-Path $install 'settings/tls/deskflow.pem'), 'existing-private-key')
+    if ($Fault -eq 'cleanup-and-prune') {
+        $oldHash = (Get-FileHash -LiteralPath (Join-Path $install 'DeskSend.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+        [IO.File]::WriteAllText((Join-Path $install 'obsolete-plugin.dll'), 'old-obsolete')
+        $obsoleteHash = (Get-FileHash -LiteralPath (Join-Path $install 'obsolete-plugin.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
+        @{product='DeskSend';format=1;version='0.0.1';files=@{'DeskSend.exe'=$oldHash;'obsolete-plugin.dll'=$obsoleteHash}} |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $install 'desksend-build.json') -Encoding UTF8
+        for ($b = 1; $b -le 3; $b++) {
+            $oldBackup = Join-Path $install ('.desksend-backups/old-' + $b)
+            $null = New-Item -ItemType Directory -Path $oldBackup -Force
+            [IO.File]::WriteAllText((Join-Path $oldBackup 'DeskSend.exe'), ('old-' + $b))
+            (Get-Item -LiteralPath $oldBackup).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-$b)
+        }
+    }
     $hashes = [ordered]@{}
     foreach ($component in @('DeskSend.exe','deskflow-core.exe','localsend-cli.exe')) {
         if ($Fault -eq 'missing-cli' -and $component -eq 'localsend-cli.exe') { continue }
@@ -37,14 +50,20 @@ function Run-Case([string]$Name, [string]$Fault = '') {
     $expected = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
     if ($Fault -eq 'outer-hash') { $expected = '0' * 64 }
     $result = & $shell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $helper -InstallDir $install -Archive $archive -ExpectedHash $expected -NoRestart
-    if ($Fault) {
+    if ($Fault -and $Fault -ne 'cleanup-and-prune') {
         Assert ($LASTEXITCODE -eq 1) ('Expected failure: ' + $Name + ': ' + $result)
         Assert (([IO.File]::ReadAllText((Join-Path $install 'DeskSend.exe'))) -ceq 'old-gui') ('Original overwritten: ' + $Name)
     } else {
         Assert ($LASTEXITCODE -eq 0) ('Update failed: ' + $result)
         Assert (([IO.File]::ReadAllText((Join-Path $install 'DeskSend.exe'))) -ceq 'new-DeskSend.exe') 'GUI not updated'
         Assert (Test-Path -LiteralPath (Join-Path $install 'localsend-cli.exe')) 'CLI missing'
-        Assert (@(Get-ChildItem -LiteralPath (Join-Path $install '.desksend-backups') -Recurse -Filter DeskSend.exe).Count -eq 1) 'Backup missing'
+        $backupCount = @(Get-ChildItem -LiteralPath (Join-Path $install '.desksend-backups') -Directory).Count
+        if ($Fault -eq 'cleanup-and-prune') {
+            Assert (!(Test-Path -LiteralPath (Join-Path $install 'obsolete-plugin.dll'))) 'Obsolete file was not removed'
+            Assert ($backupCount -eq 2) ('Old backups not pruned, count=' + $backupCount)
+        } else {
+            Assert (@(Get-ChildItem -LiteralPath (Join-Path $install '.desksend-backups') -Recurse -Filter DeskSend.exe).Count -eq 1) 'Backup missing'
+        }
     }
     Assert (([IO.File]::ReadAllText((Join-Path $install 'settings/Deskflow.conf'))) -ceq 'existing-pair-and-layout') 'Settings changed'
     Assert (([IO.File]::ReadAllText((Join-Path $install 'settings/tls/deskflow.pem'))) -ceq 'existing-private-key') 'Certificate changed'
@@ -52,6 +71,7 @@ function Run-Case([string]$Name, [string]$Fault = '') {
     $script:passed++
 }
 Run-Case 'success'
+Run-Case 'cleanup-and-prune' 'cleanup-and-prune'
 Run-Case 'wrong-archive-hash' 'outer-hash'
 Run-Case 'missing-cli' 'missing-cli'
 Run-Case 'wrong-file-hash' 'inner-hash'

@@ -28,8 +28,12 @@ pub enum Command {
         #[arg(long, requires = "to", conflicts_with = "text")]
         pin_stdin: bool,
 
+        /// Read newline-separated file or directory paths from stdin (after PIN if --pin-stdin is set)
+        #[arg(long, conflicts_with_all = ["text", "paths"])]
+        paths_stdin: bool,
+
         /// Files or directories to send (directories are collected recursively)
-        #[arg(value_name = "PATH", required_unless_present = "text", num_args = 1..)]
+        #[arg(value_name = "PATH", required_unless_present_any = ["text", "paths_stdin"], num_args = 1..)]
         paths: Vec<PathBuf>,
     },
     /// Run in headless receive mode without requiring an interactive terminal
@@ -145,12 +149,72 @@ mod tests {
             Args::try_parse_from(["localsend-cli", "send", "--to", "Phone", "--text", "hello"])
                 .unwrap();
 
-        let Some(Command::Send { to, text, paths }) = args.command else {
+        let Some(Command::Send {
+            to,
+            text,
+            pin_stdin,
+            paths_stdin,
+            paths,
+        }) = args.command
+        else {
             panic!("expected the send command");
         };
         assert_eq!(to.as_deref(), Some("Phone"));
         assert_eq!(text.as_deref(), Some("hello"));
+        assert!(!pin_stdin);
+        assert!(!paths_stdin);
         assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn accepts_pin_and_paths_stdin() {
+        let args = Args::try_parse_from([
+            "localsend-cli",
+            "send",
+            "--to",
+            "127.0.0.1:53318",
+            "--pin-stdin",
+            "--paths-stdin",
+        ])
+        .unwrap();
+
+        let Some(Command::Send {
+            to,
+            pin_stdin,
+            paths_stdin,
+            paths,
+            ..
+        }) = args.command
+        else {
+            panic!("expected the send command");
+        };
+        assert_eq!(to.as_deref(), Some("127.0.0.1:53318"));
+        assert!(pin_stdin);
+        assert!(paths_stdin);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn rejects_paths_stdin_together_with_paths() {
+        assert!(
+            Args::try_parse_from(["localsend-cli", "send", "--paths-stdin", "one.txt"]).is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_paths_stdin_together_with_text() {
+        assert!(
+            Args::try_parse_from([
+                "localsend-cli",
+                "send",
+                "--to",
+                "Phone",
+                "--text",
+                "hello",
+                "--paths-stdin",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

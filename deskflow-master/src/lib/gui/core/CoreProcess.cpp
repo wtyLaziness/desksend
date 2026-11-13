@@ -173,6 +173,7 @@ void CoreProcess::checkExistingProcess()
 void CoreProcess::onProcessFinished(int exitCode, QProcess::ExitStatus)
 {
   using enum ProcessState;
+  m_hasActiveFileTransfers = false;
   setConnectionState(ConnectionState::Disconnected);
 
   if (m_retryTimer.isActive()) {
@@ -346,6 +347,11 @@ void CoreProcess::handleLogLines(const QString &text)
     if (line.isEmpty()) {
       continue;
     }
+    if (line.contains(QStringLiteral("FileDropBridge: activeTransfers=1"))) {
+      m_hasActiveFileTransfers = true;
+    } else if (line.contains(QStringLiteral("FileDropBridge: activeTransfers=0"))) {
+      m_hasActiveFileTransfers = false;
+    }
 
 #if defined(Q_OS_MACOS)
     // HACK: macOS 10.13.4+ spamming error lines in logs making them
@@ -501,6 +507,7 @@ void CoreProcess::start(std::optional<ProcessMode> processModeOption)
 void CoreProcess::stop(std::optional<ProcessMode> processModeOption)
 {
   QMutexLocker locker(&m_processMutex);
+  m_hasActiveFileTransfers = false;
 
   const auto currentMode = Settings::value(Settings::Core::ProcessMode).value<ProcessMode>();
   const auto processMode = processModeOption.value_or(currentMode);

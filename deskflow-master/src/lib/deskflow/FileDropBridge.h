@@ -37,6 +37,7 @@ public:
   // True when the edge sentinel has just captured CF_HDROP files while LBUTTON is held
   bool hasPendingDragFiles() const;
   bool hasActiveDragFiles() const;
+  bool hasActiveTransfers() const;
 
   // Called by sentinel DropTarget::DragEnter or by tests
   bool setPendingDragFiles(std::vector<std::string> files);
@@ -69,6 +70,9 @@ public:
       int32_t screenX, int32_t screenY, const std::string &fallbackDir, bool *outIsDirectFolderTarget = nullptr
   );
 
+  // Computes a collision-free destination file path inside dstDir (preserving dotfiles such as .gitignore)
+  static std::string uniqueDestinationPath(const std::string &dstDir, const std::string &relPath);
+
   // Extracts the peer IP string from a connected client proxy
   static std::string getClientPeerIp(BaseClientProxy *client);
 
@@ -93,6 +97,7 @@ private:
   FileDropBridge() = default;
   ~FileDropBridge();
 
+  void startReceiverInternal(const std::string &serverHost, bool isRestart);
   void sendFilesViaLocalSend(const std::string &targetIp, const std::vector<std::string> &files, const std::string &authToken);
   void processNextSendJob();
   void queueReceiverAuthCommand(const std::string &command);
@@ -101,6 +106,7 @@ private:
   void handleReceiveSessionStarted(size_t expectedFiles);
   void handleReceiveSessionFinished(bool cancelled);
   void finalizeActiveSession();
+  void notifyActiveTransfersChangedLocked();
 
   mutable std::mutex m_mutex;
   std::vector<std::string> m_pendingFiles;
@@ -127,8 +133,13 @@ private:
   size_t m_activeSessionHandledFiles = 0;
   bool m_activeSessionEnded = false;
   bool m_activeSessionFailed = false;
+  bool m_activeReceiveSession = false;
+  bool m_lastReportedActiveTransfers = false;
   std::string m_stagingDir;
   std::string m_currentAllowedServerIp;
+  bool m_receiverDesired = false;
+  uint32_t m_receiverGeneration = 0;
+  int m_receiverRestartAttempt = 0;
   QProcess *m_receiverProcess = nullptr;
 };
 

@@ -89,20 +89,34 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             to,
             text,
             pin_stdin,
+            paths_stdin,
             paths,
         }) => {
-            let payload = match text {
-                Some(text) => Payload::Text(sending::read_text(text)?),
-                None => Payload::Files(paths.clone()),
-            };
+            let mut stdin = (*pin_stdin || *paths_stdin).then(|| std::io::stdin().lock());
             let pin = if *pin_stdin {
                 let mut line = String::new();
-                std::io::stdin().lock().read_line(&mut line)?;
+                stdin.as_mut().unwrap().read_line(&mut line)?;
                 let trimmed = line.trim_end_matches(&['\r', '\n'][..]).to_string();
                 anyhow::ensure!(!trimmed.is_empty(), "Empty PIN provided on stdin");
                 Some(trimmed)
             } else {
                 None
+            };
+            let payload = match text {
+                Some(text) => Payload::Text(sending::read_text(text)?),
+                None if *paths_stdin => {
+                    let mut stdin_paths = Vec::new();
+                    for line in stdin.take().unwrap().lines() {
+                        let line = line?;
+                        let trimmed = line.trim_end_matches(&['\r', '\n'][..]);
+                        if !trimmed.is_empty() {
+                            stdin_paths.push(PathBuf::from(trimmed));
+                        }
+                    }
+                    anyhow::ensure!(!stdin_paths.is_empty(), "No paths provided on stdin");
+                    Payload::Files(stdin_paths)
+                }
+                None => Payload::Files(paths.clone()),
             };
             (
                 payload,
@@ -206,18 +220,29 @@ async fn start_network(identity: &Arc<storage::Identity>) -> anyhow::Result<Netw
     })
 }
 
-/// Discovers in stages: announce this device (peers answer with an HTTP
-/// register request), probe the known addresses, and fall back to scanning
-/// the local subnets when nothing was confirmed. Ends by emitting
+/// Discovers in stages: when `direct_channel` is supplied and responds to a
+/// direct register probe, finishes immediately without multicast/subnet scan;
+/// otherwise announces this device, probes `known_channels`, and falls back to
+/// scanning the local subnets when nothing was confirmed. Ends by emitting
 /// [AppEvent::DiscoveryFinished].
 fn spawn_staged_discovery(
     discovery: Arc<DiscoveryHandle>,
     events_tx: mpsc::Sender<AppEvent>,
     known_channels: Vec<HttpChannel>,
+    direct_channel: Option<HttpChannel>,
     port: u16,
 ) {
     let interface_ips = local_interface_addresses(&InterfaceFilter::default()).unwrap_or_default();
     tokio::spawn(async move {
+        if let Some(channel) = direct_channel
+            && matches!(
+                discovery.discover_known_http_channels(vec![channel]).await,
+                Ok(devices) if !devices.is_empty()
+            )
+        {
+            let _ = events_tx.send(AppEvent::DiscoveryFinished).await;
+            return;
+        }
         let result = discovery
             .discover_staged(
                 known_channels,
@@ -331,6 +356,7 @@ async fn run_interactive(
         discovery.clone(),
         events_tx.clone(),
         storage.paired.known_http_channels(),
+        None,
         identity.port,
     );
 

@@ -128,6 +128,7 @@ private:
   void updateFingerprintButton();
   void updateComputerName();
   void saveSettings() const;
+  bool confirmInterruptActiveTransfers();
   void showConfigureServer(const QString &message);
   void showConfigureClient();
   void restoreWindow();

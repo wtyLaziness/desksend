@@ -42,16 +42,18 @@ pub(super) async fn run(
     } = start_network(&identity).await?;
 
     // Probe the destination's address directly when `--to` is an IP.
+    let direct_channel = target.direct_channel();
     let mut known_channels = storage.paired.known_http_channels();
-    if let Some(channel) = target.direct_channel()
-        && !known_channels.contains(&channel)
+    if let Some(channel) = &direct_channel
+        && !known_channels.contains(channel)
     {
-        known_channels.insert(0, channel);
+        known_channels.insert(0, channel.clone());
     }
     spawn_staged_discovery(
         discovery.clone(),
         events_tx.clone(),
         known_channels,
+        direct_channel,
         identity.port,
     );
     ui.log_plain(&format!("Discovering destination {target}..."));

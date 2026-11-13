@@ -58,10 +58,13 @@ try {
     foreach ($required in @('DeskSend.exe', 'deskflow-core.exe', 'localsend-cli.exe')) {
         if ($required -cnotin $files.Name) { throw ('完整包缺少 ' + $required) }
     }
-    # 清单中的每个程序文件都必须通过校验，配置目录始终由本机保留。
+    # 验证即将写入或清理的目标路径，禁止穿越目录链接。
+    $newRelatives = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $null = $newRelatives.Add('desksend-build.json')
     foreach ($file in $files) {
         $relative = $file.Name.Replace('/', '\')
         if ($relative -match '^(settings|\.desksend-backups)(\\|$)' -or $file.Value -notmatch '^[a-fA-F0-9]{64}$') { throw '更新清单包含受保护目录或无效校验值。' }
+        $null = $newRelatives.Add($relative)
         $source = Get-ChildPath $packageRoot $relative
         if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ine $file.Value) { throw ('文件校验失败：' + $relative) }
         # 禁止通过已有目录链接把程序文件写到安装目录以外。
@@ -72,6 +75,25 @@ try {
             $parent = [IO.Path]::GetDirectoryName($parent)
         }
         if ((Test-Path -LiteralPath $target) -and ((Get-Item -LiteralPath $target).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw '安装文件包含链接。' }
+    }
+    $obsoleteRelatives = [Collections.Generic.List[string]]::new()
+    $prevManifestPath = Join-Path $installRoot 'desksend-build.json'
+    if (Test-Path -LiteralPath $prevManifestPath -PathType Leaf) {
+        try {
+            $prevManifest = Get-Content -LiteralPath $prevManifestPath -Encoding UTF8 -Raw | ConvertFrom-Json
+            if ($prevManifest -and $prevManifest.files) {
+                foreach ($oldFile in @($prevManifest.files.PSObject.Properties)) {
+                    $oldRel = $oldFile.Name.Replace('/', '\')
+                    if ($oldRel -match '^(settings|\.desksend-backups)(\\|$)' -or $newRelatives.Contains($oldRel)) { continue }
+                    $oldTarget = Get-ChildPath $installRoot $oldRel
+                    if ((Test-Path -LiteralPath $oldTarget -PathType Leaf) -and !((Get-Item -LiteralPath $oldTarget).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                        $obsoleteRelatives.Add($oldRel)
+                    }
+                }
+            }
+        } catch {
+            Write-UpdateLog ('WARN: 忽略损坏的旧版清单，跳过过期文件清理：' + $_.Exception.Message)
+        }
     }
     if ($GuiProcessId -gt 0) {
         $gui = Get-Process -Id $GuiProcessId -ErrorAction SilentlyContinue
@@ -101,7 +123,7 @@ try {
     $stopped = $true
     $backupRoot = Join-Path $installRoot ('.desksend-backups\' + [guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Path $backupRoot
-    # 先备份所有待覆盖文件，全部成功后才开始覆盖。
+    # 先备份所有待覆盖与待清理的旧版文件，全部成功后才开始写入。
     foreach ($relative in @($files.Name) + @('desksend-build.json')) {
         $target = Get-ChildPath $installRoot $relative
         $backup = Get-ChildPath $backupRoot $relative
@@ -110,12 +132,31 @@ try {
             $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($backup)) -Force
             Copy-Item -LiteralPath $target -Destination $backup
         }
-        $changed.Add([pscustomobject]@{ Relative=$relative; Target=$target; Backup=$backup; Existed=$existed })
+        $changed.Add([pscustomobject]@{ Action='Write'; Relative=$relative; Target=$target; Backup=$backup; Existed=$existed })
+    }
+    foreach ($relative in $obsoleteRelatives) {
+        $target = Get-ChildPath $installRoot $relative
+        $backup = Get-ChildPath $backupRoot $relative
+        $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($backup)) -Force
+        Copy-Item -LiteralPath $target -Destination $backup
+        $changed.Add([pscustomobject]@{ Action='Delete'; Relative=$relative; Target=$target; Backup=$backup; Existed=$true })
     }
     $copyStarted = $true
     foreach ($file in $changed) {
-        $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($file.Target)) -Force
-        Copy-Item -LiteralPath (Get-ChildPath $packageRoot $file.Relative) -Destination $file.Target -Force
+        if ($file.Action -eq 'Write') {
+            $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($file.Target)) -Force
+            Copy-Item -LiteralPath (Get-ChildPath $packageRoot $file.Relative) -Destination $file.Target -Force
+        } elseif ($file.Action -eq 'Delete' -and (Test-Path -LiteralPath $file.Target -PathType Leaf)) {
+            Remove-Item -LiteralPath $file.Target -Force
+        }
+    }
+    # 仅保留最近 2 次更新备份，避免长期积累占用磁盘空间。
+    $backupsParent = Join-Path $installRoot '.desksend-backups'
+    if (Test-Path -LiteralPath $backupsParent -PathType Container) {
+        Get-ChildItem -LiteralPath $backupsParent -Directory -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc, CreationTimeUtc, Name -Descending |
+            Select-Object -Skip 2 |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
     }
     Write-UpdateLog ('SUCCESS: ' + $manifest.version + '; backup=' + $backupRoot)
     Start-DeskSend
@@ -128,7 +169,10 @@ try {
     if ($copyStarted) {
         foreach ($file in $changed) {
             try {
-                if ($file.Existed) { Copy-Item -LiteralPath $file.Backup -Destination $file.Target -Force }
+                if ($file.Existed) {
+                    $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($file.Target)) -Force
+                    Copy-Item -LiteralPath $file.Backup -Destination $file.Target -Force
+                }
                 elseif (Test-Path -LiteralPath $file.Target -PathType Leaf) { Remove-Item -LiteralPath $file.Target }
             } catch { $rollbackErrors += $_.Exception.Message }
         }

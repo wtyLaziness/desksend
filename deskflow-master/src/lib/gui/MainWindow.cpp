@@ -268,7 +268,11 @@ void MainWindow::connectSlots()
   connect(m_actionSettings, &QAction::triggered, this, &MainWindow::openSettings);
   connect(m_actionStartCore, &QAction::triggered, this, &MainWindow::startCore);
   connect(m_actionRestartCore, &QAction::triggered, this, &MainWindow::resetCore);
-  connect(m_actionStopCore, &QAction::triggered, this, &MainWindow::stopCore);
+  connect(m_actionStopCore, &QAction::triggered, this, [this]() {
+    if (confirmInterruptActiveTransfers()) {
+      stopCore();
+    }
+  });
   connect(m_actionShowHelp, &QAction::triggered, this, &MainWindow::showHelpViewer);
 
   // Mac os tray will only show a menu
@@ -909,6 +913,11 @@ void MainWindow::closeEvent(QCloseEvent *event)
     return;
   }
 
+  if (m_saveOnExit && !confirmInterruptActiveTransfers()) {
+    event->ignore();
+    return;
+  }
+
   if (m_saveOnExit) {
     Settings::setValue(Settings::Gui::WindowGeometry, geometry());
     Settings::setValue(Settings::Gui::AutoStartCore, m_coreProcess.isStarted());
@@ -921,6 +930,19 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
   event->accept();
   QApplication::quit();
+}
+
+bool MainWindow::confirmInterruptActiveTransfers()
+{
+  if (!m_coreProcess.hasActiveFileTransfers()) {
+    return true;
+  }
+  const auto answer = QMessageBox::question(
+      this, kAppName,
+      QStringLiteral("当前仍有文件正在传输，停止或退出将中断传输。\n确定要继续吗？"),
+      QMessageBox::Yes | QMessageBox::No, QMessageBox::No
+  );
+  return answer == QMessageBox::Yes;
 }
 
 void MainWindow::showFirstConnectedMessage()

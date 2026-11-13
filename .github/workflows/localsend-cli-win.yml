@@ -21,7 +21,7 @@ jobs:
       - name: Build localsend-cli and run unit tests
         working-directory: localsend-main
         run: |
-          cargo test --release --package localsend-cli
+          cargo test --release --package localsend --package localsend-cli
           cargo build --release --package localsend-cli
       - name: End-to-end headless receive & send test
         working-directory: localsend-main
@@ -63,6 +63,49 @@ jobs:
           $c2 = Get-Content "$base\rx_dest\test2.txt" -Raw
           if ($c1 -ne "hello from desksend" -or $c2 -ne "second file 12345") {
             throw "Content mismatch: c1=$c1 c2=$c2"
+          }
+
+          # Verify --auth-stdin + --pin-stdin + --paths-stdin end-to-end
+          $authDir = "$base\auth_e2e"
+          New-Item -ItemType Directory -Force "$authDir\rx_dest" | Out-Null
+          $rxPsi = [System.Diagnostics.ProcessStartInfo]::new($exe, "--port 53320 --destination `"$authDir\rx_dest`" receive --auto-accept-from 127.0.0.1 --auth-stdin")
+          $rxPsi.UseShellExecute = $false
+          $rxPsi.RedirectStandardInput = $true
+          $rxPsi.RedirectStandardOutput = $true
+          $rxPsi.RedirectStandardError = $false
+          $rxPsi.EnvironmentVariables["XDG_CONFIG_HOME"] = "$base\rx_cfg"
+          $rxAuth = [System.Diagnostics.Process]::Start($rxPsi)
+          while (!$rxAuth.HasExited) {
+            $line = $rxAuth.StandardOutput.ReadLine()
+            if ($null -eq $line -or $line -match "LOCALSEND_RECEIVER_READY") { break }
+          }
+          $token = "e2e-secret-token-1234"
+          $rxAuth.StandardInput.WriteLine("GRANT $token")
+          $rxAuth.StandardInput.Flush()
+
+          $txPsi = [System.Diagnostics.ProcessStartInfo]::new($exe, "--port 53321 send --to 127.0.0.1:53320 --pin-stdin --paths-stdin")
+          $txPsi.UseShellExecute = $false
+          $txPsi.RedirectStandardInput = $true
+          $txPsi.RedirectStandardOutput = $true
+          $txPsi.RedirectStandardError = $false
+          $txPsi.EnvironmentVariables["XDG_CONFIG_HOME"] = "$base\tx_cfg"
+          $txAuth = [System.Diagnostics.Process]::Start($txPsi)
+          $txAuth.StandardInput.WriteLine($token)
+          $txAuth.StandardInput.WriteLine("$base\tx_src\test1.txt")
+          $txAuth.StandardInput.WriteLine("$base\tx_src\test2.txt")
+          $txAuth.StandardInput.Close()
+          $txAuthOut = $txAuth.StandardOutput.ReadToEnd()
+          if (!$txAuth.WaitForExit(30000)) {
+            $txAuth.Kill()
+            throw "Auth stdin send timed out"
+          }
+          $rxAuth.Kill()
+          if ($txAuth.ExitCode -ne 0) {
+            throw "Auth stdin send failed ($($txAuth.ExitCode)): out=$txAuthOut"
+          }
+          if ((Get-Content "$authDir\rx_dest\test1.txt" -Raw) -ne "hello from desksend" -or
+              (Get-Content "$authDir\rx_dest\test2.txt" -Raw) -ne "second file 12345") {
+            throw "Auth stdin transferred content mismatch"
           }
           Write-Host "E2E headless file transfer PASSED!"
       - uses: actions/upload-artifact@v4

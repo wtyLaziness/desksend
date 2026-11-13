@@ -69,6 +69,10 @@ public:
   {
     return m_connectionState;
   }
+  bool hasActiveFileTransfers() const
+  {
+    return m_hasActiveFileTransfers;
+  }
 
   // setters
   void setAddress(const QString &address)
@@ -122,6 +126,7 @@ private:
 
   const ServerConfig &m_serverConfig;
   QString m_address;
+  bool m_hasActiveFileTransfers = false;
   ProcessState m_processState = ProcessState::Stopped;
   ConnectionState m_connectionState = ConnectionState::Disconnected;
   Settings::CoreMode m_mode = Settings::CoreMode::None;

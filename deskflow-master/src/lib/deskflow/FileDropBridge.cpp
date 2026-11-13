@@ -39,7 +39,9 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -157,6 +159,40 @@ TransferStatus &transferStatus(bool receiving)
   return receiving ? *receiver : *sender;
 }
 
+void transferBegin(bool receiving, const QString &description)
+{
+  if (auto *app = QCoreApplication::instance(); app && QThread::currentThread() != app->thread()) {
+    QMetaObject::invokeMethod(
+        app, [receiving, description]() { transferStatus(receiving).begin(description); }, Qt::QueuedConnection
+    );
+    return;
+  }
+  transferStatus(receiving).begin(description);
+}
+
+void transferProgress(bool receiving, quint64 done, quint64 total)
+{
+  if (auto *app = QCoreApplication::instance(); app && QThread::currentThread() != app->thread()) {
+    QMetaObject::invokeMethod(
+        app, [receiving, done, total]() { transferStatus(receiving).progress(done, total); }, Qt::QueuedConnection
+    );
+    return;
+  }
+  transferStatus(receiving).progress(done, total);
+}
+
+void transferFinish(bool receiving, bool success, const QString &message)
+{
+  if (auto *app = QCoreApplication::instance(); app && QThread::currentThread() != app->thread()) {
+    QMetaObject::invokeMethod(
+        app, [receiving, success, message]() { transferStatus(receiving).finish(success, message); },
+        Qt::QueuedConnection
+    );
+    return;
+  }
+  transferStatus(receiving).finish(success, message);
+}
+
 uint64_t nowMs()
 {
   using namespace std::chrono;
@@ -224,6 +260,58 @@ std::string wideToUtf8(const std::wstring &w)
   return out;
 }
 
+void sendRelativeMouseMove(int dx, int dy)
+{
+  INPUT input = {};
+  input.type = INPUT_MOUSE;
+  input.mi.dx = static_cast<LONG>(dx);
+  input.mi.dy = static_cast<LONG>(dy);
+  input.mi.dwFlags = MOUSEEVENTF_MOVE;
+  SendInput(1, &input, sizeof(input));
+}
+
+void sendLeftButtonUp(ULONG_PTR extraInfo)
+{
+  INPUT input = {};
+  input.type = INPUT_MOUSE;
+  input.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+  input.mi.dwExtraInfo = extraInfo;
+  SendInput(1, &input, sizeof(input));
+}
+
+void sendEscapeKeyUp(ULONG_PTR extraInfo)
+{
+  INPUT input = {};
+  input.type = INPUT_KEYBOARD;
+  input.ki.wVk = VK_ESCAPE;
+  input.ki.dwFlags = KEYEVENTF_KEYUP;
+  input.ki.dwExtraInfo = extraInfo;
+  SendInput(1, &input, sizeof(input));
+}
+
+std::string pidlToUtf8Path(PCIDLIST_ABSOLUTE pidl)
+{
+  if (!pidl) {
+    return {};
+  }
+  std::vector<wchar_t> buf(32768, L'\0');
+  if (!SHGetPathFromIDListEx(pidl, buf.data(), static_cast<DWORD>(buf.size()), GPFIDL_DEFAULT)) {
+    return {};
+  }
+  return wideToUtf8(std::wstring(buf.data()));
+}
+
+HWND findActiveExplorerTab(HWND hwndTop)
+{
+  HWND tab = nullptr;
+  while ((tab = FindWindowExW(hwndTop, tab, L"ShellTabWindowClass", nullptr)) != nullptr) {
+    if (IsWindowVisible(tab)) {
+      return tab;
+    }
+  }
+  return nullptr;
+}
+
 std::vector<std::string> extractFilesFromDataObject(IDataObject *obj)
 {
   std::vector<std::string> results;
@@ -238,9 +326,14 @@ std::vector<std::string> extractFilesFromDataObject(IDataObject *obj)
     if (drop) {
       UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
       for (UINT i = 0; i < count; ++i) {
-        wchar_t path[MAX_PATH * 2] = {};
-        if (DragQueryFileW(drop, i, path, MAX_PATH * 2) > 0) {
-          results.push_back(wideToUtf8(path));
+        UINT charsNeeded = DragQueryFileW(drop, i, nullptr, 0);
+        if (charsNeeded > 0) {
+          std::wstring path(static_cast<size_t>(charsNeeded) + 1, L'\0');
+          UINT copied = DragQueryFileW(drop, i, path.data(), static_cast<UINT>(path.size()));
+          if (copied > 0) {
+            path.resize(copied);
+            results.push_back(wideToUtf8(path));
+          }
         }
       }
       GlobalUnlock(med.hGlobal);
@@ -263,9 +356,9 @@ std::vector<std::string> extractFilesFromDataObject(IDataObject *obj)
             reinterpret_cast<PCUIDLIST_RELATIVE>(reinterpret_cast<const BYTE *>(cida) + cida->aoffset[i + 1]);
         PIDLIST_ABSOLUTE full = ILCombine(parent, child);
         if (full) {
-          wchar_t path[MAX_PATH * 2] = {};
-          if (SHGetPathFromIDListW(full, path)) {
-            results.push_back(wideToUtf8(path));
+          std::string resolved = pidlToUtf8Path(full);
+          if (!resolved.empty()) {
+            results.push_back(std::move(resolved));
           }
           ILFree(full);
         }
@@ -354,10 +447,10 @@ struct Win32SentinelManager
   std::array<HWND, 4> hwnds = {nullptr, nullptr, nullptr, nullptr}; // 0:L, 1:R, 2:T, 3:B
   std::array<bool, 4> visible = {false, false, false, false};
   std::array<SentinelDropTarget, 4> dropTargets;
-  bool cancellingNativeDrag = false;
-  bool nativeDragCancellationComplete = false;
-  int cancellingSide = 0;
-  HWND cancelTimerWindow = nullptr;
+  std::atomic<bool> cancellingNativeDrag{false};
+  std::atomic<bool> nativeDragCancellationComplete{false};
+  std::atomic<int> cancellingSide{0};
+  std::atomic<HWND> cancelTimerWindow{nullptr};
 
   void ensureInitialized(int32_t x, int32_t y, int32_t w, int32_t h)
   {
@@ -444,10 +537,11 @@ struct Win32SentinelManager
 
   void shutdown()
   {
-    if (cancellingNativeDrag) {
-      KillTimer(cancelTimerWindow, 1);
-      keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, static_cast<ULONG_PTR>(0x44534B54));
-      cancellingNativeDrag = false;
+    if (cancellingNativeDrag.exchange(false)) {
+      if (HWND timerHwnd = cancelTimerWindow.exchange(nullptr)) {
+        KillTimer(timerHwnd, 1);
+      }
+      sendEscapeKeyUp(static_cast<ULONG_PTR>(0x44534B54));
     }
     if (!initialized) {
       return;
@@ -473,25 +567,25 @@ void nudgeAcrossEdge(int side)
 {
   const int dx = side == 0 ? -8 : side == 1 ? 8 : 0;
   const int dy = side == 2 ? -8 : side == 3 ? 8 : 0;
-  mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(dx), static_cast<DWORD>(dy), 0, 0);
+  sendRelativeMouseMove(dx, dy);
 }
 
 void armNativeDragHandoff(int sideIndex)
 {
-  g_sentinelMgr.cancellingSide = sideIndex;
-  g_sentinelMgr.nativeDragCancellationComplete = false;
+  g_sentinelMgr.cancellingSide.store(sideIndex);
+  g_sentinelMgr.nativeDragCancellationComplete.store(false);
   nudgeAcrossEdge(sideIndex);
 }
 
 void CALLBACK finishNativeDragCancellation(HWND hwnd, UINT, UINT_PTR timerId, DWORD)
 {
   KillTimer(hwnd, timerId);
-  if (!g_sentinelMgr.cancellingNativeDrag) {
+  g_sentinelMgr.cancelTimerWindow.store(nullptr);
+  if (!g_sentinelMgr.cancellingNativeDrag.exchange(false)) {
     return;
   }
-  keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, static_cast<ULONG_PTR>(0x44534B54));
-  g_sentinelMgr.cancellingNativeDrag = false;
-  g_sentinelMgr.nativeDragCancellationComplete = true;
+  sendEscapeKeyUp(static_cast<ULONG_PTR>(0x44534B54));
+  g_sentinelMgr.nativeDragCancellationComplete.store(true);
   if (!FileDropBridge::instance().hasPendingDragFiles()) {
     return;
   }
@@ -504,13 +598,18 @@ void CALLBACK finishNativeDragCancellation(HWND hwnd, UINT, UINT_PTR timerId, DW
 
 void cancelNativeDragBeforeSwitch(int sideIndex)
 {
+  if (sideIndex < 0 || sideIndex >= 4) {
+    FileDropBridge::instance().cancelActiveDrag();
+    return;
+  }
   // 保留源窗口的前台状态，让 OLE 消费 Esc 后再交出鼠标，避免中央残影。
-  const HWND hwnd = g_sentinelMgr.hwnds.at(sideIndex);
-  g_sentinelMgr.cancellingNativeDrag = true;
-  g_sentinelMgr.cancellingSide = sideIndex;
-  g_sentinelMgr.cancelTimerWindow = hwnd;
+  const HWND hwnd = g_sentinelMgr.hwnds.at(static_cast<size_t>(sideIndex));
+  g_sentinelMgr.cancellingNativeDrag.store(true);
+  g_sentinelMgr.cancellingSide.store(sideIndex);
+  g_sentinelMgr.cancelTimerWindow.store(hwnd);
   if (!SetTimer(hwnd, 1, 80, finishNativeDragCancellation)) {
-    g_sentinelMgr.cancellingNativeDrag = false;
+    g_sentinelMgr.cancellingNativeDrag.store(false);
+    g_sentinelMgr.cancelTimerWindow.store(nullptr);
     FileDropBridge::instance().cancelActiveDrag();
     LOG_WARN("FileDropBridge: could not schedule native drag cancellation");
     return;
@@ -521,7 +620,8 @@ void cancelNativeDragBeforeSwitch(int sideIndex)
   escape.ki.dwExtraInfo = static_cast<ULONG_PTR>(0x44534B54);
   if (SendInput(1, &escape, sizeof(escape)) != 1) {
     KillTimer(hwnd, 1);
-    g_sentinelMgr.cancellingNativeDrag = false;
+    g_sentinelMgr.cancellingNativeDrag.store(false);
+    g_sentinelMgr.cancelTimerWindow.store(nullptr);
     FileDropBridge::instance().cancelActiveDrag();
     LOG_WARN("FileDropBridge: could not cancel source native drag");
   }
@@ -532,21 +632,33 @@ void assignProcessToKillOnCloseJob(qint64 pid)
   if (pid <= 0) {
     return;
   }
-  static HANDLE s_jobHandle = []() -> HANDLE {
-    HANDLE job = CreateJobObjectW(nullptr, nullptr);
-    if (job) {
-      JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli = {};
-      jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-      SetInformationJobObject(job, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
+  struct KillOnCloseJob
+  {
+    HANDLE handle = nullptr;
+    KillOnCloseJob()
+    {
+      handle = CreateJobObjectW(nullptr, nullptr);
+      if (handle) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli = {};
+        jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(handle, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
+      }
     }
-    return job;
-  }();
-  if (!s_jobHandle) {
+    ~KillOnCloseJob()
+    {
+      if (handle) {
+        CloseHandle(handle);
+        handle = nullptr;
+      }
+    }
+  };
+  static KillOnCloseJob s_job;
+  if (!s_job.handle) {
     return;
   }
   HANDLE hProc = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));
   if (hProc) {
-    AssignProcessToJobObject(s_jobHandle, hProc);
+    AssignProcessToJobObject(s_job.handle, hProc);
     CloseHandle(hProc);
   }
 }
@@ -759,7 +871,7 @@ void FileDropBridge::onLeftMouseUp(bool onSecondary)
   if (onSecondary && releaseSourceButton) {
     // 物理松手在副屏时被钩子转发，另给源系统补一次松手，清除本地按下状态。
     // 此事件只到本地 OS，不再次转发给副机，也不触发发送逻辑。
-    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, static_cast<ULONG_PTR>(0x44534B54));
+    sendLeftButtonUp(static_cast<ULONG_PTR>(0x44534B54));
   }
 #else
   (void)onSecondary;
@@ -770,12 +882,12 @@ void FileDropBridge::onLeftMouseUp(bool onSecondary)
 bool FileDropBridge::canSwitchFromPrimary()
 {
 #if defined(_WIN32)
-  if (g_sentinelMgr.cancellingNativeDrag) {
+  if (g_sentinelMgr.cancellingNativeDrag.load()) {
     return false;
   }
   // 只有 Server 已允许切屏时才取消本地拖拽，保留锁屏和锁定角落的行为。
-  if (hasPendingDragFiles() && !g_sentinelMgr.nativeDragCancellationComplete) {
-    cancelNativeDragBeforeSwitch(g_sentinelMgr.cancellingSide);
+  if (hasPendingDragFiles() && !g_sentinelMgr.nativeDragCancellationComplete.load()) {
+    cancelNativeDragBeforeSwitch(g_sentinelMgr.cancellingSide.load());
     return false;
   }
 #endif
@@ -809,6 +921,22 @@ bool FileDropBridge::hasActiveDragFiles() const
 {
   std::scoped_lock lock(m_mutex);
   return !m_activeDragFiles.empty();
+}
+
+bool FileDropBridge::hasActiveTransfers() const
+{
+  std::scoped_lock lock(m_mutex);
+  return m_sendingInProgress || !m_sendQueue.empty() || m_activeReceiveSession;
+}
+
+void FileDropBridge::notifyActiveTransfersChangedLocked()
+{
+  const bool active = m_sendingInProgress || !m_sendQueue.empty() || m_activeReceiveSession;
+  if (active == m_lastReportedActiveTransfers) {
+    return;
+  }
+  m_lastReportedActiveTransfers = active;
+  LOG_INFO("FileDropBridge: activeTransfers=%d", active ? 1 : 0);
 }
 
 void FileDropBridge::onLeavePrimary(BaseClientProxy *dstClient)
@@ -1025,11 +1153,15 @@ void FileDropBridge::sendFilesViaLocalSend(
   {
     std::scoped_lock lock(m_mutex);
     m_sendQueue.push_back(SendJob{targetIp, files, authToken});
-    if (m_sendingInProgress) {
+    const bool alreadySending = m_sendingInProgress;
+    if (!alreadySending) {
+      m_sendingInProgress = true;
+      notifyActiveTransfersChangedLocked();
+    } else {
+      notifyActiveTransfersChangedLocked();
       LOG_INFO("FileDropBridge: queued send job to %s (%zu file(s)); %zu job(s) waiting", targetIp.c_str(), files.size(), m_sendQueue.size());
       return;
     }
-    m_sendingInProgress = true;
   }
   processNextSendJob();
 }
@@ -1041,15 +1173,17 @@ void FileDropBridge::processNextSendJob()
     std::scoped_lock lock(m_mutex);
     if (m_sendQueue.empty()) {
       m_sendingInProgress = false;
+      notifyActiveTransfersChangedLocked();
       return;
     }
     job = std::move(m_sendQueue.front());
     m_sendQueue.pop_front();
+    notifyActiveTransfersChangedLocked();
   }
 
   if (job.authToken.empty()) {
     LOG_WARN("FileDropBridge: missing authorization token for send job to %s; aborting", job.targetIp.c_str());
-    transferStatus(false).finish(false, QStringLiteral("发送失败：缺少传输授权令牌"));
+    transferFinish(false, false, QStringLiteral("发送失败：缺少传输授权令牌"));
     processNextSendJob();
     return;
   }
@@ -1068,9 +1202,18 @@ void FileDropBridge::processNextSendJob()
     // Use dynamic OS-assigned port (0) so concurrent or rapid consecutive sends never conflict
     args << QStringLiteral("--port") << QStringLiteral("0");
   }
-  args << QStringLiteral("send") << QStringLiteral("--to") << destination << QStringLiteral("--pin-stdin");
+  args << QStringLiteral("send") << QStringLiteral("--to") << destination << QStringLiteral("--pin-stdin")
+       << QStringLiteral("--paths-stdin");
+
+  QByteArray stdinPayload = QByteArray::fromStdString(job.authToken + "\n");
   for (const auto &f : job.files) {
-    args << QString::fromStdString(f);
+    QByteArray line = QByteArray::fromStdString(f);
+    line.replace('\r', "");
+    line.replace('\n', "");
+    if (!line.isEmpty()) {
+      stdinPayload.append(line);
+      stdinPayload.append('\n');
+    }
   }
 
   auto *proc = new QProcess();
@@ -1080,14 +1223,14 @@ void FileDropBridge::processNextSendJob()
   QDir().mkpath(senderCfgDir);
   env.insert(QStringLiteral("XDG_CONFIG_HOME"), senderCfgDir);
   proc->setProcessEnvironment(env);
-  transferStatus(false).begin(QStringLiteral("正在发送到 %1").arg(destination));
+  transferBegin(false, QStringLiteral("正在发送到 %1").arg(destination));
   QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [proc]() {
     while (proc->canReadLine()) {
       const QString line = QString::fromUtf8(proc->readLine()).trimmed();
       if (line.startsWith(QStringLiteral("SEND_PROGRESS:"))) {
         const auto fields = line.split(':');
         if (fields.size() == 3) {
-          transferStatus(false).progress(fields[1].toULongLong(), fields[2].toULongLong());
+          transferProgress(false, fields[1].toULongLong(), fields[2].toULongLong());
         }
       } else {
         LOG_INFO("FileDropBridge [tx]: %s", line.toStdString().c_str());
@@ -1095,12 +1238,11 @@ void FileDropBridge::processNextSendJob()
     }
   });
 
-  const QByteArray tokenPayload = QByteArray::fromStdString(job.authToken + "\n");
-  QObject::connect(proc, &QProcess::started, proc, [proc, tokenPayload]() {
+  QObject::connect(proc, &QProcess::started, proc, [proc, stdinPayload]() {
 #if defined(_WIN32)
     assignProcessToKillOnCloseJob(proc->processId());
 #endif
-    if (proc->write(tokenPayload) == tokenPayload.size()) {
+    if (proc->write(stdinPayload) == stdinPayload.size()) {
       proc->waitForBytesWritten(2000);
     }
     proc->closeWriteChannel();
@@ -1109,7 +1251,7 @@ void FileDropBridge::processNextSendJob()
   QObject::connect(proc, &QProcess::errorOccurred, proc, [this, proc, destination](QProcess::ProcessError error) {
     if (error == QProcess::FailedToStart) {
       LOG_WARN("FileDropBridge: failed to start localsend-cli for %s", destination.toStdString().c_str());
-      transferStatus(false).finish(false, QStringLiteral("发送失败：无法启动 localsend-cli.exe"));
+      transferFinish(false, false, QStringLiteral("发送失败：无法启动 localsend-cli.exe"));
       proc->deleteLater();
       processNextSendJob();
     }
@@ -1119,7 +1261,7 @@ void FileDropBridge::processNextSendJob()
     const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
     const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
     const bool success = exitCode == 0 && status == QProcess::NormalExit;
-    transferStatus(false).finish(success, success ? QStringLiteral("文件发送完成") : QStringLiteral("文件发送失败"));
+    transferFinish(false, success, success ? QStringLiteral("文件发送完成") : QStringLiteral("文件发送失败"));
     if (success) {
       LOG_INFO("FileDropBridge: LocalSend transfer to %s succeeded", destination.toStdString().c_str());
     } else {
@@ -1142,41 +1284,59 @@ void FileDropBridge::startReceiver(const std::string &serverHost)
     QMetaObject::invokeMethod(app, [this, serverHost]() { startReceiver(serverHost); }, Qt::QueuedConnection);
     return;
   }
+  startReceiverInternal(serverHost, false);
+}
 
-  std::scoped_lock lock(m_mutex);
-  if (m_receiverProcess && m_receiverProcess->state() != QProcess::NotRunning) {
-    if (m_currentAllowedServerIp == serverHost) {
+void FileDropBridge::startReceiverInternal(const std::string &serverHost, bool isRestart)
+{
+  QProcess *oldProc = nullptr;
+  QString staging;
+  uint32_t generation = 0;
+  {
+    std::scoped_lock lock(m_mutex);
+    if (isRestart && (!m_receiverDesired || m_currentAllowedServerIp != serverHost)) {
       return;
     }
-    m_receiverProcess->disconnect();
-    m_receiverProcess->kill();
-    m_receiverProcess->waitForFinished(1000);
-    delete m_receiverProcess;
+    if (!isRestart && m_receiverProcess && m_receiverProcess->state() != QProcess::NotRunning &&
+        m_currentAllowedServerIp == serverHost && m_receiverDesired) {
+      return;
+    }
+    oldProc = m_receiverProcess;
     m_receiverProcess = nullptr;
-  }
-  if (m_receiverProcess) {
-    delete m_receiverProcess;
-    m_receiverProcess = nullptr;
+    ++m_receiverGeneration;
+    generation = m_receiverGeneration;
+    m_receiverDesired = true;
+    m_currentAllowedServerIp = serverHost;
+    if (!isRestart) {
+      m_receiverRestartAttempt = 0;
+      m_pendingReceiverAuthLines.clear();
+      m_pendingDropTargets.clear();
+      m_activeSessionTarget = DropTargetEntry{};
+      m_lastResolvedDropDir.clear();
+      m_activeReceiveSession = false;
+      notifyActiveTransfersChangedLocked();
+    }
+    staging = QDir(QDir::tempPath()).filePath(QStringLiteral("DeskSend_Staging"));
+    QDir().mkpath(staging);
+    m_stagingDir = staging.toStdString();
+
+    QString defaultDrop = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    if (defaultDrop.isEmpty()) {
+      defaultDrop = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
+    }
+    if (const char *envDrop = std::getenv("DESKSEND_DEFAULT_DROP_DIR"); envDrop && envDrop[0] != '\0') {
+      defaultDrop = QString::fromUtf8(envDrop);
+      QDir().mkpath(defaultDrop);
+    }
+    m_defaultDropFallbackDir = defaultDrop.toStdString();
   }
 
-  m_currentAllowedServerIp = serverHost;
-  m_pendingReceiverAuthLines.clear();
-  m_pendingDropTargets.clear();
-  m_activeSessionTarget = DropTargetEntry{};
-  m_lastResolvedDropDir.clear();
-  QString staging = QDir(QDir::tempPath()).filePath(QStringLiteral("DeskSend_Staging"));
-  QDir().mkpath(staging);
-  m_stagingDir = staging.toStdString();
-
-  QString defaultDrop = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
-  if (defaultDrop.isEmpty()) {
-    defaultDrop = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
+  if (oldProc) {
+    oldProc->disconnect();
+    oldProc->kill();
+    oldProc->waitForFinished(1000);
+    delete oldProc;
   }
-  if (const char *envDrop = std::getenv("DESKSEND_DEFAULT_DROP_DIR"); envDrop && envDrop[0] != '\0') {
-    defaultDrop = QString::fromUtf8(envDrop);
-    QDir().mkpath(defaultDrop);
-  }
-  m_defaultDropFallbackDir = defaultDrop.toStdString();
 
   const QString cliPath = QString::fromStdString(findLocalSendCliPath());
   QString port = QStringLiteral("53318");
@@ -1200,55 +1360,138 @@ void FileDropBridge::startReceiver(const std::string &serverHost)
   args << QStringLiteral("--port") << port << QStringLiteral("--destination") << staging << QStringLiteral("receive")
        << QStringLiteral("--auto-accept-from") << allowSpec << QStringLiteral("--auth-stdin");
 
-  m_receiverProcess = new QProcess();
-  m_receiverProcess->setProcessChannelMode(QProcess::MergedChannels);
+  auto *proc = new QProcess();
+  proc->setProcessChannelMode(QProcess::MergedChannels);
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString rxCfgDir = resolveLocalSendConfigDir("DESKSEND_RECEIVER_CONFIG_HOME", QStringLiteral("receiver"));
   QDir().mkpath(rxCfgDir);
   env.insert(QStringLiteral("XDG_CONFIG_HOME"), rxCfgDir);
-  m_receiverProcess->setProcessEnvironment(env);
+  proc->setProcessEnvironment(env);
 
-  QObject::connect(m_receiverProcess, &QProcess::started, m_receiverProcess, [this]() {
+  {
+    std::scoped_lock lock(m_mutex);
+    if (generation != m_receiverGeneration || !m_receiverDesired) {
+      delete proc;
+      return;
+    }
+    m_receiverProcess = proc;
+  }
+
+  QObject::connect(proc, &QProcess::started, proc, [this, proc, generation]() {
     std::deque<std::string> pending;
     {
       std::scoped_lock lock(m_mutex);
+      if (generation != m_receiverGeneration || m_receiverProcess != proc) {
+        return;
+      }
       pending.swap(m_pendingReceiverAuthLines);
     }
-    if (m_receiverProcess) {
 #if defined(_WIN32)
-      assignProcessToKillOnCloseJob(m_receiverProcess->processId());
+    assignProcessToKillOnCloseJob(proc->processId());
 #endif
-      for (const auto &cmd : pending) {
-        const QByteArray line = QByteArray::fromStdString(cmd + "\n");
-        m_receiverProcess->write(line);
+    for (const auto &cmd : pending) {
+      const QByteArray line = QByteArray::fromStdString(cmd + "\n");
+      proc->write(line);
+    }
+  });
+
+  QObject::connect(proc, &QProcess::errorOccurred, proc, [this, proc, generation](QProcess::ProcessError error) {
+    if (error == QProcess::FailedToStart) {
+      bool shouldWarn = false;
+      {
+        std::scoped_lock lock(m_mutex);
+        if (m_receiverProcess == proc) {
+          m_receiverProcess = nullptr;
+        }
+        shouldWarn = (generation == m_receiverGeneration);
+      }
+      proc->deleteLater();
+      if (shouldWarn) {
+        transferFinish(true, false, QStringLiteral("接收端启动失败：无法启动 localsend-cli.exe"));
       }
     }
   });
 
-  QObject::connect(m_receiverProcess, &QProcess::errorOccurred, m_receiverProcess, [](QProcess::ProcessError error) {
-    if (error == QProcess::FailedToStart) {
-      transferStatus(true).finish(false, QStringLiteral("接收端启动失败：无法启动 localsend-cli.exe"));
-    }
-  });
-  QObject::connect(m_receiverProcess, &QProcess::finished, m_receiverProcess, [](int, QProcess::ExitStatus) {
-    transferStatus(true).finish(false, QStringLiteral("文件接收监听已停止，请检查端口是否被占用"));
-  });
+  QObject::connect(
+      proc, &QProcess::finished, proc, [this, proc, generation](int exitCode, QProcess::ExitStatus exitStatus) {
+        proc->deleteLater();
+        std::string restartHost;
+        int delayMs = 0;
+        int attempt = 0;
+        bool shouldRestart = false;
+        bool hadActiveSession = false;
+        bool currentGen = false;
+        {
+          std::scoped_lock lock(m_mutex);
+          if (m_receiverProcess == proc) {
+            m_receiverProcess = nullptr;
+          }
+          currentGen = (generation == m_receiverGeneration);
+          if (currentGen) {
+            hadActiveSession = m_activeReceiveSession;
+            if (m_receiverDesired && !m_currentAllowedServerIp.empty()) {
+              shouldRestart = true;
+              restartHost = m_currentAllowedServerIp;
+              const int shift = std::min(m_receiverRestartAttempt, 4);
+              delayMs = std::min(15000, 1000 * (1 << shift));
+              ++m_receiverRestartAttempt;
+              attempt = m_receiverRestartAttempt;
+            }
+          }
+        }
+        if (!currentGen) {
+          return;
+        }
+        if (hadActiveSession) {
+          handleReceiveSessionFinished(true);
+        }
+        transferFinish(
+            true, false,
+            shouldRestart ? QStringLiteral("文件接收监听意外停止，正在尝试自动恢复…")
+                          : QStringLiteral("文件接收监听已停止，请检查端口是否被占用")
+        );
+        if (shouldRestart) {
+          LOG_WARN(
+              "FileDropBridge: receiver exited unexpectedly (code=%d, status=%d); restarting in %d ms (attempt %d)",
+              exitCode, static_cast<int>(exitStatus), delayMs, attempt
+          );
+          if (auto *app = QCoreApplication::instance()) {
+            QTimer::singleShot(delayMs, app, [this, generation, restartHost]() {
+              {
+                std::scoped_lock lock(m_mutex);
+                if (!m_receiverDesired || generation != m_receiverGeneration ||
+                    m_currentAllowedServerIp != restartHost) {
+                  return;
+                }
+              }
+              startReceiverInternal(restartHost, true);
+            });
+          }
+        }
+      }
+  );
 
-  QObject::connect(m_receiverProcess, &QProcess::readyReadStandardOutput, m_receiverProcess, [this]() {
-    if (!m_receiverProcess) {
-      return;
-    }
-    while (m_receiverProcess->canReadLine()) {
-      const QString line = QString::fromUtf8(m_receiverProcess->readLine()).trimmed();
+  QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [this, proc, generation]() {
+    while (proc->canReadLine()) {
+      const QString line = QString::fromUtf8(proc->readLine()).trimmed();
       if (!line.startsWith(QStringLiteral("RECEIVE_PROGRESS:"))) {
         LOG_INFO("FileDropBridge [rx]: %s", line.toStdString().c_str());
+      }
+      {
+        std::scoped_lock lock(m_mutex);
+        if (generation != m_receiverGeneration) {
+          return;
+        }
+        if (line.startsWith(QStringLiteral("LOCALSEND_RECEIVER_READY:"))) {
+          m_receiverRestartAttempt = 0;
+        }
       }
       const QString filePrefix = QStringLiteral("RECEIVED_FILE:");
       const QString startPrefix = QStringLiteral("RECEIVE_SESSION_STARTED:");
       if (line.startsWith(QStringLiteral("RECEIVE_PROGRESS:"))) {
         const auto fields = line.split(':');
         if (fields.size() == 4) {
-          transferStatus(true).progress(fields[2].toULongLong(), fields[3].toULongLong());
+          transferProgress(true, fields[2].toULongLong(), fields[3].toULongLong());
         }
       } else if (line.startsWith(filePrefix)) {
         handleReceivedFileLine(line.mid(filePrefix.size()).toStdString());
@@ -1273,7 +1516,7 @@ void FileDropBridge::startReceiver(const std::string &serverHost)
       "FileDropBridge: starting headless receiver: %s %s", cliPath.toStdString().c_str(),
       args.join(' ').toStdString().c_str()
   );
-  m_receiverProcess->start(cliPath, args);
+  proc->start(cliPath, args);
 }
 
 void FileDropBridge::stopReceiver()
@@ -1283,18 +1526,32 @@ void FileDropBridge::stopReceiver()
     return;
   }
 
-  std::scoped_lock lock(m_mutex);
-  m_currentAllowedServerIp.clear();
-  m_pendingReceiverAuthLines.clear();
-  m_pendingDropTargets.clear();
-  m_activeSessionTarget = DropTargetEntry{};
-  m_lastResolvedDropDir.clear();
-  if (m_receiverProcess) {
-    m_receiverProcess->disconnect();
-    m_receiverProcess->kill();
-    m_receiverProcess->waitForFinished(1000);
-    delete m_receiverProcess;
+  QProcess *oldProc = nullptr;
+  {
+    std::scoped_lock lock(m_mutex);
+    m_receiverDesired = false;
+    ++m_receiverGeneration;
+    m_receiverRestartAttempt = 0;
+    m_currentAllowedServerIp.clear();
+    m_pendingReceiverAuthLines.clear();
+    m_pendingDropTargets.clear();
+    m_activeSessionTarget = DropTargetEntry{};
+    m_activeSessionPlacedFiles.clear();
+    m_activeSessionExpectedFiles = 0;
+    m_activeSessionHandledFiles = 0;
+    m_activeSessionEnded = false;
+    m_activeSessionFailed = false;
+    m_activeReceiveSession = false;
+    m_lastResolvedDropDir.clear();
+    notifyActiveTransfersChangedLocked();
+    oldProc = m_receiverProcess;
     m_receiverProcess = nullptr;
+  }
+  if (oldProc) {
+    oldProc->disconnect();
+    oldProc->kill();
+    oldProc->waitForFinished(1000);
+    delete oldProc;
   }
 }
 
@@ -1308,10 +1565,10 @@ void FileDropBridge::queueReceiverAuthCommand(const std::string &command)
   }
 
   std::scoped_lock lock(m_mutex);
-  if (!m_receiverProcess) {
+  if (!m_receiverDesired) {
     return;
   }
-  if (m_receiverProcess->state() == QProcess::Running) {
+  if (m_receiverProcess && m_receiverProcess->state() == QProcess::Running) {
     const QByteArray line = QByteArray::fromStdString(command + "\n");
     m_receiverProcess->write(line);
   } else {
@@ -1386,24 +1643,28 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
 void FileDropBridge::handleReceiveSessionStarted(size_t expectedFiles)
 {
   finalizeActiveSession();
-  std::scoped_lock lock(m_mutex);
-  const uint64_t now = nowMs();
-  while (!m_pendingDropTargets.empty() && (now - m_pendingDropTargets.front().timestampMs > 300000)) {
-    m_pendingDropTargets.pop_front();
+  {
+    std::scoped_lock lock(m_mutex);
+    const uint64_t now = nowMs();
+    while (!m_pendingDropTargets.empty() && (now - m_pendingDropTargets.front().timestampMs > 300000)) {
+      m_pendingDropTargets.pop_front();
+    }
+    m_activeSessionPlacedFiles.clear();
+    m_activeSessionExpectedFiles = expectedFiles;
+    m_activeSessionHandledFiles = 0;
+    m_activeSessionEnded = false;
+    m_activeSessionFailed = false;
+    m_activeReceiveSession = true;
+    notifyActiveTransfersChangedLocked();
+    if (!m_pendingDropTargets.empty()) {
+      m_activeSessionTarget = std::move(m_pendingDropTargets.front());
+      m_pendingDropTargets.pop_front();
+    } else {
+      m_activeSessionTarget = DropTargetEntry{};
+      LOG_WARN("FileDropBridge: no pending drop target for receive session; files will remain in staging");
+    }
   }
-  m_activeSessionPlacedFiles.clear();
-  m_activeSessionExpectedFiles = expectedFiles;
-  m_activeSessionHandledFiles = 0;
-  m_activeSessionEnded = false;
-  m_activeSessionFailed = false;
-  transferStatus(true).begin(QStringLiteral("正在接收 %1 个文件").arg(static_cast<qulonglong>(expectedFiles)));
-  if (!m_pendingDropTargets.empty()) {
-    m_activeSessionTarget = std::move(m_pendingDropTargets.front());
-    m_pendingDropTargets.pop_front();
-  } else {
-    m_activeSessionTarget = DropTargetEntry{};
-    LOG_WARN("FileDropBridge: no pending drop target for receive session; files will remain in staging");
-  }
+  transferBegin(true, QStringLiteral("正在接收 %1 个文件").arg(static_cast<qulonglong>(expectedFiles)));
 }
 
 void FileDropBridge::handleReceiveSessionFinished(bool cancelled)
@@ -1443,6 +1704,8 @@ void FileDropBridge::finalizeActiveSession()
 {
   std::vector<std::string> filesForClipboard;
   bool shouldCopyToClipboard = false;
+  bool sessionEnded = false;
+  bool sessionFailed = false;
   std::string stagingDirStr;
   {
     std::scoped_lock lock(m_mutex);
@@ -1450,10 +1713,8 @@ void FileDropBridge::finalizeActiveSession()
       return;
     }
     shouldCopyToClipboard = m_activeSessionTarget.copyToClipboard;
-    if (m_activeSessionEnded) {
-      transferStatus(true).finish(!m_activeSessionFailed,
-          m_activeSessionFailed ? QStringLiteral("文件接收失败或传输已取消") : QStringLiteral("文件接收完成"));
-    }
+    sessionEnded = m_activeSessionEnded;
+    sessionFailed = m_activeSessionFailed;
     if (shouldCopyToClipboard) {
       filesForClipboard = std::move(m_activeSessionPlacedFiles);
     }
@@ -1462,7 +1723,17 @@ void FileDropBridge::finalizeActiveSession()
     m_activeSessionExpectedFiles = 0;
     m_activeSessionHandledFiles = 0;
     m_activeSessionEnded = false;
+    m_activeSessionFailed = false;
+    m_activeReceiveSession = false;
+    notifyActiveTransfersChangedLocked();
     stagingDirStr = m_stagingDir;
+  }
+
+  if (sessionEnded) {
+    transferFinish(
+        true, !sessionFailed,
+        sessionFailed ? QStringLiteral("文件接收失败或传输已取消") : QStringLiteral("文件接收完成")
+    );
   }
 
 #if defined(_WIN32)
@@ -1477,6 +1748,37 @@ void FileDropBridge::finalizeActiveSession()
   if (!stagingDirStr.empty()) {
     cleanEmptySubdirsInStaging(QString::fromStdString(stagingDirStr), true);
   }
+}
+
+std::string FileDropBridge::uniqueDestinationPath(const std::string &dstDir, const std::string &relPath)
+{
+  QDir dstRootDir(QString::fromStdString(dstDir));
+  if (!dstRootDir.exists()) {
+    dstRootDir.mkpath(QStringLiteral("."));
+  }
+
+  QString dstPath = dstRootDir.filePath(QString::fromStdString(relPath));
+  QFileInfo dstInfo(dstPath);
+  QDir dstParentDir = dstInfo.dir();
+  if (!dstParentDir.exists()) {
+    dstParentDir.mkpath(QStringLiteral("."));
+  }
+
+  const QString fileName = dstInfo.fileName();
+  const qsizetype lastDot = fileName.lastIndexOf(QLatin1Char('.'));
+  const bool hasExtension = lastDot > 0 && (lastDot + 1) < fileName.size();
+  const QString baseName = hasExtension ? fileName.left(lastDot) : fileName;
+  const QString suffix = hasExtension ? fileName.mid(lastDot + 1) : QString();
+  int counter = 1;
+  while (QFileInfo::exists(dstPath)) {
+    if (suffix.isEmpty()) {
+      dstPath = dstParentDir.filePath(QStringLiteral("%1 (%2)").arg(baseName).arg(counter));
+    } else {
+      dstPath = dstParentDir.filePath(QStringLiteral("%1 (%2).%3").arg(baseName).arg(counter).arg(suffix));
+    }
+    ++counter;
+  }
+  return dstPath.toStdString();
 }
 
 void FileDropBridge::handleReceivedFileLine(const std::string &filePath)
@@ -1502,11 +1804,6 @@ void FileDropBridge::handleReceivedFileLine(const std::string &filePath)
     return;
   }
 
-  QDir dstRootDir(QString::fromStdString(targetDir));
-  if (!dstRootDir.exists()) {
-    dstRootDir.mkpath(QStringLiteral("."));
-  }
-
   QString relPath = srcInfo.fileName();
   if (!stagingDirStr.empty()) {
     QDir stagingDir(QString::fromStdString(stagingDirStr));
@@ -1517,24 +1814,7 @@ void FileDropBridge::handleReceivedFileLine(const std::string &filePath)
     }
   }
 
-  QString dstPath = dstRootDir.filePath(relPath);
-  QFileInfo dstInfo(dstPath);
-  QDir dstParentDir = dstInfo.dir();
-  if (!dstParentDir.exists()) {
-    dstParentDir.mkpath(QStringLiteral("."));
-  }
-
-  QString baseName = dstInfo.completeBaseName();
-  QString suffix = dstInfo.suffix();
-  int counter = 1;
-  while (QFileInfo::exists(dstPath)) {
-    if (suffix.isEmpty()) {
-      dstPath = dstParentDir.filePath(QStringLiteral("%1 (%2)").arg(baseName).arg(counter));
-    } else {
-      dstPath = dstParentDir.filePath(QStringLiteral("%1 (%2).%3").arg(baseName).arg(counter).arg(suffix));
-    }
-    ++counter;
-  }
+  const QString dstPath = QString::fromStdString(uniqueDestinationPath(targetDir, relPath.toStdString()));
 
   bool placed = false;
   if (QFile::rename(srcInfo.absoluteFilePath(), dstPath)) {
@@ -1629,7 +1909,9 @@ std::string FileDropBridge::resolveDropTargetDirectory(
         shellWindows) {
       long count = 0;
       shellWindows->get_Count(&count);
+      const HWND activeTab = findActiveExplorerTab(hwndTop);
       std::string matchedFolder;
+      std::string fallbackTabFolder;
 
       for (long i = 0; i < count; ++i) {
         VARIANT idx;
@@ -1649,9 +1931,9 @@ std::string FileDropBridge::resolveDropTargetDirectory(
                 if (SUCCEEDED(sp->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&shellBrowser))) && shellBrowser) {
                   HWND tabHwnd = nullptr;
                   shellBrowser->GetWindow(&tabHwnd);
-                  const bool isActiveOrHitTab =
-                      !tabHwnd || tabHwnd == hwndHit || IsChild(tabHwnd, hwndHit) || IsWindowVisible(tabHwnd);
-                  if (isActiveOrHitTab) {
+                  const bool isExactHitTab = tabHwnd && (tabHwnd == hwndHit || IsChild(tabHwnd, hwndHit));
+                  const bool isActiveTopTab = activeTab ? (tabHwnd == activeTab) : (tabHwnd == nullptr);
+                  if (isExactHitTab || (fallbackTabFolder.empty() && isActiveTopTab)) {
                     IShellView *shellView = nullptr;
                     if (SUCCEEDED(shellBrowser->QueryActiveShellView(&shellView)) && shellView) {
                       IFolderView *folderView = nullptr;
@@ -1660,9 +1942,13 @@ std::string FileDropBridge::resolveDropTargetDirectory(
                         if (SUCCEEDED(folderView->GetFolder(IID_PPV_ARGS(&persistFolder))) && persistFolder) {
                           PIDLIST_ABSOLUTE pidl = nullptr;
                           if (SUCCEEDED(persistFolder->GetCurFolder(&pidl)) && pidl) {
-                            wchar_t path[MAX_PATH * 2] = {};
-                            if (SHGetPathFromIDListW(pidl, path)) {
-                              matchedFolder = wideToUtf8(path);
+                            std::string resolved = pidlToUtf8Path(pidl);
+                            if (!resolved.empty()) {
+                              if (isExactHitTab) {
+                                matchedFolder = std::move(resolved);
+                              } else {
+                                fallbackTabFolder = std::move(resolved);
+                              }
                             }
                             CoTaskMemFree(pidl);
                           }
@@ -1687,6 +1973,9 @@ std::string FileDropBridge::resolveDropTargetDirectory(
         }
       }
       shellWindows->Release();
+      if (matchedFolder.empty()) {
+        matchedFolder = std::move(fallbackTabFolder);
+      }
       if (!matchedFolder.empty()) {
         return matchedFolder;
       }

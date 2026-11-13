@@ -53,6 +53,14 @@ create_test(
   WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/deskflow"
 )
 
+create_test(
+  NAME FileDropBridgeTests
+  DEPENDS app
+  LIBS arch base io mt net server ${extra_libs}
+  SOURCE FileDropBridgeTests.cpp
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/deskflow"
+)
+
 if(BUILD_X11_SUPPORT)
   create_test(
     NAME XkbLayoutParserTests

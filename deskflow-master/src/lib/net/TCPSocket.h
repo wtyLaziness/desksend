@@ -122,6 +122,7 @@ protected:
   }
 
   void sendEvent(EventTypes);
+  void sendConnectionFailedEvent(const char *);
   void discardWrittenData(int bytesWrote);
 
   StreamBuffer m_inputBuffer;
@@ -129,8 +130,6 @@ protected:
 
 private:
   void init();
-
-  void sendConnectionFailedEvent(const char *);
   void onConnected();
   void onInputShutdown();
   void onOutputShutdown();
