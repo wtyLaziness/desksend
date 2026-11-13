@@ -66,6 +66,92 @@ private Q_SLOTS:
     const QString genericErr = VersionChecker::formatHttpFailure(500, "59", "", "Internal Server Error");
     QVERIFY(genericErr.contains(QStringLiteral("Internal Server Error")));
   }
+  void fallbackDecisionAndAssetUrl()
+  {
+    QVERIFY(VersionChecker::shouldUseFallback(403));
+    QVERIFY(VersionChecker::shouldUseFallback(429));
+    QVERIFY(!VersionChecker::shouldUseFallback(200));
+    QVERIFY(!VersionChecker::shouldUseFallback(404));
+    QVERIFY(!VersionChecker::shouldUseFallback(500));
+
+    QCOMPARE(
+        VersionChecker::releaseAssetUrl(QStringLiteral("1.0.3"), QStringLiteral("SHA256SUMS.txt")),
+        QUrl(QStringLiteral("https://github.com/wtyLaziness/desksend-releases/releases/download/v1.0.3/SHA256SUMS.txt"))
+    );
+  }
+  void parseLatestTagUrl()
+  {
+    QString version;
+    QVERIFY(VersionChecker::parseLatestTagUrl(
+        QUrl(QStringLiteral("https://github.com/wtyLaziness/desksend-releases/releases/tag/v1.0.2")), version
+    ));
+    QCOMPARE(version, QStringLiteral("1.0.2"));
+
+    QVERIFY(VersionChecker::parseLatestTagUrl(
+        QUrl(QStringLiteral("/wtyLaziness/desksend-releases/releases/tag/v1.10.3")), version
+    ));
+    QCOMPARE(version, QStringLiteral("1.10.3"));
+
+    QVERIFY(!VersionChecker::parseLatestTagUrl(
+        QUrl(QStringLiteral("http://github.com/wtyLaziness/desksend-releases/releases/tag/v1.0.2")), version
+    ));
+    QVERIFY(!VersionChecker::parseLatestTagUrl(
+        QUrl(QStringLiteral("https://evil.com/wtyLaziness/desksend-releases/releases/tag/v1.0.2")), version
+    ));
+    QVERIFY(!VersionChecker::parseLatestTagUrl(
+        QUrl(QStringLiteral("//evil.com/wtyLaziness/desksend-releases/releases/tag/v1.0.2")), version
+    ));
+    QVERIFY(!VersionChecker::parseLatestTagUrl(
+        QUrl(QStringLiteral("https://github.com/other/desksend-releases/releases/tag/v1.0.2")), version
+    ));
+    QVERIFY(!VersionChecker::parseLatestTagUrl(
+        QUrl(QStringLiteral("https://github.com/wtyLaziness/desksend-releases/releases")), version
+    ));
+    QVERIFY(!VersionChecker::parseLatestTagUrl(
+        QUrl(QStringLiteral("https://github.com/wtyLaziness/desksend-releases/releases/tag/v1.0.2-rc1")), version
+    ));
+    QVERIFY(!VersionChecker::parseLatestTagUrl(
+        QUrl(QStringLiteral("https://github.com/wtyLaziness/desksend-releases/releases/tag/v1.0")), version
+    ));
+    QVERIFY(!VersionChecker::parseLatestTagUrl(
+        QUrl(QStringLiteral("https://github.com:8443/wtyLaziness/desksend-releases/releases/tag/v1.0.2")), version
+    ));
+    QVERIFY(!VersionChecker::parseLatestTagUrl(
+        QUrl(QStringLiteral("https://github.com/wtyLaziness/desksend-releases/releases/tag/v1.0.2?foo=1")), version
+    ));
+    QVERIFY(version.isEmpty());
+  }
+  void parseSha256Sums()
+  {
+    const QByteArray validSums =
+        "58331eb9531e1c90af40ad6323397bd5ccbc0fc78906917390dd218103af04ee  DeskSend-1.0.2-source.zip\n"
+        "7e3160b0f4ff17d0141a6d925af3e1f847afd041784626761a8b24af0223c700  DeskSend-1.0.2-windows-x64.zip\n";
+    QByteArray sha256;
+    QVERIFY(VersionChecker::parseSha256Sums(validSums, QStringLiteral("1.0.2"), sha256));
+    QCOMPARE(sha256, QByteArray("7e3160b0f4ff17d0141a6d925af3e1f847afd041784626761a8b24af0223c700"));
+
+    const QByteArray bomBinaryUpper =
+        "\xEF\xBB\xBF"
+        "7E3160B0F4FF17D0141A6D925AF3E1F847AFD041784626761A8B24AF0223C700 *DeskSend-1.0.2-windows-x64.zip\r\n";
+    QVERIFY(VersionChecker::parseSha256Sums(bomBinaryUpper, QStringLiteral("1.0.2"), sha256));
+    QCOMPARE(sha256, QByteArray("7e3160b0f4ff17d0141a6d925af3e1f847afd041784626761a8b24af0223c700"));
+
+    QVERIFY(!VersionChecker::parseSha256Sums(validSums, QStringLiteral("1.0.3"), sha256));
+    QVERIFY(sha256.isEmpty());
+
+    QVERIFY(!VersionChecker::parseSha256Sums(
+        "7e3160b0f4ff17d0141a6d925af3e1f847afd041784626761a8b24af0223c70  DeskSend-1.0.2-windows-x64.zip\n",
+        QStringLiteral("1.0.2"), sha256
+    ));
+    QVERIFY(!VersionChecker::parseSha256Sums(
+        "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz  DeskSend-1.0.2-windows-x64.zip\n",
+        QStringLiteral("1.0.2"), sha256
+    ));
+    QVERIFY(!VersionChecker::parseSha256Sums(
+        "7e3160b0f4ff17d0141a6d925af3e1f847afd041784626761a8b24af0223c700  sub/DeskSend-1.0.2-windows-x64.zip\n",
+        QStringLiteral("1.0.2"), sha256
+    ));
+  }
 };
 QTEST_MAIN(VersionCheckerTests)
 #include "VersionCheckerTests.moc"
