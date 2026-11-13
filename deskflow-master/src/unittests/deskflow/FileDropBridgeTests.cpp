@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
 #include "deskflow/FileDropBridge.h"
+#include "base/Log.h"
 
 #include <QDir>
 #include <QFile>
@@ -9,6 +10,9 @@
 class FileDropBridgeTests : public QObject
 {
   Q_OBJECT
+private:
+  Log m_log;
+
 private Q_SLOTS:
   void uniqueDestinationPathPreservesDotfilesAndMultiExtensions()
   {
