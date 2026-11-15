@@ -81,7 +81,7 @@
 // enable; <unused>
 #define DESKFLOW_MSG_FAKE_INPUT DESKFLOW_HOOK_LAST_MSG + 12
 
-static void send_keyboard_input(WORD wVk, WORD wScan, DWORD dwFlags)
+static bool send_keyboard_input(WORD wVk, WORD wScan, DWORD dwFlags)
 {
   INPUT inp;
   inp.type = INPUT_KEYBOARD;
@@ -90,10 +90,10 @@ static void send_keyboard_input(WORD wVk, WORD wScan, DWORD dwFlags)
   inp.ki.dwFlags = dwFlags & 0xF;
   inp.ki.time = 0;
   inp.ki.dwExtraInfo = 0;
-  SendInput(1, &inp, sizeof(inp));
+  return SendInput(1, &inp, sizeof(inp)) == 1;
 }
 
-static void send_mouse_input(DWORD dwFlags, DWORD dx, DWORD dy, DWORD dwData)
+static bool send_mouse_input(DWORD dwFlags, DWORD dx, DWORD dy, DWORD dwData)
 {
   INPUT inp;
   inp.type = INPUT_MOUSE;
@@ -103,7 +103,7 @@ static void send_mouse_input(DWORD dwFlags, DWORD dx, DWORD dy, DWORD dwData)
   inp.mi.mouseData = dwData;
   inp.mi.time = 0;
   inp.mi.dwExtraInfo = 0;
-  SendInput(1, &inp, sizeof(inp));
+  return SendInput(1, &inp, sizeof(inp)) == 1;
 }
 
 //
@@ -170,11 +170,14 @@ void MSWindowsDesks::disable()
 
 void MSWindowsDesks::enter()
 {
+  m_isOnComputer = true;
   sendMessage(DESKFLOW_MSG_ENTER, 0, 0);
 }
 
 void MSWindowsDesks::leave(HKL keyLayout)
 {
+  m_isOnComputer = false;
+  m_keyLayout = keyLayout;
   sendMessage(DESKFLOW_MSG_LEAVE, (WPARAM)keyLayout, 0);
 }
 
@@ -457,10 +460,11 @@ void MSWindowsDesks::deskMouseMove(int32_t x, int32_t y) const
   // the primary computer.
   int32_t w = GetSystemMetrics(SM_CXSCREEN);
   int32_t h = GetSystemMetrics(SM_CYSCREEN);
-  send_mouse_input(
-      MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, (DWORD)((65535.0f * x) / (w - 1) + 0.5f),
-      (DWORD)((65535.0f * y) / (h - 1) + 0.5f), 0
-  );
+  DWORD nx = w > 1 ? (DWORD)((65535.0f * x) / (w - 1) + 0.5f) : 0;
+  DWORD ny = h > 1 ? (DWORD)((65535.0f * y) / (h - 1) + 0.5f) : 0;
+  if (!send_mouse_input(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, nx, ny, 0)) {
+    SetCursorPos(x, y);
+  }
 }
 
 void MSWindowsDesks::deskMouseRelativeMove(int32_t dx, int32_t dy) const
@@ -487,7 +491,12 @@ void MSWindowsDesks::deskMouseRelativeMove(int32_t dx, int32_t dy) const
   }
 
   // move relative to mouse position
-  send_mouse_input(MOUSEEVENTF_MOVE, dx, dy, 0);
+  if (!send_mouse_input(MOUSEEVENTF_MOVE, dx, dy, 0)) {
+    POINT pos{};
+    if (GetCursorPos(&pos)) {
+      SetCursorPos(pos.x + dx, pos.y + dy);
+    }
+  }
 
   // restore mouse speed & acceleration
   if (accelChanged) {
@@ -542,21 +551,25 @@ void MSWindowsDesks::deskEnter(Desk *desk)
 
   setCursorVisibility(true);
 
-  SetWindowPos(desk->m_window, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
+  if (desk->m_window != nullptr) {
+    SetWindowPos(desk->m_window, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
 
-  // restore the foreground window
-  // XXX -- this raises the window to the top of the Z-order.  we
-  // want it to stay wherever it was to properly support X-mouse
-  // (mouse over activation) but i've no idea how to do that.
-  // the obvious workaround of using SetWindowPos() to move it back
-  // after being raised doesn't work.
-  DWORD thisThread = GetWindowThreadProcessId(desk->m_window, nullptr);
-  DWORD thatThread = GetWindowThreadProcessId(desk->m_foregroundWindow, nullptr);
-  AttachThreadInput(thatThread, thisThread, TRUE);
-  SetForegroundWindow(desk->m_foregroundWindow);
-  AttachThreadInput(thatThread, thisThread, FALSE);
-  EnableWindow(desk->m_window, desk->m_lowLevel ? FALSE : TRUE);
-  desk->m_foregroundWindow = nullptr;
+    // restore the foreground window
+    // XXX -- this raises the window to the top of the Z-order.  we
+    // want it to stay wherever it was to properly support X-mouse
+    // (mouse over activation) but i've no idea how to do that.
+    // the obvious workaround of using SetWindowPos() to move it back
+    // after being raised doesn't work.
+    if (desk->m_foregroundWindow != nullptr) {
+      DWORD thisThread = GetWindowThreadProcessId(desk->m_window, nullptr);
+      DWORD thatThread = GetWindowThreadProcessId(desk->m_foregroundWindow, nullptr);
+      AttachThreadInput(thatThread, thisThread, TRUE);
+      SetForegroundWindow(desk->m_foregroundWindow);
+      AttachThreadInput(thatThread, thisThread, FALSE);
+      desk->m_foregroundWindow = nullptr;
+    }
+    EnableWindow(desk->m_window, desk->m_lowLevel ? FALSE : TRUE);
+  }
 }
 
 void MSWindowsDesks::deskLeave(Desk *desk, HKL keyLayout)
@@ -868,8 +881,12 @@ void MSWindowsDesks::checkDesk()
     m_activeDeskName = name;
     sendMessage(DESKFLOW_MSG_SWITCH, 0, 0);
 
-    // hide cursor on new desk
-    if (!wasOnComputer) {
+    // sync cursor state on new desk according to the logical on-computer state
+    if (wasOnComputer) {
+      m_isOnComputer = true;
+      sendMessage(DESKFLOW_MSG_ENTER, 0, 0);
+    } else {
+      m_isOnComputer = false;
       sendMessage(DESKFLOW_MSG_LEAVE, (WPARAM)m_keyLayout, 0);
     }
 

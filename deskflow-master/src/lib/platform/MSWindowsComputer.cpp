@@ -72,6 +72,29 @@
 #define PBT_APMRESUMEAUTOMATIC 0x0012
 #endif
 
+namespace {
+
+int buttonToAsyncVirtualKey(uint32_t buttonID)
+{
+  const bool swapped = (GetSystemMetrics(SM_SWAPBUTTON) != 0);
+  switch (buttonID) {
+  case kButtonLeft:
+    return swapped ? VK_RBUTTON : VK_LBUTTON;
+  case kButtonMiddle:
+    return VK_MBUTTON;
+  case kButtonRight:
+    return swapped ? VK_LBUTTON : VK_RBUTTON;
+  case kButtonExtra0 + 0:
+    return (GetSystemMetrics(SM_CMOUSEBUTTONS) >= 4) ? VK_XBUTTON1 : 0;
+  case kButtonExtra0 + 1:
+    return (GetSystemMetrics(SM_CMOUSEBUTTONS) >= 5) ? VK_XBUTTON2 : 0;
+  default:
+    return 0;
+  }
+}
+
+} // namespace
+
 //
 // MSWindowsComputer
 //
@@ -84,6 +107,7 @@ MSWindowsComputer::MSWindowsComputer(bool isPrimary, bool useHooks, IEventQueue 
       m_isPrimary(isPrimary),
       m_useHooks(useHooks),
       m_isOnComputer(m_isPrimary),
+      m_buttons{},
       m_hasMouse(GetSystemMetrics(SM_MOUSEPRESENT) != 0),
       m_events(events)
 {
@@ -261,6 +285,7 @@ void MSWindowsComputer::enter()
 
   // now on computer
   m_isOnComputer = true;
+  updateButtons();
   setupMouseKeys();
 }
 
@@ -674,6 +699,13 @@ bool MSWindowsComputer::isAnyMouseButtonDown(uint32_t &buttonID) const
 
   for (uint32_t i = 1; i < sizeof(m_buttons) / sizeof(m_buttons[0]); ++i) {
     if (m_buttons[i]) {
+      if (m_isOnComputer || !m_isPrimary) {
+        const int vk = buttonToAsyncVirtualKey(i);
+        if (vk != 0 && (GetAsyncKeyState(vk) & 0x8000) == 0) {
+          const_cast<MSWindowsComputer *>(this)->m_buttons[i] = false;
+          continue;
+        }
+      }
       buttonID = i;
       LOG_DEBUG("locked by \"%s\"", buttonToName[i]);
       return true;
@@ -847,13 +879,14 @@ void MSWindowsComputer::handleSystemEvent(const Event &event)
 
 void MSWindowsComputer::updateButtons()
 {
-  int numButtons = GetSystemMetrics(SM_CMOUSEBUTTONS);
   m_buttons[kButtonNone] = false;
-  m_buttons[kButtonLeft] = (GetKeyState(VK_LBUTTON) < 0);
-  m_buttons[kButtonRight] = (GetKeyState(VK_RBUTTON) < 0);
-  m_buttons[kButtonMiddle] = (GetKeyState(VK_MBUTTON) < 0);
-  m_buttons[kButtonExtra0 + 0] = (numButtons >= 4) && (GetKeyState(VK_XBUTTON1) < 0);
-  m_buttons[kButtonExtra0 + 1] = (numButtons >= 5) && (GetKeyState(VK_XBUTTON2) < 0);
+  if (m_isPrimary && !m_isOnComputer) {
+    return;
+  }
+  for (uint32_t i = 1; i < sizeof(m_buttons) / sizeof(m_buttons[0]); ++i) {
+    const int vk = buttonToAsyncVirtualKey(i);
+    m_buttons[i] = (vk != 0) && ((GetAsyncKeyState(vk) & 0x8000) != 0);
+  }
 }
 
 IKeyState *MSWindowsComputer::getKeyState() const

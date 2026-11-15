@@ -44,6 +44,8 @@ object don't have to know anything about desks.
 */
 class MSWindowsDesks
 {
+  friend class MSWindowsDesksTests;
+
 public:
   //! Constructor
   /*!

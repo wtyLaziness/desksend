@@ -9,6 +9,14 @@ if (WIN32)
     SOURCE MSWindowsClipboardTests.cpp
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/platform"
   )
+
+  create_test(
+    NAME MSWindowsDesksTests
+    DEPENDS platform
+    LIBS arch base io mt net server app version
+    SOURCE MSWindowsDesksTests.cpp
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/platform"
+  )
 elseif(APPLE)
   create_test(
     NAME OSXClipboardTests
