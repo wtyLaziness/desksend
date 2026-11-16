@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <iostream>
 #include <memory>
 
 namespace {
@@ -1273,7 +1274,7 @@ int main(int argc, char *argv[])
 {
   QCoreApplication app(argc, argv);
   QStringList args;
-  args.reserve(argc + 2);
+  args.reserve(argc + 3);
   bool hasOutputOpt = false;
   for (int i = 0; i < argc; ++i) {
     const QString arg = QString::fromLocal8Bit(argv[i]);
@@ -1282,10 +1283,24 @@ int main(int argc, char *argv[])
     }
     args.append(arg);
   }
+  QString diagPath;
   if (!hasOutputOpt) {
-    args << QStringLiteral("-o") << QStringLiteral("-,txt");
+    diagPath = QDir::temp().filePath(
+        QStringLiteral("FileDropBridgeTests_qtest_%1.txt").arg(QCoreApplication::applicationPid())
+    );
+    args << QStringLiteral("-o") << (diagPath + QStringLiteral(",txt"));
   }
   FileDropBridgeTests tc;
-  return QTest::qExec(&tc, args);
+  const int rc = QTest::qExec(&tc, args);
+  if (!diagPath.isEmpty()) {
+    QFile f(diagPath);
+    if (f.open(QIODevice::ReadOnly)) {
+      std::cerr << f.readAll().toStdString() << std::flush;
+      f.close();
+    }
+    QFile::remove(diagPath);
+    std::cerr << "FileDropBridgeTests QTest::qExec rc=" << rc << std::endl;
+  }
+  return rc;
 }
 #include "FileDropBridgeTests.moc"
