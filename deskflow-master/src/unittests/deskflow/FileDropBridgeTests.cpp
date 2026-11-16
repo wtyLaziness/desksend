@@ -5,6 +5,7 @@
 #include "deskflow/DropExecutor.h"
 #include "deskflow/FileDropBridge.h"
 #include "base/Log.h"
+#include "net/IDataSocket.h"
 #include "server/BaseClientProxy.h"
 
 #include <QCryptographicHash>
@@ -13,18 +14,47 @@
 #include <QTemporaryDir>
 #include <QtTest>
 
+#include <algorithm>
 #include <chrono>
+#include <memory>
 
 namespace {
+
+class MockDragDataSocket final : public IDataSocket
+{
+public:
+  explicit MockDragDataSocket(const std::string &peerAddr) : IDataSocket(nullptr)
+  {
+    setPeerAddress(peerAddr);
+  }
+
+  void bind(const NetworkAddress &) override {}
+  void close() override {}
+  void *getEventTarget() const override { return const_cast<MockDragDataSocket *>(this); }
+  void connect(const NetworkAddress &) override {}
+  bool isFatal() const override { return false; }
+  uint32_t read(void *, uint32_t) override { return 0; }
+  void write(const void *, uint32_t) override {}
+  void flush() override {}
+  void shutdownInput() override {}
+  void shutdownOutput() override {}
+  bool isReady() const override { return false; }
+  uint32_t getSize() const override { return 0; }
+};
 
 class MockDragClientProxy final : public BaseClientProxy
 {
 public:
-  explicit MockDragClientProxy(const std::string &name) : BaseClientProxy(name)
+  explicit MockDragClientProxy(const std::string &name, const std::string &peerAddress = {})
+      : BaseClientProxy(name)
   {
+    if (!peerAddress.empty()) {
+      m_socket = std::make_unique<MockDragDataSocket>(peerAddress);
+    }
   }
 
   std::vector<std::pair<uint32_t, std::string>> dragMessages;
+  std::unique_ptr<MockDragDataSocket> m_socket;
 
   void *getEventTarget() const override { return nullptr; }
   bool getClipboard(ClipboardID, IClipboard *) const override { return false; }
@@ -53,7 +83,100 @@ public:
   void fileChunkSending(uint8_t, char *, size_t) override {}
   std::string getSecureInputApp() const override { return {}; }
   void secureInputNotification(const std::string &) const override {}
-  deskflow::IStream *getStream() const override { return nullptr; }
+  deskflow::IStream *getStream() const override { return m_socket.get(); }
+};
+
+struct RecordedExecutorState
+{
+  std::vector<deskflow::DropAgentCommand> commands;
+  deskflow::IDropExecutorHost *host = nullptr;
+  bool hoverVisible = false;
+  uint32_t hoverFileCount = 0;
+  QPoint hoverCursorPos;
+  deskflow::TransferStatusOverlay::Phase receiverPhase = deskflow::TransferStatusOverlay::Phase::Idle;
+  uint32_t preparingFileCount = 0;
+  bool activeTransfers = false;
+  deskflow::TransferStatusOverlay rxOverlay{true, true};
+  deskflow::TransferStatusOverlay txOverlay{false, true};
+
+  void clearCommands()
+  {
+    commands.clear();
+  }
+
+  const deskflow::DropAgentCommand *findCommand(deskflow::DropAgentCommandType type) const
+  {
+    for (const auto &cmd : commands) {
+      if (cmd.type == type) {
+        return &cmd;
+      }
+    }
+    return nullptr;
+  }
+
+  size_t countCommands(deskflow::DropAgentCommandType type) const
+  {
+    size_t n = 0;
+    for (const auto &cmd : commands) {
+      if (cmd.type == type) {
+        ++n;
+      }
+    }
+    return n;
+  }
+};
+
+class RecordingDropExecutor final : public deskflow::IDropExecutor
+{
+public:
+  explicit RecordingDropExecutor(std::shared_ptr<RecordedExecutorState> state) : m_state(std::move(state)) {}
+
+  void setHost(deskflow::IDropExecutorHost *host) override
+  {
+    m_state->host = host;
+  }
+
+  void execute(const deskflow::DropAgentCommand &cmd) override
+  {
+    m_state->commands.push_back(cmd);
+    switch (cmd.type) {
+    case deskflow::DropAgentCommandType::ShowHover:
+      m_state->hoverVisible = true;
+      m_state->hoverFileCount = cmd.fileCount;
+      m_state->hoverCursorPos = QPoint(cmd.x, cmd.y);
+      break;
+    case deskflow::DropAgentCommandType::UpdateHoverCursor:
+      m_state->hoverCursorPos = QPoint(cmd.x, cmd.y);
+      break;
+    case deskflow::DropAgentCommandType::HideHover:
+      m_state->hoverVisible = false;
+      break;
+    case deskflow::DropAgentCommandType::BeginPreparing:
+      m_state->receiverPhase = deskflow::TransferStatusOverlay::Phase::Preparing;
+      m_state->preparingFileCount = cmd.fileCount;
+      break;
+    case deskflow::DropAgentCommandType::CancelPreparing:
+      m_state->receiverPhase = deskflow::TransferStatusOverlay::Phase::Idle;
+      m_state->preparingFileCount = 0;
+      break;
+    default:
+      break;
+    }
+  }
+
+  bool isHoverVisible() const override { return m_state->hoverVisible; }
+  uint32_t hoverFileCount() const override { return m_state->hoverFileCount; }
+  QPoint hoverCursorPos() const override { return m_state->hoverCursorPos; }
+  deskflow::TransferStatusOverlay::Phase receiverOverlayPhase() const override { return m_state->receiverPhase; }
+  uint32_t receiverPreparingFileCount() const override { return m_state->preparingFileCount; }
+  deskflow::TransferStatusOverlay &overlayFor(bool receiving) override
+  {
+    return receiving ? m_state->rxOverlay : m_state->txOverlay;
+  }
+  bool hasActiveTransfers() const override { return m_state->activeTransfers; }
+
+private:
+  std::shared_ptr<RecordedExecutorState> m_state;
 };
 
 } // namespace
@@ -655,6 +778,416 @@ private Q_SLOTS:
     QVERIFY(!policy.requestHosts({"192.168.1.10", "192.168.1.20"}, false, true).has_value());
     QVERIFY(!policy.onActivityChanged(false, false).has_value());
     QVERIFY(!policy.hasDeferredRestart());
+  }
+
+  void clientToPrimary_twoPhaseHandoffAndDropOnPrimary()
+  {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString samplePath = QDir(tempDir.path()).filePath(QStringLiteral("payload.txt"));
+    {
+      QFile f(samplePath);
+      QVERIFY(f.open(QIODevice::WriteOnly));
+      f.write("hello");
+    }
+
+    auto &bridge = deskflow::FileDropBridge::instance();
+    struct ResetGuard
+    {
+      deskflow::FileDropBridge &b;
+      ~ResetGuard()
+      {
+        b.resetAllStateForTesting();
+        b.setDropExecutorForTesting(nullptr);
+      }
+    } guard{bridge};
+    bridge.resetAllStateForTesting();
+
+    auto clientState = std::make_shared<RecordedExecutorState>();
+    auto serverState = std::make_shared<RecordedExecutorState>();
+
+    // --- Phase 1: Client A captures files near edge & notifies Server ---
+    std::vector<std::pair<uint32_t, std::string>> clientToServerMsgs;
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(clientState));
+    bridge.startClientReceiver("10.0.0.1");
+    bridge.setClientDragMessageSender([&](uint32_t count, const std::string &info) {
+      clientToServerMsgs.emplace_back(count, info);
+    });
+    bridge.onClientReceiveDragInfo(
+        0, deskflow::serializeDragEdgesMessage({{deskflow::DragEdgeSide::Right, 16, 1064}})
+    );
+    bridge.onClientMouseLeftDown();
+    QVERIFY(clientState->host != nullptr);
+    clientState->host->onPendingDragCaptured({samplePath.toStdString()}, 1, 1919, 500);
+
+    QCOMPARE(clientState->countCommands(deskflow::DropAgentCommandType::NudgeAcrossEdge), size_t{0});
+    QCOMPARE(clientToServerMsgs.size(), size_t{1});
+    QCOMPARE(clientToServerMsgs[0].first, 1u);
+    QCOMPARE(clientToServerMsgs[0].second, std::string("DESKSEND_CLIENT_PRECAPTURE:1:1919,500"));
+    clientState->clearCommands();
+
+    // --- Phase 2: Server receives PreCapture and initiates two-phase handoff ---
+    MockDragClientProxy mockClientA("clientA", "10.0.0.11");
+    bridge.setClientDragMessageSender({});
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(serverState));
+    bridge.onServerReceiveClientDragInfo(&mockClientA, clientToServerMsgs[0].first, clientToServerMsgs[0].second);
+    QVERIFY(bridge.canUnlockEdgeSwitchForDrag(&mockClientA));
+
+    bridge.prepareScreenSwitch(&mockClientA, nullptr);
+    QCOMPARE(mockClientA.dragMessages.size(), size_t{1});
+    QCOMPARE(mockClientA.dragMessages[0].second, std::string(deskflow::kMsgDragCommitHandoff));
+
+    bridge.onScreenSwitch(&mockClientA, nullptr, 32, 500);
+    QVERIFY(bridge.hasActiveDragFiles());
+    QVERIFY(bridge.canUnlockEdgeSwitchForDrag(nullptr));
+    QVERIFY(serverState->hoverVisible);
+    QCOMPARE(serverState->hoverFileCount, 1u);
+    QCOMPARE(serverState->hoverCursorPos, QPoint(32, 500));
+
+    const auto *grantCmd = serverState->findCommand(deskflow::DropAgentCommandType::ReceiverAuthCommand);
+    QVERIFY(grantCmd != nullptr);
+    QVERIFY(grantCmd->text.rfind("GRANT ", 0) == 0);
+    const std::string primaryToken = grantCmd->text.substr(6);
+    QVERIFY(!primaryToken.empty());
+    serverState->clearCommands();
+
+    // --- Phase 3: Client A handles DESKSEND_COMMIT_HANDOFF -> Esc cancel -> LeftMouseUp, keeps pending files ---
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(clientState));
+    bridge.setClientDragMessageSender([&](uint32_t count, const std::string &info) {
+      clientToServerMsgs.emplace_back(count, info);
+    });
+    bridge.onClientReceiveDragInfo(0, mockClientA.dragMessages[0].second);
+    QVERIFY(clientState->findCommand(deskflow::DropAgentCommandType::CancelNativeDrag) != nullptr);
+    clientState->host->onDragCancellationCompleted(false);
+    const auto *releaseCmd = clientState->findCommand(deskflow::DropAgentCommandType::LeftMouseUp);
+    QVERIFY(releaseCmd != nullptr);
+    QVERIFY(releaseCmd->flag);
+    bridge.onClientLeave();
+    clientState->clearCommands();
+
+    // --- Phase 4: Cursor moves & drops on Primary ---
+    bridge.setClientDragMessageSender({});
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(serverState));
+    bridge.onPrimaryMouseMove(400, 300, 0, 0, 1920, 1080, 0);
+    QCOMPARE(serverState->hoverCursorPos, QPoint(400, 300));
+
+    bridge.onServerLeftMouseUp(nullptr, 400, 300);
+    QVERIFY(!serverState->hoverVisible);
+    QCOMPARE(serverState->receiverPhase, deskflow::TransferStatusOverlay::Phase::Preparing);
+    QCOMPARE(serverState->preparingFileCount, 1u);
+    const auto *dropTargetCmd = serverState->findCommand(deskflow::DropAgentCommandType::DropTarget);
+    QVERIFY(dropTargetCmd != nullptr);
+    QCOMPARE(dropTargetCmd->x, 400);
+    QCOMPARE(dropTargetCmd->y, 300);
+    QCOMPARE(dropTargetCmd->text, deskflow::FileDropBridge::computeTokenTag(primaryToken));
+
+    QCOMPARE(mockClientA.dragMessages.size(), size_t{2});
+    int32_t dropX = 0;
+    int32_t dropY = 0;
+    std::string wireTok;
+    std::string wireTarget;
+    QVERIFY(deskflow::parseSendDropMessage(mockClientA.dragMessages[1].second, dropX, dropY, wireTok, wireTarget));
+    QCOMPARE(dropX, 400);
+    QCOMPARE(dropY, 300);
+    QCOMPARE(wireTok, primaryToken);
+    QCOMPARE(wireTarget, std::string(deskflow::kServerPeerTargetMarker));
+
+    // --- Phase 5: Client A executes DESKSEND_SEND_DROP -> sends to server IP ---
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(clientState));
+    bridge.onClientReceiveDragInfo(1, mockClientA.dragMessages[1].second);
+    const auto *sendCmd = clientState->findCommand(deskflow::DropAgentCommandType::SendFiles);
+    QVERIFY(sendCmd != nullptr);
+    QCOMPARE(sendCmd->text, std::string("10.0.0.1"));
+    QCOMPARE(sendCmd->authToken, primaryToken);
+    QCOMPARE(sendCmd->items, (std::vector<std::string>{samplePath.toStdString()}));
+  }
+
+  void clientAToClientB_viaPrimaryMultiHop_preservesSourceFilesAndCleansPrimaryOverlay()
+  {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString samplePath = QDir(tempDir.path()).filePath(QStringLiteral("multi.txt"));
+    {
+      QFile f(samplePath);
+      QVERIFY(f.open(QIODevice::WriteOnly));
+      f.write("multihop");
+    }
+
+    auto &bridge = deskflow::FileDropBridge::instance();
+    struct ResetGuard
+    {
+      deskflow::FileDropBridge &b;
+      ~ResetGuard()
+      {
+        b.resetAllStateForTesting();
+        b.setDropExecutorForTesting(nullptr);
+      }
+    } guard{bridge};
+    bridge.resetAllStateForTesting();
+
+    auto clientState = std::make_shared<RecordedExecutorState>();
+    auto serverState = std::make_shared<RecordedExecutorState>();
+
+    // Client A captures
+    std::vector<std::pair<uint32_t, std::string>> clientToServerMsgs;
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(clientState));
+    bridge.startClientReceiver("10.0.0.1");
+    bridge.setClientDragMessageSender([&](uint32_t count, const std::string &info) {
+      clientToServerMsgs.emplace_back(count, info);
+    });
+    bridge.onClientMouseLeftDown();
+    clientState->host->onPendingDragCaptured({samplePath.toStdString()}, 1, 1919, 400);
+    bridge.onClientReceiveDragInfo(0, std::string(deskflow::kMsgDragCommitHandoff));
+    clientState->host->onDragCancellationCompleted(false);
+    bridge.onClientLeave();
+    clientState->clearCommands();
+
+    // Server hops: Client A -> Primary -> Client B
+    MockDragClientProxy clientA("clientA", "10.0.0.11");
+    MockDragClientProxy clientB("clientB", "10.0.0.22");
+    bridge.setClientDragMessageSender({});
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(serverState));
+    bridge.onServerReceiveClientDragInfo(&clientA, clientToServerMsgs[0].first, clientToServerMsgs[0].second);
+    bridge.prepareScreenSwitch(&clientA, nullptr);
+    bridge.onScreenSwitch(&clientA, nullptr, 32, 400);
+    QVERIFY(serverState->hoverVisible);
+    const auto *primaryGrant = serverState->findCommand(deskflow::DropAgentCommandType::ReceiverAuthCommand);
+    QVERIFY(primaryGrant != nullptr);
+    const std::string tokPrimary = primaryGrant->text.substr(6);
+    serverState->clearCommands();
+
+    // Hop onto Client B -> Primary overlay & token MUST be cleaned up, Client B gets START + HOVER_ENTER
+    bridge.onScreenSwitch(nullptr, &clientB, 32, 420);
+    QVERIFY(!serverState->hoverVisible);
+    QVERIFY(serverState->findCommand(deskflow::DropAgentCommandType::HideHover) != nullptr);
+    const auto *cancelPrimaryTok = serverState->findCommand(deskflow::DropAgentCommandType::CancelDropToken);
+    QVERIFY(cancelPrimaryTok != nullptr);
+    QCOMPARE(cancelPrimaryTok->authToken, tokPrimary);
+
+    QCOMPARE(clientB.dragMessages.size(), size_t{2});
+    std::string tokB;
+    QVERIFY(deskflow::parseDragStartMessage(clientB.dragMessages[0].second, tokB));
+    QVERIFY(!tokB.empty());
+    QVERIFY(tokB != tokPrimary);
+    int32_t hx = 0;
+    int32_t hy = 0;
+    QVERIFY(deskflow::parseHoverEnterMessage(clientB.dragMessages[1].second, hx, hy));
+    QCOMPARE(hx, 32);
+    QCOMPARE(hy, 420);
+
+    // Drop on Client B
+    bridge.onServerLeftMouseUp(&clientB, 640, 480);
+    QCOMPARE(clientB.dragMessages.size(), size_t{3});
+    int32_t bx = 0;
+    int32_t by = 0;
+    std::string bTag;
+    QVERIFY(deskflow::parseDragDropMessage(clientB.dragMessages[2].second, bx, by, bTag));
+    QCOMPARE(bx, 640);
+    QCOMPARE(by, 480);
+    QCOMPARE(bTag, deskflow::FileDropBridge::computeTokenTag(tokB));
+
+    QCOMPARE(clientA.dragMessages.size(), size_t{2});
+    int32_t ax = 0;
+    int32_t ay = 0;
+    std::string aTok;
+    std::string aTarget;
+    QVERIFY(deskflow::parseSendDropMessage(clientA.dragMessages[1].second, ax, ay, aTok, aTarget));
+    QCOMPARE(aTok, tokB);
+    QCOMPARE(aTarget, std::string("10.0.0.22"));
+
+    // Client A executes SendFiles directly to Client B's IP
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(clientState));
+    bridge.onClientReceiveDragInfo(1, clientA.dragMessages[1].second);
+    const auto *sendCmd = clientState->findCommand(deskflow::DropAgentCommandType::SendFiles);
+    QVERIFY(sendCmd != nullptr);
+    QCOMPARE(sendCmd->text, std::string("10.0.0.22"));
+    QCOMPARE(sendCmd->authToken, tokB);
+    QCOMPARE(sendCmd->items, (std::vector<std::string>{samplePath.toStdString()}));
+  }
+
+  void clientToPrimaryThenReturnToOrigin_cancelsCleanlyWithoutDrop()
+  {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString samplePath = QDir(tempDir.path()).filePath(QStringLiteral("return.txt"));
+    {
+      QFile f(samplePath);
+      QVERIFY(f.open(QIODevice::WriteOnly));
+      f.write("return");
+    }
+
+    auto &bridge = deskflow::FileDropBridge::instance();
+    struct ResetGuard
+    {
+      deskflow::FileDropBridge &b;
+      ~ResetGuard()
+      {
+        b.resetAllStateForTesting();
+        b.setDropExecutorForTesting(nullptr);
+      }
+    } guard{bridge};
+    bridge.resetAllStateForTesting();
+
+    auto clientState = std::make_shared<RecordedExecutorState>();
+    auto serverState = std::make_shared<RecordedExecutorState>();
+
+    std::vector<std::pair<uint32_t, std::string>> clientToServerMsgs;
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(clientState));
+    bridge.setClientDragMessageSender([&](uint32_t count, const std::string &info) {
+      clientToServerMsgs.emplace_back(count, info);
+    });
+    bridge.onClientMouseLeftDown();
+    clientState->host->onPendingDragCaptured({samplePath.toStdString()}, 1, 1919, 500);
+    bridge.onClientReceiveDragInfo(0, std::string(deskflow::kMsgDragCommitHandoff));
+    clientState->host->onDragCancellationCompleted(false);
+    clientState->clearCommands();
+
+    MockDragClientProxy clientA("clientA", "10.0.0.11");
+    bridge.setClientDragMessageSender({});
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(serverState));
+    bridge.onServerReceiveClientDragInfo(&clientA, clientToServerMsgs[0].first, clientToServerMsgs[0].second);
+    bridge.prepareScreenSwitch(&clientA, nullptr);
+    bridge.onScreenSwitch(&clientA, nullptr, 32, 500);
+    QVERIFY(serverState->hoverVisible);
+    serverState->clearCommands();
+
+    // Return back to origin Client A -> cancels hover/token on Primary & sends DESKSEND_SEND_CANCEL to Client A
+    bridge.onScreenSwitch(nullptr, &clientA, 1887, 500);
+    QVERIFY(!serverState->hoverVisible);
+    QVERIFY(serverState->findCommand(deskflow::DropAgentCommandType::HideHover) != nullptr);
+    QVERIFY(serverState->findCommand(deskflow::DropAgentCommandType::CancelDropToken) != nullptr);
+    QVERIFY(!bridge.hasActiveDragFiles());
+    QVERIFY(!bridge.canUnlockEdgeSwitchForDrag(nullptr));
+    QCOMPARE(clientA.dragMessages.size(), size_t{2});
+    std::string cancelTok;
+    QVERIFY(deskflow::parseSendCancelMessage(clientA.dragMessages[1].second, cancelTok));
+
+    // Client A processes SEND_CANCEL -> clears pending files so no SendFiles can happen
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(clientState));
+    bridge.onClientReceiveDragInfo(0, clientA.dragMessages[1].second);
+    bridge.onClientReceiveDragInfo(1, deskflow::serializeSendDropMessage(100, 100, "lateTok", "__SERVER__"));
+    QCOMPARE(clientState->countCommands(deskflow::DropAgentCommandType::SendFiles), size_t{0});
+  }
+
+  void clientDisconnectDuringMultiHop_resetsLockAndNotifiesSurvivingEndpoint()
+  {
+    auto &bridge = deskflow::FileDropBridge::instance();
+    struct ResetGuard
+    {
+      deskflow::FileDropBridge &b;
+      ~ResetGuard()
+      {
+        b.resetAllStateForTesting();
+        b.setDropExecutorForTesting(nullptr);
+      }
+    } guard{bridge};
+    bridge.resetAllStateForTesting();
+
+    auto serverState = std::make_shared<RecordedExecutorState>();
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(serverState));
+
+    // Case A: Client A -> Primary -> Client B, then Client B disconnects -> notify Client A
+    MockDragClientProxy clientA("clientA", "10.0.0.11");
+    MockDragClientProxy clientB("clientB", "10.0.0.22");
+    bridge.onServerReceiveClientDragInfo(&clientA, 1, "DESKSEND_CLIENT_PRECAPTURE:1:1919,500");
+    bridge.prepareScreenSwitch(&clientA, nullptr);
+    bridge.onScreenSwitch(&clientA, nullptr, 32, 500);
+    bridge.onScreenSwitch(nullptr, &clientB, 32, 500);
+    QVERIFY(bridge.hasActiveDragFiles());
+
+    bridge.onClientDisconnected(&clientB);
+    QVERIFY(!bridge.hasActiveDragFiles());
+    QVERIFY(!bridge.canUnlockEdgeSwitchForDrag(nullptr));
+    std::string sendCancelTok;
+    QVERIFY(deskflow::parseSendCancelMessage(clientA.dragMessages.back().second, sendCancelTok));
+
+    // Case B: Client A -> Primary, then Client A disconnects -> clean up Primary overlay/token
+    bridge.resetAllStateForTesting();
+    serverState->clearCommands();
+    MockDragClientProxy clientA2("clientA", "10.0.0.11");
+    bridge.onServerReceiveClientDragInfo(&clientA2, 2, "DESKSEND_CLIENT_PRECAPTURE:1:1919,500");
+    bridge.prepareScreenSwitch(&clientA2, nullptr);
+    bridge.onScreenSwitch(&clientA2, nullptr, 32, 500);
+    QVERIFY(serverState->hoverVisible);
+    serverState->clearCommands();
+
+    bridge.onClientDisconnected(&clientA2);
+    QVERIFY(!serverState->hoverVisible);
+    QVERIFY(!bridge.hasActiveDragFiles());
+    QVERIFY(!bridge.canUnlockEdgeSwitchForDrag(nullptr));
+    QVERIFY(serverState->findCommand(deskflow::DropAgentCommandType::HideHover) != nullptr);
+    QVERIFY(serverState->findCommand(deskflow::DropAgentCommandType::CancelDropToken) != nullptr);
+  }
+
+  void primaryToClient_preservedBackwardCompatibility()
+  {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString samplePath = QDir(tempDir.path()).filePath(QStringLiteral("primary.txt"));
+    {
+      QFile f(samplePath);
+      QVERIFY(f.open(QIODevice::WriteOnly));
+      f.write("primary-to-client");
+    }
+
+    auto &bridge = deskflow::FileDropBridge::instance();
+    struct ResetGuard
+    {
+      deskflow::FileDropBridge &b;
+      ~ResetGuard()
+      {
+        b.resetAllStateForTesting();
+        b.setDropExecutorForTesting(nullptr);
+      }
+    } guard{bridge};
+    bridge.resetAllStateForTesting();
+
+    auto serverState = std::make_shared<RecordedExecutorState>();
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(serverState));
+
+    MockDragClientProxy clientB("clientB", "10.0.0.22");
+    MockDragClientProxy clientC("clientC", "10.0.0.33");
+
+    bridge.onPrimaryLeftMouseDown();
+    QVERIFY(bridge.setPendingDragFiles({samplePath.toStdString()}));
+    QVERIFY(bridge.canUnlockEdgeSwitchForDrag(nullptr));
+
+    bridge.prepareScreenSwitch(nullptr, &clientB);
+    bridge.onScreenSwitch(nullptr, &clientB, 32, 400);
+    QVERIFY(bridge.hasActiveDragFiles());
+    QCOMPARE(clientB.dragMessages.size(), size_t{2});
+    std::string tokB;
+    QVERIFY(deskflow::parseDragStartMessage(clientB.dragMessages[0].second, tokB));
+    int32_t hx = 0;
+    int32_t hy = 0;
+    QVERIFY(deskflow::parseHoverEnterMessage(clientB.dragMessages[1].second, hx, hy));
+
+    // Multi-hop Primary -> Client B -> Client C also works!
+    bridge.onScreenSwitch(&clientB, &clientC, 32, 410);
+    std::string cancelTokB;
+    QVERIFY(deskflow::parseDragCancelMessage(clientB.dragMessages[2].second, cancelTokB));
+    QCOMPARE(cancelTokB, tokB);
+
+    QCOMPARE(clientC.dragMessages.size(), size_t{2});
+    std::string tokC;
+    QVERIFY(deskflow::parseDragStartMessage(clientC.dragMessages[0].second, tokC));
+
+    serverState->clearCommands();
+    bridge.onServerLeftMouseUp(&clientC, 700, 350);
+    QCOMPARE(clientC.dragMessages.size(), size_t{3});
+    int32_t cx = 0;
+    int32_t cy = 0;
+    std::string cTag;
+    QVERIFY(deskflow::parseDragDropMessage(clientC.dragMessages[2].second, cx, cy, cTag));
+    QCOMPARE(cTag, deskflow::FileDropBridge::computeTokenTag(tokC));
+
+    const auto *sendCmd = serverState->findCommand(deskflow::DropAgentCommandType::SendFiles);
+    QVERIFY(sendCmd != nullptr);
+    QCOMPARE(sendCmd->text, std::string("10.0.0.33"));
+    QCOMPARE(sendCmd->authToken, tokC);
+    const auto *releaseCmd = serverState->findCommand(deskflow::DropAgentCommandType::LeftMouseUp);
+    QVERIFY(releaseCmd != nullptr);
+    QVERIFY(releaseCmd->flag);
   }
 };
 

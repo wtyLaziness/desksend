@@ -20,6 +20,7 @@
 #include <QRandomGenerator>
 #include <QString>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
@@ -95,6 +96,40 @@ uint32_t computeNearEdgeMask(
     mask |= static_cast<uint32_t>(BottomMask);
   }
   return mask;
+}
+
+uint32_t activeSidesMaskFromSegments(const std::vector<DragEdgeSegment> &segments)
+{
+  uint32_t mask = 0;
+  for (const auto &seg : segments) {
+    mask |= static_cast<uint32_t>(dragEdgeSideToDirectionMask(seg.side));
+  }
+  return mask;
+}
+
+void applyReceiverHosts(IDropExecutor *exec, const std::vector<std::string> &hosts)
+{
+  if (!exec) {
+    return;
+  }
+  const auto normalized = ReceiverRestartPolicy::normalizeHosts(hosts);
+  DropAgentCommand cmd;
+  if (normalized.empty()) {
+    cmd.type = DropAgentCommandType::StopReceiver;
+  } else {
+    cmd.type = DropAgentCommandType::StartReceiver;
+    cmd.items = normalized;
+  }
+  exec->execute(cmd);
+}
+
+void sendOriginCancelMessage(BaseClientProxy *origin, const std::string &token)
+{
+  if (!origin) {
+    return;
+  }
+  const std::string msg = serializeSendCancelMessage(token);
+  origin->sendDragInfo(0, msg.data(), msg.size());
 }
 
 } // namespace
@@ -173,6 +208,56 @@ void FileDropBridge::updatePrimaryShape(int32_t x, int32_t y, int32_t w, int32_t
   }
 }
 
+void FileDropBridge::setPrimaryEdgeSegments(std::vector<DragEdgeSegment> segments)
+{
+  std::scoped_lock lock(m_mutex);
+  m_primaryEdgeSegments = std::move(segments);
+  m_primaryEdgeSegmentsConfigured = true;
+}
+
+void FileDropBridge::setServerPeerHosts(const std::vector<std::string> &peerHosts)
+{
+  {
+    std::scoped_lock lock(m_mutex);
+    m_serverPeerHosts = peerHosts;
+  }
+  applyReceiverHosts(executor(), peerHosts);
+}
+
+void FileDropBridge::resetAllStateForTesting()
+{
+  std::scoped_lock lock(m_mutex);
+  m_pendingFiles.clear();
+  m_pendingTimestampMs = 0;
+  m_lastCapturedSide = 0;
+  m_canCaptureDrag = false;
+  m_sourceButtonNeedsRelease = false;
+  m_dragCancellationInProgress = false;
+  m_dragCancellationComplete = false;
+  m_visibleSentinelEdgeMask = 0;
+  m_primaryEdgeSegments.clear();
+  m_primaryEdgeSegmentsConfigured = false;
+  m_serverPeerHosts.clear();
+
+  m_preCapturedClient = nullptr;
+  m_preCapturedClientFileCount = 0;
+  m_preCapturedClientSide = DragEdgeSide::Left;
+  m_preCapturedClientTimestampMs = 0;
+  m_activeDrag = {};
+
+  m_clientDragSender = {};
+  m_clientServerHost.clear();
+  m_clientPeerHosts.clear();
+  m_clientEdgeSegments.clear();
+  m_clientPendingFiles.clear();
+  m_clientPendingTimestampMs = 0;
+  m_clientPendingSide = 0;
+  m_clientCanCaptureDrag = false;
+  m_clientHandoffCommitted = false;
+  m_clientCancellationInProgress = false;
+  m_clientSentinelVisible = false;
+}
+
 void FileDropBridge::shutdownSentinels()
 {
   {
@@ -183,9 +268,12 @@ void FileDropBridge::shutdownSentinels()
     m_dragCancellationInProgress = false;
     m_dragCancellationComplete = false;
     m_visibleSentinelEdgeMask = 0;
-    m_activeDragFiles.clear();
-    m_activeDragToken.clear();
-    m_dragTargetClient = nullptr;
+    m_primaryEdgeSegments.clear();
+    m_primaryEdgeSegmentsConfigured = false;
+    m_preCapturedClient = nullptr;
+    m_preCapturedClientFileCount = 0;
+    m_preCapturedClientTimestampMs = 0;
+    m_activeDrag = {};
   }
   if (auto *exec = executor()) {
     DropAgentCommand cmd;
@@ -198,6 +286,38 @@ void FileDropBridge::onPrimaryMouseMove(
     int32_t x, int32_t y, int32_t ax, int32_t ay, int32_t aw, int32_t ah, uint32_t activeSides
 )
 {
+  bool hoveringOnPrimary = false;
+  bool shouldHideForHover = false;
+  bool segmentsConfigured = false;
+  std::vector<DragEdgeSegment> primarySegments;
+  {
+    std::scoped_lock lock(m_mutex);
+    hoveringOnPrimary = m_activeDrag.active && (m_activeDrag.targetClient == nullptr);
+    if (hoveringOnPrimary) {
+      shouldHideForHover = (m_visibleSentinelEdgeMask != 0);
+      m_visibleSentinelEdgeMask = 0;
+    } else {
+      segmentsConfigured = m_primaryEdgeSegmentsConfigured;
+      primarySegments = m_primaryEdgeSegments;
+    }
+  }
+
+  if (hoveringOnPrimary) {
+    if (auto *exec = executor()) {
+      if (shouldHideForHover) {
+        DropAgentCommand hideCmd;
+        hideCmd.type = DropAgentCommandType::HideSentinels;
+        exec->execute(hideCmd);
+      }
+      DropAgentCommand hoverCmd;
+      hoverCmd.type = DropAgentCommandType::UpdateHoverCursor;
+      hoverCmd.x = x;
+      hoverCmd.y = y;
+      exec->execute(hoverCmd);
+    }
+    return;
+  }
+
 #if defined(_WIN32)
   const bool leftButtonDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
   if (!leftButtonDown) {
@@ -220,7 +340,9 @@ void FileDropBridge::onPrimaryMouseMove(
     return;
   }
 
-  const uint32_t visibleMask = computeNearEdgeMask(x, y, ax, ay, aw, ah, activeSides);
+  const uint32_t effectiveActiveSides =
+      segmentsConfigured ? (primarySegments.empty() ? 0u : activeSidesMaskFromSegments(primarySegments)) : activeSides;
+  const uint32_t visibleMask = computeNearEdgeMask(x, y, ax, ay, aw, ah, effectiveActiveSides);
   {
     std::scoped_lock lock(m_mutex);
     m_visibleSentinelEdgeMask = visibleMask;
@@ -234,7 +356,8 @@ void FileDropBridge::onPrimaryMouseMove(
     cmd.ay = ay;
     cmd.aw = aw;
     cmd.ah = ah;
-    cmd.activeSides = activeSides;
+    cmd.activeSides = effectiveActiveSides;
+    cmd.edgeSegments = std::move(primarySegments);
     exec->execute(cmd);
   }
 #else
@@ -376,7 +499,7 @@ bool FileDropBridge::hasPendingDragFiles() const
 bool FileDropBridge::hasActiveDragFiles() const
 {
   std::scoped_lock lock(m_mutex);
-  return !m_activeDragFiles.empty();
+  return m_activeDrag.active;
 }
 
 bool FileDropBridge::hasActiveTransfers() const
@@ -387,8 +510,33 @@ bool FileDropBridge::hasActiveTransfers() const
   return false;
 }
 
-void FileDropBridge::onPendingDragCaptured(std::vector<std::string> files, int sideIndex, int32_t, int32_t)
+void FileDropBridge::onPendingDragCaptured(std::vector<std::string> files, int sideIndex, int32_t x, int32_t y)
 {
+  ClientDragMessageSender clientSender;
+  bool inClientMode = false;
+  {
+    std::scoped_lock lock(m_mutex);
+    if (m_clientDragSender) {
+      inClientMode = true;
+      if (!m_clientCanCaptureDrag || m_clientHandoffCommitted || files.empty() || !hasTransferableFiles(files)) {
+        return;
+      }
+      m_clientCanCaptureDrag = false;
+      m_clientPendingFiles = files;
+      m_clientPendingTimestampMs = nowMs();
+      m_clientPendingSide = sideIndex;
+      clientSender = m_clientDragSender;
+    }
+  }
+
+  if (inClientMode) {
+    const int clampedSide = std::clamp(sideIndex, 0, 3);
+    const std::string msg = serializeClientPreCaptureMessage(static_cast<DragEdgeSide>(clampedSide), x, y);
+    LOG_INFO("FileDropBridge: client captured %zu dragged file(s) near edge side=%d", files.size(), clampedSide);
+    clientSender(static_cast<uint32_t>(files.size()), msg);
+    return;
+  }
+
   if (!setPendingDragFiles(std::move(files))) {
     return;
   }
@@ -406,6 +554,29 @@ void FileDropBridge::onPendingDragCaptured(std::vector<std::string> files, int s
 
 void FileDropBridge::onDragCancellationCompleted(bool stillPressed)
 {
+  bool clientHandoffCompleted = false;
+  {
+    std::scoped_lock lock(m_mutex);
+    if (m_clientHandoffCommitted) {
+      m_clientCancellationInProgress = false;
+      clientHandoffCompleted = true;
+    }
+  }
+  if (clientHandoffCompleted) {
+    LOG_INFO("FileDropBridge: client native drag cancellation completed for handoff");
+    if (auto *exec = executor()) {
+      DropAgentCommand hideCmd;
+      hideCmd.type = DropAgentCommandType::HideSentinels;
+      exec->execute(hideCmd);
+
+      DropAgentCommand releaseCmd;
+      releaseCmd.type = DropAgentCommandType::LeftMouseUp;
+      releaseCmd.flag = true;
+      exec->execute(releaseCmd);
+    }
+    return;
+  }
+
   bool hasPending = false;
   {
     std::scoped_lock lock(m_mutex);
@@ -425,6 +596,36 @@ void FileDropBridge::onDragCancellationCompleted(bool stillPressed)
 
 void FileDropBridge::onPendingDragCleared()
 {
+  ClientDragMessageSender senderToNotify;
+  bool inClientMode = false;
+  {
+    std::scoped_lock lock(m_mutex);
+    if (m_clientHandoffCommitted || m_clientCancellationInProgress) {
+      return;
+    }
+    if (m_clientDragSender || !m_clientPendingFiles.empty()) {
+      inClientMode = true;
+      const bool hadPending = !m_clientPendingFiles.empty();
+      m_clientPendingFiles.clear();
+      m_clientPendingTimestampMs = 0;
+      m_clientCanCaptureDrag = false;
+      if (hadPending) {
+        senderToNotify = m_clientDragSender;
+      }
+    }
+  }
+  if (inClientMode) {
+    if (senderToNotify) {
+      senderToNotify(0, std::string(kMsgDragClientPreCaptureClear));
+    }
+    if (auto *exec = executor()) {
+      DropAgentCommand cmd;
+      cmd.type = DropAgentCommandType::LeftMouseUp;
+      cmd.flag = false;
+      exec->execute(cmd);
+    }
+    return;
+  }
   clearPendingDragOnMouseLeaveOrRelease();
 }
 
@@ -438,77 +639,333 @@ void FileDropBridge::onExecutorLog(int level, const std::string &message)
   LOG_INFO("FileDropBridge [agent]: %s", message.c_str());
 }
 
-void FileDropBridge::onLeavePrimary(BaseClientProxy *dstClient)
+std::string FileDropBridge::buildDragStartPayload(const std::string &token, const std::vector<std::string> &files)
 {
-  if (auto *exec = executor()) {
-    DropAgentCommand hideCmd;
-    hideCmd.type = DropAgentCommandType::HideSentinels;
-    exec->execute(hideCmd);
+  std::string msg = serializeDragStartMessage(token);
+  for (const auto &f : files) {
+    msg += "\n";
+    msg += QFileInfo(QString::fromStdString(f)).fileName().toStdString();
   }
+  return msg;
+}
 
-  std::vector<std::string> files;
-  {
-    std::scoped_lock lock(m_mutex);
-    if (m_pendingFiles.empty() || (nowMs() - m_pendingTimestampMs) > 4000) {
-      m_pendingFiles.clear();
+void FileDropBridge::activateTargetScreen(
+    IDropExecutor *exec, BaseClientProxy *target, BaseClientProxy *origin, uint32_t fileCount,
+    const std::vector<std::string> &primaryFiles, const std::string &token, int32_t entryX, int32_t entryY,
+    bool sendHoverEnter
+) const
+{
+  if (target == nullptr) {
+    if (!exec) {
       return;
     }
-    files = std::move(m_pendingFiles);
-    m_pendingFiles.clear();
-  }
+    DropAgentCommand activeCmd;
+    activeCmd.type = DropAgentCommandType::SetDragActive;
+    activeCmd.dragActive = true;
+    exec->execute(activeCmd);
 
-  if (!hasTransferableFiles(files)) {
-    LOG_INFO("FileDropBridge: dragged path(s) contain no transferable files; skipping cross-screen drag");
+    if (!token.empty()) {
+      DropAgentCommand authCmd;
+      authCmd.type = DropAgentCommandType::ReceiverAuthCommand;
+      authCmd.text = "GRANT " + token;
+      exec->execute(authCmd);
+    }
+
+    if (sendHoverEnter) {
+      DropAgentCommand hoverCmd;
+      hoverCmd.type = DropAgentCommandType::ShowHover;
+      hoverCmd.fileCount = fileCount;
+      hoverCmd.x = entryX;
+      hoverCmd.y = entryY;
+      exec->execute(hoverCmd);
+    }
     return;
   }
 
-  std::string token;
-  {
-    std::scoped_lock lock(m_mutex);
-    m_activeDragFiles = files;
-    m_dragTargetClient = dstClient;
-    if (dstClient) {
-      token = generateAuthToken();
+  const std::string startMsg =
+      (origin == nullptr) ? buildDragStartPayload(token, primaryFiles) : serializeDragStartMessage(token);
+  LOG_INFO(
+      "FileDropBridge: entering screen \"%s\" with %u dragged file(s)", target->getName().c_str(), fileCount
+  );
+  target->sendDragInfo(fileCount, startMsg.data(), startMsg.size());
+
+  if (sendHoverEnter) {
+    const std::string hoverMsg = serializeHoverEnterMessage(entryX, entryY);
+    target->sendDragInfo(fileCount, hoverMsg.data(), hoverMsg.size());
+  }
+}
+
+void FileDropBridge::cancelTargetEndpoint(
+    IDropExecutor *exec, BaseClientProxy *target, const std::string &token, bool cancelPreparing
+) const
+{
+  if (target == nullptr) {
+    if (!exec) {
+      return;
     }
-    m_activeDragToken = token;
+    DropAgentCommand hideCmd;
+    hideCmd.type = DropAgentCommandType::HideHover;
+    exec->execute(hideCmd);
+
+    if (cancelPreparing) {
+      DropAgentCommand cancelPrepCmd;
+      cancelPrepCmd.type = DropAgentCommandType::CancelPreparing;
+      exec->execute(cancelPrepCmd);
+    }
+
+    DropAgentCommand activeCmd;
+    activeCmd.type = DropAgentCommandType::SetDragActive;
+    activeCmd.dragActive = false;
+    exec->execute(activeCmd);
+
+    if (!token.empty()) {
+      DropAgentCommand tokCmd;
+      tokCmd.type = DropAgentCommandType::CancelDropToken;
+      tokCmd.text = computeTokenTag(token);
+      tokCmd.authToken = token;
+      exec->execute(tokCmd);
+    }
+    return;
   }
 
-  if (dstClient) {
-    std::string msg = "DESKSEND_START:" + token;
-    for (const auto &f : files) {
-      msg += "\n";
-      msg += QFileInfo(QString::fromStdString(f)).fileName().toStdString();
-    }
-    LOG_INFO(
-        "FileDropBridge: leaving primary with %zu dragged file(s) to \"%s\"", files.size(),
-        dstClient->getName().c_str()
-    );
-    dstClient->sendDragInfo(static_cast<uint32_t>(files.size()), msg.data(), msg.size());
+  const std::string cancelMsg = serializeDragCancelMessage(token);
+  target->sendDragInfo(0, cancelMsg.data(), cancelMsg.size());
+}
+
+bool FileDropBridge::canUnlockEdgeSwitchForDrag(BaseClientProxy *activeScreen) const
+{
+  std::scoped_lock lock(m_mutex);
+  if (m_activeDrag.active) {
+    return true;
   }
+  const uint64_t now = nowMs();
+  if (activeScreen == nullptr) {
+    return !m_pendingFiles.empty() && ((now - m_pendingTimestampMs) <= 4000);
+  }
+  return (m_preCapturedClient == activeScreen) && (m_preCapturedClientFileCount > 0) &&
+         ((now - m_preCapturedClientTimestampMs) <= 4000);
+}
+
+bool FileDropBridge::isDragActiveForSwitch(BaseClientProxy *fromScreen, BaseClientProxy *toScreen) const
+{
+  if (fromScreen == toScreen) {
+    return false;
+  }
+  std::scoped_lock lock(m_mutex);
+  if (m_activeDrag.active) {
+    return true;
+  }
+  const uint64_t now = nowMs();
+  if (fromScreen == nullptr) {
+    return !m_pendingFiles.empty() && ((now - m_pendingTimestampMs) <= 4000);
+  }
+  return (m_preCapturedClient == fromScreen) && (m_preCapturedClientFileCount > 0) &&
+         ((now - m_preCapturedClientTimestampMs) <= 4000);
+}
+
+void FileDropBridge::prepareScreenSwitch(BaseClientProxy *fromScreen, BaseClientProxy *toScreen)
+{
+  if (fromScreen == toScreen) {
+    return;
+  }
+
+  if (fromScreen == nullptr) {
+    if (auto *exec = executor()) {
+      DropAgentCommand hideCmd;
+      hideCmd.type = DropAgentCommandType::HideSentinels;
+      exec->execute(hideCmd);
+    }
+    return;
+  }
+
+  BaseClientProxy *clientToCommit = nullptr;
+  {
+    std::scoped_lock lock(m_mutex);
+    if (!m_activeDrag.active && m_preCapturedClient == fromScreen && m_preCapturedClientFileCount > 0 &&
+        ((nowMs() - m_preCapturedClientTimestampMs) <= 4000)) {
+      clientToCommit = fromScreen;
+    }
+  }
+  if (clientToCommit) {
+    LOG_INFO("FileDropBridge: committing drag handoff from \"%s\"", clientToCommit->getName().c_str());
+    clientToCommit->sendDragInfo(0, kMsgDragCommitHandoff.data(), kMsgDragCommitHandoff.size());
+  }
+}
+
+void FileDropBridge::onScreenSwitch(BaseClientProxy *fromScreen, BaseClientProxy *toScreen, int32_t entryX, int32_t entryY)
+{
+  performScreenSwitch(fromScreen, toScreen, entryX, entryY, true);
+}
+
+void FileDropBridge::performScreenSwitch(
+    BaseClientProxy *fromScreen, BaseClientProxy *toScreen, int32_t entryX, int32_t entryY, bool sendHoverEnter
+)
+{
+  if (fromScreen == toScreen) {
+    return;
+  }
+
+  if (fromScreen == nullptr) {
+    if (auto *exec = executor()) {
+      DropAgentCommand hideCmd;
+      hideCmd.type = DropAgentCommandType::HideSentinels;
+      exec->execute(hideCmd);
+    }
+  }
+
+  IDropExecutor *exec = executor();
+  ActiveCrossDrag newDrag;
+  bool startNewDrag = false;
+  bool returningToOrigin = false;
+  bool hoppingTarget = false;
+  BaseClientProxy *oldTargetToCancel = nullptr;
+  std::string oldTokenToCancel;
+  BaseClientProxy *originToCancel = nullptr;
+
+  {
+    std::scoped_lock lock(m_mutex);
+    const uint64_t now = nowMs();
+
+    if (!m_activeDrag.active) {
+      if (fromScreen == nullptr) {
+        if (m_pendingFiles.empty() || (now - m_pendingTimestampMs) > 4000) {
+          m_pendingFiles.clear();
+          return;
+        }
+        std::vector<std::string> files = std::move(m_pendingFiles);
+        m_pendingFiles.clear();
+        if (!hasTransferableFiles(files)) {
+          LOG_INFO("FileDropBridge: dragged path(s) contain no transferable files; skipping cross-screen drag");
+          return;
+        }
+        m_activeDrag.active = true;
+        m_activeDrag.originClient = nullptr;
+        m_activeDrag.targetClient = toScreen;
+        m_activeDrag.fileCount = static_cast<uint32_t>(files.size());
+        m_activeDrag.primaryFiles = std::move(files);
+        m_activeDrag.activeToken = generateAuthToken();
+        newDrag = m_activeDrag;
+        startNewDrag = true;
+      } else if (m_preCapturedClient == fromScreen && m_preCapturedClientFileCount > 0 &&
+                 (now - m_preCapturedClientTimestampMs) <= 4000) {
+        const uint32_t count = m_preCapturedClientFileCount;
+        m_preCapturedClient = nullptr;
+        m_preCapturedClientFileCount = 0;
+        m_preCapturedClientTimestampMs = 0;
+
+        m_activeDrag.active = true;
+        m_activeDrag.originClient = fromScreen;
+        m_activeDrag.targetClient = toScreen;
+        m_activeDrag.fileCount = count;
+        m_activeDrag.primaryFiles.clear();
+        m_activeDrag.activeToken = generateAuthToken();
+        newDrag = m_activeDrag;
+        startNewDrag = true;
+      } else {
+        if (m_preCapturedClient == fromScreen) {
+          m_preCapturedClient = nullptr;
+          m_preCapturedClientFileCount = 0;
+          m_preCapturedClientTimestampMs = 0;
+        }
+        return;
+      }
+    } else {
+      if (toScreen == m_activeDrag.targetClient) {
+        return;
+      }
+      oldTargetToCancel = m_activeDrag.targetClient;
+      oldTokenToCancel = m_activeDrag.activeToken;
+
+      if (toScreen == m_activeDrag.originClient) {
+        originToCancel = m_activeDrag.originClient;
+        m_activeDrag = {};
+        m_pendingFiles.clear();
+        m_canCaptureDrag = false;
+        returningToOrigin = true;
+      } else {
+        m_activeDrag.targetClient = toScreen;
+        m_activeDrag.activeToken = generateAuthToken();
+        newDrag = m_activeDrag;
+        hoppingTarget = true;
+      }
+    }
+  }
+
+  if (startNewDrag) {
+    activateTargetScreen(
+        exec, newDrag.targetClient, newDrag.originClient, newDrag.fileCount, newDrag.primaryFiles, newDrag.activeToken,
+        entryX, entryY, sendHoverEnter
+    );
+    return;
+  }
+
+  if (returningToOrigin) {
+    LOG_INFO("FileDropBridge: cursor returned to origin screen before release; cancelling drag");
+    cancelTargetEndpoint(exec, oldTargetToCancel, oldTokenToCancel, false);
+    if (originToCancel) {
+      sendOriginCancelMessage(originToCancel, oldTokenToCancel);
+    }
+    return;
+  }
+
+  if (hoppingTarget) {
+    cancelTargetEndpoint(exec, oldTargetToCancel, oldTokenToCancel, false);
+    activateTargetScreen(
+        exec, newDrag.targetClient, newDrag.originClient, newDrag.fileCount, newDrag.primaryFiles, newDrag.activeToken,
+        entryX, entryY, sendHoverEnter
+    );
+  }
+}
+
+void FileDropBridge::onServerReceiveClientDragInfo(BaseClientProxy *client, uint16_t fileCount, const std::string &info)
+{
+  if (!client) {
+    return;
+  }
+  DragEdgeSide side = DragEdgeSide::Left;
+  int32_t x = 0;
+  int32_t y = 0;
+  if (parseClientPreCaptureMessage(info, side, x, y)) {
+    std::scoped_lock lock(m_mutex);
+    if (m_activeDrag.active || fileCount == 0) {
+      return;
+    }
+    m_preCapturedClient = client;
+    m_preCapturedClientFileCount = fileCount;
+    m_preCapturedClientSide = side;
+    m_preCapturedClientTimestampMs = nowMs();
+    LOG_INFO(
+        "FileDropBridge: recorded client \"%s\" pre-capture (%u file(s))", client->getName().c_str(), fileCount
+    );
+    return;
+  }
+
+  if (isClientPreCaptureClearMessage(info)) {
+    std::scoped_lock lock(m_mutex);
+    if (m_preCapturedClient == client) {
+      m_preCapturedClient = nullptr;
+      m_preCapturedClientFileCount = 0;
+      m_preCapturedClientTimestampMs = 0;
+    }
+  }
+}
+
+void FileDropBridge::onLeavePrimary(BaseClientProxy *dstClient)
+{
+  performScreenSwitch(nullptr, dstClient, 0, 0, false);
 }
 
 void FileDropBridge::onReturnToPrimary()
 {
   BaseClientProxy *oldTarget = nullptr;
-  std::string oldToken;
   {
     std::scoped_lock lock(m_mutex);
-    if (m_activeDragFiles.empty()) {
+    if (!m_activeDrag.active || m_activeDrag.originClient != nullptr) {
       return;
     }
-    LOG_INFO("FileDropBridge: cursor returned to primary before release; cancelling file drag");
-    m_pendingFiles.clear();
-    m_canCaptureDrag = false;
-    m_activeDragFiles.clear();
-    oldTarget = m_dragTargetClient;
-    oldToken = std::move(m_activeDragToken);
-    m_dragTargetClient = nullptr;
-    m_activeDragToken.clear();
+    oldTarget = m_activeDrag.targetClient;
   }
-  if (oldTarget) {
-    const std::string cancelMsg = oldToken.empty() ? std::string("DESKSEND_CANCEL") : ("DESKSEND_CANCEL:" + oldToken);
-    oldTarget->sendDragInfo(0, cancelMsg.data(), cancelMsg.size());
-  }
+  performScreenSwitch(oldTarget, nullptr, 0, 0, false);
 }
 
 void FileDropBridge::onClientDisconnected(BaseClientProxy *client)
@@ -516,109 +973,411 @@ void FileDropBridge::onClientDisconnected(BaseClientProxy *client)
   if (!client) {
     return;
   }
-  std::scoped_lock lock(m_mutex);
-  if (m_dragTargetClient == client) {
+  ActiveCrossDrag disconnectedDrag;
+  bool hadActiveDrag = false;
+  {
+    std::scoped_lock lock(m_mutex);
+    if (m_preCapturedClient == client) {
+      m_preCapturedClient = nullptr;
+      m_preCapturedClientFileCount = 0;
+      m_preCapturedClientTimestampMs = 0;
+    }
+    if (m_activeDrag.active && (m_activeDrag.originClient == client || m_activeDrag.targetClient == client)) {
+      disconnectedDrag = std::move(m_activeDrag);
+      m_activeDrag = {};
+      m_pendingFiles.clear();
+      m_canCaptureDrag = false;
+      m_sourceButtonNeedsRelease = false;
+      hadActiveDrag = true;
+    }
+  }
+
+  if (!hadActiveDrag) {
+    return;
+  }
+
+  IDropExecutor *exec = executor();
+  if (disconnectedDrag.originClient == client) {
+    LOG_INFO("FileDropBridge: drag origin client disconnected; cancelling target state");
+    cancelTargetEndpoint(exec, disconnectedDrag.targetClient, disconnectedDrag.activeToken, true);
+  } else {
     LOG_INFO("FileDropBridge: active drag target client disconnected; clearing target pointer");
-    m_dragTargetClient = nullptr;
-    m_activeDragFiles.clear();
-    m_activeDragToken.clear();
+    if (disconnectedDrag.originClient != nullptr) {
+      sendOriginCancelMessage(disconnectedDrag.originClient, disconnectedDrag.activeToken);
+    }
   }
 }
 
 void FileDropBridge::cancelActiveDrag()
 {
-  BaseClientProxy *oldTarget = nullptr;
-  std::string oldToken;
+  ActiveCrossDrag cancelledDrag;
   {
     std::scoped_lock lock(m_mutex);
     LOG_INFO("FileDropBridge: Escape pressed; cancelling file drag");
     m_pendingFiles.clear();
     m_canCaptureDrag = false;
-    m_activeDragFiles.clear();
-    oldTarget = m_dragTargetClient;
-    oldToken = std::move(m_activeDragToken);
-    m_dragTargetClient = nullptr;
-    m_activeDragToken.clear();
+    m_preCapturedClient = nullptr;
+    m_preCapturedClientFileCount = 0;
+    m_preCapturedClientTimestampMs = 0;
+    if (m_activeDrag.active) {
+      cancelledDrag = std::move(m_activeDrag);
+    }
+    m_activeDrag = {};
   }
-  if (oldTarget) {
-    const std::string cancelMsg = oldToken.empty() ? std::string("DESKSEND_CANCEL") : ("DESKSEND_CANCEL:" + oldToken);
-    oldTarget->sendDragInfo(0, cancelMsg.data(), cancelMsg.size());
+
+  if (cancelledDrag.active) {
+    cancelTargetEndpoint(executor(), cancelledDrag.targetClient, cancelledDrag.activeToken, true);
+    if (cancelledDrag.originClient != nullptr) {
+      sendOriginCancelMessage(cancelledDrag.originClient, cancelledDrag.activeToken);
+    }
+  }
+}
+
+void FileDropBridge::onServerLeftMouseUp(BaseClientProxy *activeScreen, int32_t x, int32_t y)
+{
+  bool releaseSourceButton = false;
+  ActiveCrossDrag dropDrag;
+  bool executeDrop = false;
+  {
+    std::scoped_lock lock(m_mutex);
+    releaseSourceButton = m_sourceButtonNeedsRelease;
+    m_sourceButtonNeedsRelease = false;
+    m_pendingFiles.clear();
+    m_canCaptureDrag = false;
+    m_dragCancellationInProgress = false;
+    m_dragCancellationComplete = false;
+    m_visibleSentinelEdgeMask = 0;
+    if (activeScreen != nullptr && m_preCapturedClient == activeScreen) {
+      m_preCapturedClient = nullptr;
+      m_preCapturedClientFileCount = 0;
+      m_preCapturedClientTimestampMs = 0;
+    }
+    if (m_activeDrag.active) {
+      dropDrag = std::move(m_activeDrag);
+      m_activeDrag = {};
+      executeDrop = true;
+    }
+  }
+
+  IDropExecutor *exec = executor();
+  if (exec && (activeScreen != nullptr || !executeDrop || releaseSourceButton)) {
+    DropAgentCommand cmd;
+    cmd.type = DropAgentCommandType::LeftMouseUp;
+    cmd.flag = (activeScreen != nullptr) && releaseSourceButton;
+    exec->execute(cmd);
+  }
+
+  if (!executeDrop) {
+    return;
+  }
+
+  if (dropDrag.targetClient != activeScreen) {
+    LOG_WARN("FileDropBridge: mouse up screen mismatch; cancelling mismatched active drag");
+    cancelTargetEndpoint(exec, dropDrag.targetClient, dropDrag.activeToken, true);
+    if (dropDrag.originClient) {
+      sendOriginCancelMessage(dropDrag.originClient, dropDrag.activeToken);
+    }
+    return;
+  }
+
+  // Case 1: Client A -> Primary drop
+  if (dropDrag.targetClient == nullptr) {
+    if (!dropDrag.originClient) {
+      return;
+    }
+    const std::string tag = computeTokenTag(dropDrag.activeToken);
+    if (exec) {
+      DropAgentCommand hideCmd;
+      hideCmd.type = DropAgentCommandType::HideHover;
+      exec->execute(hideCmd);
+
+      DropAgentCommand prepCmd;
+      prepCmd.type = DropAgentCommandType::BeginPreparing;
+      prepCmd.fileCount = dropDrag.fileCount;
+      exec->execute(prepCmd);
+
+      DropAgentCommand targetCmd;
+      targetCmd.type = DropAgentCommandType::DropTarget;
+      targetCmd.fileCount = dropDrag.fileCount;
+      targetCmd.x = x;
+      targetCmd.y = y;
+      targetCmd.text = tag;
+      exec->execute(targetCmd);
+    }
+    const std::string sendDropMsg =
+        serializeSendDropMessage(x, y, dropDrag.activeToken, kServerPeerTargetMarker);
+    LOG_INFO(
+        "FileDropBridge: drop at (%d,%d) on primary from \"%s\" (%u file(s))", x, y,
+        dropDrag.originClient->getName().c_str(), dropDrag.fileCount
+    );
+    dropDrag.originClient->sendDragInfo(dropDrag.fileCount, sendDropMsg.data(), sendDropMsg.size());
+    return;
+  }
+
+  // Case 2 & 3: Drop on remote client B (from Primary OR from Client A)
+  const std::string peerIp = getClientPeerIp(dropDrag.targetClient);
+  const bool validOriginPayload =
+      (dropDrag.originClient != nullptr) || hasTransferableFiles(dropDrag.primaryFiles);
+  if (peerIp.empty() || !validOriginPayload) {
+    LOG_WARN(
+        "FileDropBridge: cannot complete drop onto \"%s\" (invalid peer IP or payload)",
+        dropDrag.targetClient->getName().c_str()
+    );
+    cancelTargetEndpoint(exec, dropDrag.targetClient, dropDrag.activeToken, true);
+    if (dropDrag.originClient != nullptr) {
+      sendOriginCancelMessage(dropDrag.originClient, dropDrag.activeToken);
+    }
+    return;
+  }
+
+  const std::string tag = computeTokenTag(dropDrag.activeToken);
+  const std::string dropMsg = serializeDragDropMessage(x, y, tag);
+  dropDrag.targetClient->sendDragInfo(dropDrag.fileCount, dropMsg.data(), dropMsg.size());
+
+  if (dropDrag.originClient == nullptr) {
+    LOG_INFO(
+        "FileDropBridge: drop at (%d,%d) on \"%s\" (%s), sending %zu file(s) via LocalSend", x, y,
+        dropDrag.targetClient->getName().c_str(), peerIp.c_str(), dropDrag.primaryFiles.size()
+    );
+    if (exec) {
+      DropAgentCommand cmd;
+      cmd.type = DropAgentCommandType::SendFiles;
+      cmd.text = peerIp;
+      cmd.items = std::move(dropDrag.primaryFiles);
+      cmd.authToken = std::move(dropDrag.activeToken);
+      exec->execute(cmd);
+    }
+  } else {
+    LOG_INFO(
+        "FileDropBridge: multi-hop drop at (%d,%d) from \"%s\" to \"%s\" (%s, %u file(s))", x, y,
+        dropDrag.originClient->getName().c_str(), dropDrag.targetClient->getName().c_str(), peerIp.c_str(),
+        dropDrag.fileCount
+    );
+    const std::string sendDropMsg = serializeSendDropMessage(x, y, dropDrag.activeToken, peerIp);
+    dropDrag.originClient->sendDragInfo(dropDrag.fileCount, sendDropMsg.data(), sendDropMsg.size());
   }
 }
 
 void FileDropBridge::onSecondaryLeftMouseUp(BaseClientProxy *activeClient, int32_t x, int32_t y)
 {
-  std::vector<std::string> files;
-  std::string token;
+  if (activeClient == nullptr) {
+    return;
+  }
+  bool hasActiveForClient = false;
   {
     std::scoped_lock lock(m_mutex);
-    if (m_activeDragFiles.empty() || activeClient == nullptr) {
-      return;
+    hasActiveForClient = m_activeDrag.active && (m_activeDrag.targetClient == activeClient);
+  }
+  if (!hasActiveForClient) {
+    return;
+  }
+  onServerLeftMouseUp(activeClient, x, y);
+}
+
+void FileDropBridge::refreshClientReceiverHosts()
+{
+  std::vector<std::string> hosts;
+  {
+    std::scoped_lock lock(m_mutex);
+    if (!m_clientServerHost.empty()) {
+      hosts.push_back(m_clientServerHost);
     }
-    files = std::move(m_activeDragFiles);
-    token = std::move(m_activeDragToken);
-    m_activeDragFiles.clear();
-    m_activeDragToken.clear();
-    m_dragTargetClient = nullptr;
+    for (const auto &peer : m_clientPeerHosts) {
+      if (!peer.empty()) {
+        hosts.push_back(peer);
+      }
+    }
   }
-
-  auto sendCancel = [&]() {
-    const std::string cancelMsg = token.empty() ? std::string("DESKSEND_CANCEL") : ("DESKSEND_CANCEL:" + token);
-    activeClient->sendDragInfo(0, cancelMsg.data(), cancelMsg.size());
-  };
-
-  if (!hasTransferableFiles(files)) {
-    LOG_WARN("FileDropBridge: dragged path(s) contain no transferable files; cancelling drop");
-    sendCancel();
-    return;
-  }
-
-  std::string peerIp = getClientPeerIp(activeClient);
-  if (peerIp.empty()) {
-    LOG_WARN("FileDropBridge: could not determine peer IP for client \"%s\"", activeClient->getName().c_str());
-    sendCancel();
-    return;
-  }
-
-  std::string dropMsg = "DESKSEND_DROP:" + std::to_string(x) + "," + std::to_string(y);
-  const std::string tag = computeTokenTag(token);
-  if (!tag.empty()) {
-    dropMsg += ":" + tag;
-  }
-  activeClient->sendDragInfo(static_cast<uint32_t>(files.size()), dropMsg.data(), dropMsg.size());
-
-  LOG_INFO(
-      "FileDropBridge: drop at (%d,%d) on \"%s\" (%s), sending %zu file(s) via LocalSend", x, y,
-      activeClient->getName().c_str(), peerIp.c_str(), files.size()
-  );
-  if (auto *exec = executor()) {
-    DropAgentCommand cmd;
-    cmd.type = DropAgentCommandType::SendFiles;
-    cmd.text = peerIp;
-    cmd.items = std::move(files);
-    cmd.authToken = std::move(token);
-    exec->execute(cmd);
-  }
+  applyReceiverHosts(executor(), hosts);
 }
 
 void FileDropBridge::startReceiver(const std::string &serverHost)
 {
-  if (auto *exec = executor()) {
-    DropAgentCommand cmd;
-    cmd.type = DropAgentCommandType::StartReceiver;
-    if (!serverHost.empty()) {
-      cmd.items.push_back(serverHost);
-    }
-    exec->execute(cmd);
+  startClientReceiver(serverHost);
+}
+
+void FileDropBridge::startClientReceiver(const std::string &serverHost)
+{
+  {
+    std::scoped_lock lock(m_mutex);
+    m_clientServerHost = serverHost;
   }
+  refreshClientReceiverHosts();
 }
 
 void FileDropBridge::stopReceiver()
 {
+  {
+    std::scoped_lock lock(m_mutex);
+    m_clientServerHost.clear();
+    m_clientPeerHosts.clear();
+    m_clientEdgeSegments.clear();
+    m_serverPeerHosts.clear();
+  }
   if (auto *exec = executor()) {
     DropAgentCommand cmd;
     cmd.type = DropAgentCommandType::StopReceiver;
     exec->execute(cmd);
+  }
+}
+
+void FileDropBridge::setClientDragMessageSender(ClientDragMessageSender sender)
+{
+  std::scoped_lock lock(m_mutex);
+  m_clientDragSender = std::move(sender);
+}
+
+void FileDropBridge::onClientMouseLeftDown()
+{
+  ClientDragMessageSender senderToNotify;
+  {
+    std::scoped_lock lock(m_mutex);
+    const bool hadPending = !m_clientPendingFiles.empty();
+    m_clientPendingFiles.clear();
+    m_clientPendingTimestampMs = 0;
+    m_clientCanCaptureDrag = true;
+    m_clientHandoffCommitted = false;
+    m_clientCancellationInProgress = false;
+    if (hadPending) {
+      senderToNotify = m_clientDragSender;
+    }
+  }
+  if (senderToNotify) {
+    senderToNotify(0, std::string(kMsgDragClientPreCaptureClear));
+  }
+  if (auto *exec = executor()) {
+    DropAgentCommand cmd;
+    cmd.type = DropAgentCommandType::PrimaryLeftMouseDown;
+    exec->execute(cmd);
+  }
+}
+
+void FileDropBridge::onClientMouseLeftUp()
+{
+  ClientDragMessageSender senderToNotify;
+  bool shouldReleaseSentinels = false;
+  {
+    std::scoped_lock lock(m_mutex);
+    if (m_clientHandoffCommitted) {
+      return;
+    }
+    const bool hadPending = !m_clientPendingFiles.empty();
+    m_clientPendingFiles.clear();
+    m_clientPendingTimestampMs = 0;
+    m_clientCanCaptureDrag = false;
+    m_clientSentinelVisible = false;
+    shouldReleaseSentinels = true;
+    if (hadPending) {
+      senderToNotify = m_clientDragSender;
+    }
+  }
+  if (senderToNotify) {
+    senderToNotify(0, std::string(kMsgDragClientPreCaptureClear));
+  }
+  if (shouldReleaseSentinels) {
+    if (auto *exec = executor()) {
+      DropAgentCommand cmd;
+      cmd.type = DropAgentCommandType::LeftMouseUp;
+      cmd.flag = false;
+      exec->execute(cmd);
+    }
+  }
+}
+
+void FileDropBridge::onClientMouseMoveWithShape(
+    int32_t x, int32_t y, int32_t ax, int32_t ay, int32_t aw, int32_t ah
+)
+{
+  auto *exec = executor();
+  if (!exec) {
+    return;
+  }
+
+  if (exec->isHoverVisible()) {
+    DropAgentCommand hoverCmd;
+    hoverCmd.type = DropAgentCommandType::UpdateHoverCursor;
+    hoverCmd.x = x;
+    hoverCmd.y = y;
+    exec->execute(hoverCmd);
+    return;
+  }
+
+#if defined(_WIN32)
+  std::vector<DragEdgeSegment> segs;
+  bool blocked = false;
+  bool wasVisible = false;
+  {
+    std::scoped_lock lock(m_mutex);
+    segs = m_clientEdgeSegments;
+    blocked = m_clientHandoffCommitted || m_clientCancellationInProgress;
+    wasVisible = m_clientSentinelVisible;
+  }
+
+  const bool leftButtonDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+  if (segs.empty() || blocked || aw <= 0 || ah <= 0 || !leftButtonDown) {
+    if (wasVisible) {
+      {
+        std::scoped_lock lock(m_mutex);
+        m_clientSentinelVisible = false;
+      }
+      DropAgentCommand hideCmd;
+      hideCmd.type = DropAgentCommandType::HideSentinels;
+      exec->execute(hideCmd);
+    }
+    return;
+  }
+
+  const uint32_t activeSides = activeSidesMaskFromSegments(segs);
+  const uint32_t nearMask = computeNearEdgeMask(x, y, ax, ay, aw, ah, activeSides);
+  {
+    std::scoped_lock lock(m_mutex);
+    m_clientSentinelVisible = (nearMask != 0);
+  }
+  DropAgentCommand moveCmd;
+  moveCmd.type = DropAgentCommandType::PrimaryMouseMove;
+  moveCmd.x = x;
+  moveCmd.y = y;
+  moveCmd.ax = ax;
+  moveCmd.ay = ay;
+  moveCmd.aw = aw;
+  moveCmd.ah = ah;
+  moveCmd.activeSides = activeSides;
+  moveCmd.edgeSegments = std::move(segs);
+  exec->execute(moveCmd);
+#else
+  (void)ax;
+  (void)ay;
+  (void)aw;
+  (void)ah;
+#endif
+}
+
+void FileDropBridge::onClientLeave()
+{
+  bool keepPendingForHandoff = false;
+  bool wasSentinelVisible = false;
+  {
+    std::scoped_lock lock(m_mutex);
+    keepPendingForHandoff = m_clientHandoffCommitted || m_clientCancellationInProgress;
+    if (!keepPendingForHandoff) {
+      m_clientPendingFiles.clear();
+      m_clientPendingTimestampMs = 0;
+      m_clientCanCaptureDrag = false;
+    }
+    wasSentinelVisible = m_clientSentinelVisible;
+    m_clientSentinelVisible = false;
+  }
+  if (auto *exec = executor()) {
+    if (exec->isHoverVisible()) {
+      DropAgentCommand hideHoverCmd;
+      hideHoverCmd.type = DropAgentCommandType::HideHover;
+      exec->execute(hideHoverCmd);
+    }
+    if (wasSentinelVisible) {
+      DropAgentCommand hideCmd;
+      hideCmd.type = DropAgentCommandType::HideSentinels;
+      exec->execute(hideCmd);
+    }
   }
 }
 
@@ -674,6 +1433,116 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
 {
   auto *exec = executor();
   if (!exec) {
+    return;
+  }
+
+  std::vector<DragEdgeSegment> edges;
+  if (parseDragEdgesMessage(info, edges)) {
+    std::scoped_lock lock(m_mutex);
+    m_clientEdgeSegments = std::move(edges);
+    return;
+  }
+
+  std::vector<std::string> peers;
+  if (parseDragPeersMessage(info, peers)) {
+    {
+      std::scoped_lock lock(m_mutex);
+      m_clientPeerHosts = std::move(peers);
+    }
+    refreshClientReceiverHosts();
+    return;
+  }
+
+  if (isClientPreCaptureClearMessage(info)) {
+    return;
+  }
+
+  if (isCommitHandoffMessage(info)) {
+    bool hasPending = false;
+    int sideIndex = 0;
+    {
+      std::scoped_lock lock(m_mutex);
+      m_clientHandoffCommitted = true;
+      m_clientCanCaptureDrag = false;
+      m_clientSentinelVisible = false;
+      hasPending = !m_clientPendingFiles.empty();
+      sideIndex = m_clientPendingSide;
+      if (hasPending) {
+        m_clientCancellationInProgress = true;
+      }
+    }
+    if (hasPending) {
+      DropAgentCommand cancelCmd;
+      cancelCmd.type = DropAgentCommandType::CancelNativeDrag;
+      cancelCmd.sideIndex = sideIndex;
+      exec->execute(cancelCmd);
+    } else {
+      DropAgentCommand hideCmd;
+      hideCmd.type = DropAgentCommandType::HideSentinels;
+      exec->execute(hideCmd);
+
+      DropAgentCommand releaseCmd;
+      releaseCmd.type = DropAgentCommandType::LeftMouseUp;
+      releaseCmd.flag = true;
+      exec->execute(releaseCmd);
+    }
+    return;
+  }
+
+  int32_t dropX = 0;
+  int32_t dropY = 0;
+  std::string sendToken;
+  std::string targetIp;
+  if (parseSendDropMessage(info, dropX, dropY, sendToken, targetIp)) {
+    std::vector<std::string> files;
+    std::string serverHost;
+    {
+      std::scoped_lock lock(m_mutex);
+      files = std::move(m_clientPendingFiles);
+      m_clientPendingFiles.clear();
+      m_clientPendingTimestampMs = 0;
+      m_clientHandoffCommitted = false;
+      m_clientCancellationInProgress = false;
+      m_clientCanCaptureDrag = false;
+      serverHost = m_clientServerHost;
+    }
+    const std::string resolvedTarget = (targetIp == kServerPeerTargetMarker) ? serverHost : targetIp;
+    if (files.empty() || !hasTransferableFiles(files) || resolvedTarget.empty()) {
+      LOG_WARN("FileDropBridge: ignoring DESKSEND_SEND_DROP with missing files or target host");
+      return;
+    }
+    LOG_INFO(
+        "FileDropBridge: executing client send of %zu file(s) to %s (drop %d,%d)", files.size(),
+        resolvedTarget.c_str(), dropX, dropY
+    );
+    DropAgentCommand sendCmd;
+    sendCmd.type = DropAgentCommandType::SendFiles;
+    sendCmd.text = resolvedTarget;
+    sendCmd.items = std::move(files);
+    sendCmd.authToken = std::move(sendToken);
+    exec->execute(sendCmd);
+    return;
+  }
+
+  std::string sendCancelToken;
+  if (parseSendCancelMessage(info, sendCancelToken)) {
+    {
+      std::scoped_lock lock(m_mutex);
+      m_clientPendingFiles.clear();
+      m_clientPendingTimestampMs = 0;
+      m_clientHandoffCommitted = false;
+      m_clientCancellationInProgress = false;
+      m_clientCanCaptureDrag = false;
+      m_clientSentinelVisible = false;
+    }
+    DropAgentCommand hideCmd;
+    hideCmd.type = DropAgentCommandType::HideSentinels;
+    exec->execute(hideCmd);
+
+    DropAgentCommand resetCmd;
+    resetCmd.type = DropAgentCommandType::LeftMouseUp;
+    resetCmd.flag = false;
+    exec->execute(resetCmd);
     return;
   }
 

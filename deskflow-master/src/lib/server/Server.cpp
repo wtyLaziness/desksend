@@ -28,14 +28,15 @@
 #include "server/ClientProxyUnknown.h"
 #include "server/PrimaryClient.h"
 
-#ifdef _WIN32
 #include <algorithm>
+#ifdef _WIN32
 #include <array>
 #endif
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <unordered_set>
 
 using namespace deskflow::server;
 
@@ -155,6 +156,7 @@ Server::Server(ServerConfig &config, PrimaryClient *primaryClient, deskflow::Com
 
 Server::~Server()
 {
+  deskflow::FileDropBridge::instance().setServerPeerHosts({});
   deskflow::FileDropBridge::instance().shutdownSentinels();
   // remove event handlers and timers
   using enum EventTypes;
@@ -229,6 +231,136 @@ size_t Server::getMaximumClipboardSizeBytes() const
   return m_maximumClipboardSize * 1024;
 }
 
+std::vector<deskflow::DragEdgeSegment> Server::computeDragEdgeSegments(
+    const ServerConfig &config, const std::string &computerName,
+    const std::unordered_set<std::string> &connectedClients, int32_t screenWidth, int32_t screenHeight,
+    int32_t cornerMargin
+)
+{
+  if (computerName.empty() || screenWidth <= 0 || screenHeight <= 0) {
+    return {};
+  }
+
+  std::vector<deskflow::DragEdgeSegment> raw;
+  for (Config::link_const_iterator link = config.beginNeighbor(computerName), nend = config.endNeighbor(computerName);
+       link != nend; ++link) {
+    const Direction dir = link->first.getSide();
+    const auto sideOpt = deskflow::directionToDragEdgeSide(dir);
+    if (!sideOpt.has_value()) {
+      continue;
+    }
+
+    const auto interval = link->first.getInterval();
+    const float lo = std::clamp(std::min(interval.first, interval.second), 0.0f, 1.0f);
+    const float hi = std::clamp(std::max(interval.first, interval.second), 0.0f, 1.0f);
+    std::string cur = link->second.getName();
+    float t = 0.5f * (lo + hi);
+    bool reachable = false;
+    std::unordered_set<std::string> visited;
+    visited.insert(computerName);
+    for (int hop = 0; hop < 32 && !cur.empty(); ++hop) {
+      if (connectedClients.contains(cur)) {
+        reachable = true;
+        break;
+      }
+      if (!visited.insert(cur).second) {
+        break;
+      }
+      float nextT = 0.5f;
+      cur = config.getNeighbor(cur, dir, t, &nextT);
+      t = nextT;
+    }
+    if (!reachable) {
+      continue;
+    }
+
+    const int32_t extent =
+        (*sideOpt == deskflow::DragEdgeSide::Left || *sideOpt == deskflow::DragEdgeSide::Right) ? screenHeight
+                                                                                                : screenWidth;
+    const int32_t startPx = static_cast<int32_t>(std::floor(lo * static_cast<float>(extent)));
+    const int32_t endPx = static_cast<int32_t>(std::ceil(hi * static_cast<float>(extent)));
+    if (endPx > startPx) {
+      raw.push_back({*sideOpt, startPx, endPx});
+    }
+  }
+
+  return deskflow::clipEdgeSegmentsForCorners(raw, screenWidth, screenHeight, cornerMargin);
+}
+
+void Server::updateDragTopologyAndPeers()
+{
+  if (m_config == nullptr || m_primaryClient == nullptr) {
+    return;
+  }
+
+  std::unordered_set<std::string> connectedNames;
+  const std::string primaryName = getName(m_primaryClient);
+  if (!primaryName.empty()) {
+    connectedNames.insert(primaryName);
+  }
+
+  struct RemoteEndpoint
+  {
+    std::string name;
+    BaseClientProxy *proxy = nullptr;
+    std::string peerIp;
+  };
+  std::vector<RemoteEndpoint> remotes;
+  std::vector<std::string> allPeerIps;
+
+  for (const auto &[name, proxy] : m_clients) {
+    if (!name.empty()) {
+      connectedNames.insert(name);
+    }
+    if (proxy == nullptr || proxy == m_primaryClient) {
+      continue;
+    }
+    std::string ip = deskflow::FileDropBridge::getClientPeerIp(proxy);
+    if (!ip.empty() && std::find(allPeerIps.begin(), allPeerIps.end(), ip) == allPeerIps.end()) {
+      allPeerIps.push_back(ip);
+    }
+    remotes.push_back({name, proxy, std::move(ip)});
+  }
+
+  deskflow::FileDropBridge::instance().setServerPeerHosts(allPeerIps);
+
+  if (isLockedToComputerServer()) {
+    deskflow::FileDropBridge::instance().setPrimaryEdgeSegments({});
+  } else {
+    int32_t px = 0;
+    int32_t py = 0;
+    int32_t pw = 0;
+    int32_t ph = 0;
+    m_primaryClient->getShape(px, py, pw, ph);
+    deskflow::FileDropBridge::instance().setPrimaryEdgeSegments(
+        computeDragEdgeSegments(*m_config, primaryName, connectedNames, pw, ph)
+    );
+  }
+
+  for (const auto &ep : remotes) {
+    int32_t cx = 0;
+    int32_t cy = 0;
+    int32_t cw = 0;
+    int32_t ch = 0;
+    ep.proxy->getShape(cx, cy, cw, ch);
+    if (cw > 0 && ch > 0) {
+      const auto segs = computeDragEdgeSegments(*m_config, ep.name, connectedNames, cw, ch);
+      const std::string edgesMsg = deskflow::serializeDragEdgesMessage(segs);
+      ep.proxy->sendDragInfo(0, edgesMsg.data(), edgesMsg.size());
+    }
+
+    std::vector<std::string> otherPeers;
+    for (const auto &other : remotes) {
+      if (other.proxy != ep.proxy && !other.peerIp.empty() &&
+          std::find(otherPeers.begin(), otherPeers.end(), other.peerIp) == otherPeers.end()) {
+        otherPeers.push_back(other.peerIp);
+      }
+    }
+    const std::string peersMsg = deskflow::serializeDragPeersMessage(otherPeers);
+    ep.proxy->sendDragInfo(0, peersMsg.data(), peersMsg.size());
+  }
+}
+
 void Server::onClientDragInfo(BaseClientProxy *client, uint16_t fileCount, const std::string &info)
 {
   if (client == nullptr) {
@@ -236,6 +368,7 @@ void Server::onClientDragInfo(BaseClientProxy *client, uint16_t fileCount, const
   }
   const std::string logInfo = deskflow::redactDragLogPayload(info);
   LOG_DEBUG("server recv drag info from \"%s\" count=%u info=\"%s\"", client->getName().c_str(), fileCount, logInfo.c_str());
+  deskflow::FileDropBridge::instance().onServerReceiveClientDragInfo(client, fileCount, info);
 }
 
 bool Server::setConfig(const ServerConfig &config)
@@ -268,6 +401,7 @@ bool Server::setConfig(const ServerConfig &config)
 
   // tell primary computer about reconfiguration
   m_primaryClient->reconfigure(getActivePrimarySides());
+  updateDragTopologyAndPeers();
 
   // tell all (connected) clients about current options
   for (ClientList::const_iterator index = m_clients.begin(); index != m_clients.end(); ++index) {
@@ -308,6 +442,7 @@ void Server::adoptClient(BaseClientProxy *client)
 
   // send configuration options to client
   sendOptions(client);
+  updateDragTopologyAndPeers();
 
   // activate computer saver on new client if active on the primary computer
   if (m_activeSaver != nullptr) {
@@ -414,9 +549,9 @@ bool Server::isLockedToComputer() const
   }
 
   // locked if primary says we're locked (unless a cross-screen file drag is active)
-  if (deskflow::FileDropBridge::instance().hasPendingDragFiles() ||
-      deskflow::FileDropBridge::instance().hasActiveDragFiles()) {
-    LOG_DEBUG("allowing screen switch with pending dragged files");
+  BaseClientProxy *const activeKey = (m_active == m_primaryClient) ? nullptr : m_active;
+  if (deskflow::FileDropBridge::instance().canUnlockEdgeSwitchForDrag(activeKey)) {
+    LOG_DEBUG("allowing screen switch with pending or active dragged files");
     return false;
   }
   if (m_primaryClient->isLockedToComputer()) {
@@ -439,8 +574,11 @@ int32_t Server::getJumpZoneSize(const BaseClientProxy *client) const
 void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool forScreensaver)
 {
   assert(dst != nullptr);
-  if (m_active == m_primaryClient && dst != m_primaryClient &&
-      !deskflow::FileDropBridge::instance().canSwitchFromPrimary()) {
+  BaseClientProxy *const fromKey = (m_active == m_primaryClient) ? nullptr : m_active;
+  BaseClientProxy *const toKey = (dst == m_primaryClient) ? nullptr : dst;
+  const bool switchingScreen = (m_active != dst);
+
+  if (switchingScreen && fromKey == nullptr && !deskflow::FileDropBridge::instance().canSwitchFromPrimary()) {
     // 光标已经到边缘时，取消 OLE 后的移动可能被系统裁剪为零；用切屏计时器继续交接。
     m_switchComputer = dst;
     startSwitchWait(x, y, 0.12);
@@ -453,8 +591,7 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
   int32_t dh;
   dst->getShape(dx, dy, dw, dh);
 
-  if (m_active == m_primaryClient && dst != m_primaryClient &&
-      deskflow::FileDropBridge::instance().hasPendingDragFiles()) {
+  if (switchingScreen && deskflow::FileDropBridge::instance().isDragActiveForSwitch(fromKey, toKey)) {
     x = deskflow::fileDragEntryCoordinate(x, dx, dw);
     y = deskflow::fileDragEntryCoordinate(y, dy, dh);
     LOG_INFO("FileDropBridge: entering destination inside edge at %d,%d", x, y);
@@ -508,8 +645,7 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
   // since that's a waste of time we skip that and just warp the
   // mouse.
   if (m_active != dst) {
-    const bool leavingPrimary = (m_active == m_primaryClient && dst != m_primaryClient);
-    const bool returningToPrimary = (m_active != m_primaryClient && dst == m_primaryClient);
+    deskflow::FileDropBridge::instance().prepareScreenSwitch(fromKey, toKey);
 
     // leave active computer
     if (!m_active->leave()) {
@@ -550,11 +686,7 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
     // enter new computer
     m_active->enter(x, y, m_seqNum, m_primaryClient->getToggleMask(), forScreensaver);
 
-    if (leavingPrimary) {
-      deskflow::FileDropBridge::instance().onLeavePrimary(dst);
-    } else if (returningToPrimary) {
-      deskflow::FileDropBridge::instance().onReturnToPrimary();
-    }
+    deskflow::FileDropBridge::instance().onScreenSwitch(fromKey, toKey, x, y);
 
     if (m_enableClipboard) {
       // send the clipboard data to new active computer
@@ -1227,6 +1359,7 @@ void Server::handleShapeChanged(BaseClientProxy *client)
       onMouseMoveSecondary(0, 0);
     }
   }
+  updateDragTopologyAndPeers();
 }
 
 void Server::handleClipboardGrabbed(const Event &event, BaseClientProxy *grabber)
@@ -1502,6 +1635,7 @@ void Server::handleLockCursorToComputerEvent(const Event &event)
     LOG_INFO("cursor %s current computer", m_lockedToComputer ? "locked to" : "unlocked from");
 
     m_primaryClient->reconfigure(getActivePrimarySides());
+    updateDragTopologyAndPeers();
     if (!isLockedToComputerServer()) {
       stopRelativeMoves();
     }
@@ -1682,11 +1816,8 @@ void Server::onMouseUp(ButtonID id)
   LOG_VERBOSE("onMouseUp id=%d", id);
   assert(m_active != nullptr);
   if (id == kButtonLeft) {
-    deskflow::FileDropBridge::instance().onLeftMouseUp(m_active != m_primaryClient);
-  }
-
-  if (id == kButtonLeft && m_active != m_primaryClient) {
-    deskflow::FileDropBridge::instance().onSecondaryLeftMouseUp(m_active, m_x, m_y);
+    BaseClientProxy *const activeKey = (m_active == m_primaryClient) ? nullptr : m_active;
+    deskflow::FileDropBridge::instance().onServerLeftMouseUp(activeKey, m_x, m_y);
   }
 
   // relay
@@ -2007,6 +2138,9 @@ bool Server::removeClient(BaseClientProxy *client)
     stopSwitch();
   }
   deskflow::FileDropBridge::instance().onClientDisconnected(client);
+  if (client != m_primaryClient) {
+    updateDragTopologyAndPeers();
+  }
 
   return true;
 }

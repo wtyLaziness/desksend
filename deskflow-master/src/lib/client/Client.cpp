@@ -21,6 +21,7 @@
 #include "deskflow/DeskflowException.h"
 #include "deskflow/FileDropBridge.h"
 #include "deskflow/IPlatformComputer.h"
+#include "deskflow/MouseTypes.h"
 #include "deskflow/PacketStreamFilter.h"
 #include "deskflow/ProtocolTypes.h"
 #include "deskflow/ProtocolUtil.h"
@@ -182,7 +183,7 @@ void Client::handshakeComplete()
   if (colonPos != std::string::npos && serverIp.find(':') == colonPos) {
     serverIp = serverIp.substr(0, colonPos);
   }
-  deskflow::FileDropBridge::instance().startReceiver(serverIp);
+  deskflow::FileDropBridge::instance().startClientReceiver(serverIp);
   sendEvent(EventTypes::ClientConnected);
 }
 
@@ -246,6 +247,7 @@ bool Client::leave()
   m_active = false;
 
   m_computer->leave();
+  deskflow::FileDropBridge::instance().onClientLeave();
 
   if (m_enableClipboard) {
     // send clipboards that we own and that have changed
@@ -296,16 +298,28 @@ void Client::keyUp(KeyID id, KeyModifierMask mask, KeyButton button)
 void Client::mouseDown(ButtonID id)
 {
   m_computer->mouseDown(id);
+  if (id == kButtonLeft) {
+    deskflow::FileDropBridge::instance().onClientMouseLeftDown();
+  }
 }
 
 void Client::mouseUp(ButtonID id)
 {
   m_computer->mouseUp(id);
+  if (id == kButtonLeft) {
+    deskflow::FileDropBridge::instance().onClientMouseLeftUp();
+  }
 }
 
 void Client::mouseMove(int32_t x, int32_t y)
 {
   m_computer->mouseMove(x, y);
+  int32_t ax = 0;
+  int32_t ay = 0;
+  int32_t aw = 0;
+  int32_t ah = 0;
+  m_computer->getShape(ax, ay, aw, ah);
+  deskflow::FileDropBridge::instance().onClientMouseMoveWithShape(x, y, ax, ay, aw, ah);
 }
 
 void Client::mouseRelativeMove(int32_t dx, int32_t dy)
@@ -507,6 +521,9 @@ bool Client::setupComputer(int16_t protocolMinor)
   }
 
   if (m_server != nullptr) {
+    deskflow::FileDropBridge::instance().setClientDragMessageSender(
+        [this](uint32_t fileCount, const std::string &info) { sendDragInfo(fileCount, info); }
+    );
     m_events->addHandler(EventTypes::ComputerShapeChanged, getEventTarget(), [this](const auto &) {
       handleShapeChanged();
     });
@@ -559,6 +576,12 @@ void Client::cleanupConnection()
 void Client::cleanupComputer()
 {
   if (m_server != nullptr) {
+    auto &bridge = deskflow::FileDropBridge::instance();
+    bridge.setClientDragMessageSender({});
+    bridge.onClientReceiveDragInfo(0, "DESKSEND_SEND_CANCEL");
+    bridge.onClientReceiveDragInfo(0, "DESKSEND_CANCEL");
+    bridge.stopReceiver();
+    bridge.shutdownSentinels();
     if (m_ready) {
       m_computer->disable();
       m_ready = false;

@@ -7,10 +7,12 @@
 #pragma once
 
 #include "deskflow/DragOverlayWidgets.h"
+#include "deskflow/DragProtocol.h"
 #include "deskflow/DropExecutor.h"
 
 #include <QPoint>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -24,16 +26,20 @@ namespace deskflow {
 class FileDropBridge final : public IDropExecutorHost
 {
 public:
+  using ClientDragMessageSender = std::function<void(uint32_t fileCount, const std::string &info)>;
+
   static FileDropBridge &instance();
 
   FileDropBridge(const FileDropBridge &) = delete;
   FileDropBridge &operator=(const FileDropBridge &) = delete;
 
-  // --- Server-side (source computer) hooks ---
+  // --- Server-side (coordinator & primary computer) hooks ---
   void updatePrimaryShape(int32_t x, int32_t y, int32_t w, int32_t h);
+  void setPrimaryEdgeSegments(std::vector<DragEdgeSegment> segments);
+  void setServerPeerHosts(const std::vector<std::string> &peerHosts);
   void shutdownSentinels();
 
-  // Called on primary mouse motion; shows edge sentinel when dragging near an active border
+  // Called on primary mouse motion; shows edge sentinel or updates primary hover capsule
   void onPrimaryMouseMove(
       int32_t x, int32_t y, int32_t ax, int32_t ay, int32_t aw, int32_t ah, uint32_t activeSides
   );
@@ -52,10 +58,16 @@ public:
   void onLeftMouseUp(bool onSecondary);
   bool canSwitchFromPrimary();
 
-  // Called when Server::switchComputer leaves primary to a remote client
-  void onLeavePrimary(BaseClientProxy *dstClient);
+  // Unified bidirectional coordinator hooks (nullptr screen == primary computer)
+  bool canUnlockEdgeSwitchForDrag(BaseClientProxy *activeScreen) const;
+  bool isDragActiveForSwitch(BaseClientProxy *fromScreen, BaseClientProxy *toScreen) const;
+  void prepareScreenSwitch(BaseClientProxy *fromScreen, BaseClientProxy *toScreen);
+  void onScreenSwitch(BaseClientProxy *fromScreen, BaseClientProxy *toScreen, int32_t entryX, int32_t entryY);
+  void onServerReceiveClientDragInfo(BaseClientProxy *client, uint16_t fileCount, const std::string &info);
+  void onServerLeftMouseUp(BaseClientProxy *activeScreen, int32_t x, int32_t y);
 
-  // Called when Server::switchComputer returns back to primary (cancels unreleased drag)
+  // Legacy wrappers preserved for compatibility
+  void onLeavePrimary(BaseClientProxy *dstClient);
   void onReturnToPrimary();
 
   // Called when a secondary client disconnects from Server to prevent dangling pointer
@@ -67,9 +79,15 @@ public:
   // Called when Server::onMouseUp(kButtonLeft) fires on a secondary computer
   void onSecondaryLeftMouseUp(BaseClientProxy *activeClient, int32_t x, int32_t y);
 
-  // --- Client-side (destination computer) hooks ---
+  // --- Client-side (endpoint computer) hooks ---
   void startReceiver(const std::string &serverHost);
+  void startClientReceiver(const std::string &serverHost);
   void stopReceiver();
+  void setClientDragMessageSender(ClientDragMessageSender sender);
+  void onClientMouseLeftDown();
+  void onClientMouseLeftUp();
+  void onClientMouseMoveWithShape(int32_t x, int32_t y, int32_t ax, int32_t ay, int32_t aw, int32_t ah);
+  void onClientLeave();
   void onClientReceiveDragInfo(uint16_t fileCount, const std::string &info);
   void onClientMouseMove(int32_t x, int32_t y);
   bool isClientHoverVisible() const;
@@ -103,6 +121,16 @@ public:
 private:
   friend class ::FileDropBridgeTests;
 
+  struct ActiveCrossDrag
+  {
+    bool active = false;
+    BaseClientProxy *originClient = nullptr; // nullptr == primary computer
+    BaseClientProxy *targetClient = nullptr; // nullptr == primary computer
+    uint32_t fileCount = 0;
+    std::vector<std::string> primaryFiles;
+    std::string activeToken;
+  };
+
   FileDropBridge();
   ~FileDropBridge() override;
 
@@ -117,10 +145,24 @@ private:
   void handleReceiveSessionStarted(size_t expectedFiles, const std::string &tokenTag = {});
   void handleReceiveSessionFinished(bool cancelled);
   void setDragCancellationState(bool inProgress, bool complete);
+  void resetAllStateForTesting();
+
+  void performScreenSwitch(
+      BaseClientProxy *fromScreen, BaseClientProxy *toScreen, int32_t entryX, int32_t entryY, bool sendHoverEnter
+  );
+  void activateTargetScreen(
+      IDropExecutor *exec, BaseClientProxy *target, BaseClientProxy *origin, uint32_t fileCount,
+      const std::vector<std::string> &primaryFiles, const std::string &token, int32_t entryX, int32_t entryY,
+      bool sendHoverEnter
+  ) const;
+  void cancelTargetEndpoint(IDropExecutor *exec, BaseClientProxy *target, const std::string &token, bool cancelPreparing) const;
+  void refreshClientReceiverHosts();
+  static std::string buildDragStartPayload(const std::string &token, const std::vector<std::string> &files);
 
   mutable std::mutex m_mutex;
   std::unique_ptr<IDropExecutor> m_executor;
 
+  // Server/Primary pre-capture & sentinel state
   std::vector<std::string> m_pendingFiles;
   uint64_t m_pendingTimestampMs = 0;
   int m_lastCapturedSide = 0;
@@ -129,10 +171,29 @@ private:
   bool m_dragCancellationInProgress = false;
   bool m_dragCancellationComplete = false;
   uint32_t m_visibleSentinelEdgeMask = 0;
+  std::vector<DragEdgeSegment> m_primaryEdgeSegments;
+  bool m_primaryEdgeSegmentsConfigured = false;
+  std::vector<std::string> m_serverPeerHosts;
 
-  std::vector<std::string> m_activeDragFiles;
-  std::string m_activeDragToken;
-  BaseClientProxy *m_dragTargetClient = nullptr;
+  // Server-side remote pre-capture & active cross-screen drag state
+  BaseClientProxy *m_preCapturedClient = nullptr;
+  uint16_t m_preCapturedClientFileCount = 0;
+  DragEdgeSide m_preCapturedClientSide = DragEdgeSide::Left;
+  uint64_t m_preCapturedClientTimestampMs = 0;
+  ActiveCrossDrag m_activeDrag;
+
+  // Client-side endpoint state
+  ClientDragMessageSender m_clientDragSender;
+  std::string m_clientServerHost;
+  std::vector<std::string> m_clientPeerHosts;
+  std::vector<DragEdgeSegment> m_clientEdgeSegments;
+  std::vector<std::string> m_clientPendingFiles;
+  uint64_t m_clientPendingTimestampMs = 0;
+  int m_clientPendingSide = 0;
+  bool m_clientCanCaptureDrag = false;
+  bool m_clientHandoffCommitted = false;
+  bool m_clientCancellationInProgress = false;
+  bool m_clientSentinelVisible = false;
 };
 
 } // namespace deskflow

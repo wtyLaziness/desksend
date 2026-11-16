@@ -13,6 +13,7 @@
 #include "common/NetworkProtocol.h"
 #include "deskflow/Clipboard.h"
 #include "deskflow/ClipboardTypes.h"
+#include "deskflow/DragProtocol.h"
 #include "deskflow/KeyTypes.h"
 #include "deskflow/MouseTypes.h"
 #include "server/Config.h"
@@ -20,6 +21,7 @@
 #include <climits>
 #include <map>
 #include <set>
+#include <unordered_set>
 #include <vector>
 
 class BaseClientProxy;
@@ -202,6 +204,11 @@ public:
   static bool shouldClearSwitchWaitForDirection(
       Direction dir, int32_t x, int32_t y, int32_t ax, int32_t ay, int32_t aw, int32_t ah, int32_t zoneSize
   );
+  static std::vector<deskflow::DragEdgeSegment> computeDragEdgeSegments(
+      const ServerConfig &config, const std::string &computerName,
+      const std::unordered_set<std::string> &connectedClients, int32_t screenWidth, int32_t screenHeight,
+      int32_t cornerMargin = 16
+  );
   void onClientDragInfo(BaseClientProxy *client, uint16_t fileCount, const std::string &info);
 
   //@}
@@ -362,6 +369,9 @@ private:
 
   // force the cursor off of \p client
   void forceLeaveClient(const BaseClientProxy *client);
+
+  // recompute edge drag segments and peer IP allowlists for primary and connected clients
+  void updateDragTopologyAndPeers();
 
 private:
   class ClipboardInfo
