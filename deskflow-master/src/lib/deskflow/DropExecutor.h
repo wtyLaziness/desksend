@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -199,6 +200,7 @@ private:
   uint32_t m_receiverGeneration = 0;
   int m_receiverRestartAttempt = 0;
   QProcess *m_receiverProcess = nullptr;
+  QProcess *m_activeSendProcess = nullptr;
 };
 
 #if defined(_WIN32)
@@ -232,13 +234,17 @@ private:
   void sendOrQueueCommand(const DropAgentCommand &cmd);
   void writeCommandLocked(const DropAgentCommand &cmd);
   void scheduleReconnect(int delayMs);
-  void readerLoop();
+  void readerLoop(uint32_t expectedGeneration);
+  void handleAgentPipeClosed(uint32_t expectedGeneration);
   void handleAgentEvent(const DropAgentEvent &ev);
+  void dispatchHostEvent(const DropAgentEvent &ev);
+  void postToMainThread(std::function<void()> fn);
   void replayCachedStateLocked();
 
   std::shared_ptr<std::atomic<bool>> m_alive = std::make_shared<std::atomic<bool>>(true);
   std::atomic<IDropExecutorHost *> m_host{nullptr};
   std::unique_ptr<PlatformState> m_platform;
+  mutable std::mutex m_launchMutex;
   mutable std::mutex m_mutex;
   std::mutex m_writeMutex;
   bool m_shuttingDown = false;

@@ -61,6 +61,7 @@ struct DropAgentCommand
   uint64_t done = 0;
   uint64_t total = 0;
   bool dragActive = false;
+  bool success = false;
   std::string text;
   std::string authToken;
   std::vector<std::string> items;

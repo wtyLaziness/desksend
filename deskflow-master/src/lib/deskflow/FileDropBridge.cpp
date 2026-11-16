@@ -1602,21 +1602,12 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
     activeCmd.dragActive = true;
     exec->execute(activeCmd);
 
-    const std::string startPrefix = "DESKSEND_START:";
-    if (info.rfind(startPrefix, 0) == 0) {
-      const size_t newlinePos = info.find('\n', startPrefix.size());
-      std::string token = (newlinePos == std::string::npos)
-                              ? info.substr(startPrefix.size())
-                              : info.substr(startPrefix.size(), newlinePos - startPrefix.size());
-      if (!token.empty() && token.back() == '\r') {
-        token.pop_back();
-      }
-      if (!token.empty() && token.find_first_of(" \t\r\n") == std::string::npos) {
-        DropAgentCommand authCmd;
-        authCmd.type = DropAgentCommandType::ReceiverAuthCommand;
-        authCmd.text = "GRANT " + token;
-        exec->execute(authCmd);
-      }
+    std::string token;
+    if (parseDragStartMessage(info, token)) {
+      DropAgentCommand authCmd;
+      authCmd.type = DropAgentCommandType::ReceiverAuthCommand;
+      authCmd.text = "GRANT " + token;
+      exec->execute(authCmd);
     }
     LOG_INFO("FileDropBridge: incoming drag started (%u file(s))", fileCount);
   } else if (info.rfind("DESKSEND_CANCEL", 0) == 0) {

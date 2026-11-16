@@ -334,8 +334,12 @@ bool parseDragStartMessage(std::string_view info, std::string &outToken)
   if (!startsWith(info, kStartPrefix)) {
     return false;
   }
-  const std::string_view token = info.substr(kStartPrefix.size());
-  if (token.empty()) {
+  std::string_view token = info.substr(kStartPrefix.size());
+  const size_t lineEnd = token.find_first_of("\r\n");
+  if (lineEnd != std::string_view::npos) {
+    token = token.substr(0, lineEnd);
+  }
+  if (token.empty() || token.find_first_of(" \t") != std::string_view::npos) {
     return false;
   }
   outToken.assign(token);

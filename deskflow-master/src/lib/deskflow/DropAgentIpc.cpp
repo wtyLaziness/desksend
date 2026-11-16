@@ -269,6 +269,8 @@ std::string serializeDropAgentCommand(const DropAgentCommand &cmd)
     obj.insert(QStringLiteral("total"), QString::number(static_cast<qulonglong>(cmd.total)));
   if (cmd.dragActive)
     obj.insert(QStringLiteral("dragActive"), true);
+  if (cmd.success)
+    obj.insert(QStringLiteral("success"), true);
   if (!cmd.text.empty())
     obj.insert(QStringLiteral("text"), QString::fromStdString(cmd.text));
   if (!cmd.authToken.empty())
@@ -352,6 +354,8 @@ std::optional<DropAgentCommand> deserializeDropAgentCommand(const std::string &l
     return std::nullopt;
   if (obj.contains(QStringLiteral("dragActive")))
     cmd.dragActive = obj.value(QStringLiteral("dragActive")).toBool(false);
+  if (obj.contains(QStringLiteral("success")))
+    cmd.success = obj.value(QStringLiteral("success")).toBool(false);
   if (obj.contains(QStringLiteral("text")))
     cmd.text = obj.value(QStringLiteral("text")).toString().toStdString();
   if (obj.contains(QStringLiteral("authToken")))

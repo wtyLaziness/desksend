@@ -29,9 +29,7 @@
 #include "server/PrimaryClient.h"
 
 #include <algorithm>
-#ifdef _WIN32
 #include <array>
-#endif
 #include <cmath>
 #include <cstdlib>
 #include <cstring>

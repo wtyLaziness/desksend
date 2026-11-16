@@ -468,7 +468,7 @@ bool acquireNonSystemUserPrimaryToken(HANDLE &outPrimaryToken, bool &outUseProce
   const bool isSys = isLocalSystemToken(shellTok);
   HANDLE dup = nullptr;
   const BOOL dupOk = !isSys && DuplicateTokenEx(
-                                   shellTok, TOKEN_ALL_ACCESS, nullptr, SecurityImpersonation, TokenPrimary, &dup
+                                   shellTok, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &dup
                                );
   CloseHandle(shellTok);
   if (!dupOk || !dup) {
@@ -504,6 +504,18 @@ QString buildAllowSpecForHosts(const std::vector<std::string> &hosts)
     }
   }
   return tokens.join(',');
+}
+
+QString formatHostPortTarget(const std::string &host, const QString &port)
+{
+  QString qHost = QString::fromStdString(host).trimmed();
+  if (qHost.startsWith(QStringLiteral("::ffff:"), Qt::CaseInsensitive)) {
+    qHost = qHost.mid(7);
+  }
+  if (qHost.contains(':') && !qHost.startsWith('[')) {
+    return QStringLiteral("[%1]:%2").arg(qHost, port);
+  }
+  return QStringLiteral("%1:%2").arg(qHost, port);
 }
 
 } // namespace
@@ -902,6 +914,18 @@ InProcessDropExecutor::~InProcessDropExecutor()
 {
   m_alive->store(false);
   stopReceiver();
+  QProcess *sendProc = nullptr;
+  {
+    std::scoped_lock lock(m_mutex);
+    sendProc = m_activeSendProcess;
+    m_activeSendProcess = nullptr;
+  }
+  if (sendProc) {
+    sendProc->disconnect();
+    sendProc->kill();
+    sendProc->waitForFinished(1000);
+    delete sendProc;
+  }
   handleShutdownSentinels();
 }
 
@@ -1738,13 +1762,13 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
       } else if (line.startsWith(startPrefix)) {
         QString header = line;
         std::string tokenTag;
-        const int tokSep = header.lastIndexOf(QStringLiteral(":tok="));
+        const qsizetype tokSep = header.lastIndexOf(QStringLiteral(":tok="));
         if (tokSep > 0) {
           tokenTag = header.mid(tokSep + 5).toStdString();
           header = header.left(tokSep);
         }
         size_t expectedCount = 0;
-        const int lastColon = header.lastIndexOf(':');
+        const qsizetype lastColon = header.lastIndexOf(':');
         if (lastColon > 0) {
           expectedCount = static_cast<size_t>(header.mid(lastColon + 1).toUInt());
         }
@@ -1980,7 +2004,7 @@ void InProcessDropExecutor::processNextSendJob()
   if (const char *targetPort = std::getenv("DESKSEND_TARGET_PORT"); targetPort && targetPort[0] != '\0') {
     targetPortStr = QString::fromUtf8(targetPort);
   }
-  const QString destination = QString::fromStdString(job.targetIp) + QStringLiteral(":") + targetPortStr;
+  const QString destination = formatHostPortTarget(job.targetIp, targetPortStr);
 
   QStringList args;
   if (const char *senderPort = std::getenv("DESKSEND_SENDER_PORT"); senderPort && senderPort[0] != '\0') {
@@ -2003,6 +2027,10 @@ void InProcessDropExecutor::processNextSendJob()
   }
 
   auto *proc = new QProcess();
+  {
+    std::scoped_lock lock(m_mutex);
+    m_activeSendProcess = proc;
+  }
   proc->setProcessChannelMode(QProcess::MergedChannels);
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString senderCfgDir = resolveLocalSendConfigDir("DESKSEND_SENDER_CONFIG_HOME", QStringLiteral("sender"));
@@ -2046,6 +2074,12 @@ void InProcessDropExecutor::processNextSendJob()
           return;
         }
         if (error == QProcess::FailedToStart) {
+          {
+            std::scoped_lock lock(m_mutex);
+            if (m_activeSendProcess == proc) {
+              m_activeSendProcess = nullptr;
+            }
+          }
           LOG_WARN("FileDropBridge: failed to start localsend-cli for %s", destination.toStdString().c_str());
           m_senderOverlay.finish(
               false, QCoreApplication::translate("FileDropBridge", "Send failed: unable to launch localsend-cli.exe")
@@ -2065,6 +2099,12 @@ void InProcessDropExecutor::processNextSendJob()
         proc->deleteLater();
         if (!alive->load()) {
           return;
+        }
+        {
+          std::scoped_lock lock(m_mutex);
+          if (m_activeSendProcess == proc) {
+            m_activeSendProcess = nullptr;
+          }
         }
         const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
         const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
@@ -2347,11 +2387,14 @@ struct OutOfProcessDropExecutor::PlatformState
   HANDLE hStdoutRead = nullptr;
   std::thread readerThread;
 
-  void closePipeAndProcess(bool terminateIfRunning)
+  void closePipeAndProcess(bool terminateIfRunning, std::mutex &writeMutex)
   {
-    if (hStdinWrite) {
-      CloseHandle(hStdinWrite);
-      hStdinWrite = nullptr;
+    {
+      std::scoped_lock wlock(writeMutex);
+      if (hStdinWrite) {
+        CloseHandle(hStdinWrite);
+        hStdinWrite = nullptr;
+      }
     }
     if (hProcess) {
       if (WaitForSingleObject(hProcess, 500) != WAIT_OBJECT_0 && terminateIfRunning) {
@@ -2362,7 +2405,11 @@ struct OutOfProcessDropExecutor::PlatformState
       hProcess = nullptr;
     }
     if (readerThread.joinable()) {
-      readerThread.join();
+      if (readerThread.get_id() == std::this_thread::get_id()) {
+        readerThread.detach();
+      } else {
+        readerThread.join();
+      }
     }
     if (hStdoutRead) {
       CloseHandle(hStdoutRead);
@@ -2378,6 +2425,7 @@ OutOfProcessDropExecutor::OutOfProcessDropExecutor() : m_platform(std::make_uniq
 OutOfProcessDropExecutor::~OutOfProcessDropExecutor()
 {
   m_alive->store(false);
+  std::scoped_lock launchLock(m_launchMutex);
   {
     std::scoped_lock lock(m_mutex);
     m_shuttingDown = true;
@@ -2388,7 +2436,7 @@ OutOfProcessDropExecutor::~OutOfProcessDropExecutor()
     std::scoped_lock wlock(m_writeMutex);
     writeCommandLocked(shutdownCmd);
   }
-  m_platform->closePipeAndProcess(true);
+  m_platform->closePipeAndProcess(true, m_writeMutex);
 }
 
 void OutOfProcessDropExecutor::setHost(IDropExecutorHost *host)
@@ -2485,14 +2533,17 @@ void OutOfProcessDropExecutor::execute(const DropAgentCommand &cmd)
     return;
   case DropAgentCommandType::Shutdown:
     {
-      std::scoped_lock lock(m_mutex);
-      m_shuttingDown = true;
+      std::scoped_lock launchLock(m_launchMutex);
+      {
+        std::scoped_lock lock(m_mutex);
+        m_shuttingDown = true;
+      }
+      {
+        std::scoped_lock wlock(m_writeMutex);
+        writeCommandLocked(cmd);
+      }
+      m_platform->closePipeAndProcess(true, m_writeMutex);
     }
-    {
-      std::scoped_lock wlock(m_writeMutex);
-      writeCommandLocked(cmd);
-    }
-    m_platform->closePipeAndProcess(true);
     return;
   default:
     sendOrQueueCommand(cmd);
@@ -2565,7 +2616,7 @@ void OutOfProcessDropExecutor::sendOrQueueCommand(const DropAgentCommand &cmd)
     if (m_shuttingDown) {
       return;
     }
-    if (m_agentReady && m_platform->hStdinWrite != nullptr) {
+    if (m_agentReady) {
       canWriteNow = true;
     } else {
       // Transient per-frame moves/hover updates don't need queuing while agent is booting or desktop locked.
@@ -2587,17 +2638,19 @@ void OutOfProcessDropExecutor::sendOrQueueCommand(const DropAgentCommand &cmd)
 
 void OutOfProcessDropExecutor::ensureAgentRunning()
 {
-  std::unique_lock lock(m_mutex);
-  if (m_shuttingDown) {
-    return;
-  }
-  if (m_platform->hProcess != nullptr) {
-    if (WaitForSingleObject(m_platform->hProcess, 0) == WAIT_TIMEOUT) {
+  std::unique_lock launchLock(m_launchMutex);
+  {
+    std::scoped_lock lock(m_mutex);
+    if (m_shuttingDown) {
       return;
     }
-    lock.unlock();
-    m_platform->closePipeAndProcess(false);
-    lock.lock();
+  }
+  if (m_platform->hProcess != nullptr && WaitForSingleObject(m_platform->hProcess, 0) == WAIT_TIMEOUT) {
+    return;
+  }
+  if (m_platform->hProcess != nullptr || m_platform->readerThread.joinable()) {
+    m_platform->closePipeAndProcess(false, m_writeMutex);
+    std::scoped_lock lock(m_mutex);
     m_agentReady = false;
   }
 
@@ -2616,9 +2669,13 @@ void OutOfProcessDropExecutor::ensureAgentRunning()
   bool useTokenFallback = false;
   if (!acquireNonSystemUserPrimaryToken(userToken, useTokenFallback)) {
     // Lock screen or no active user session yet: retry non-blockingly without halting input sharing.
-    const int delay = std::min(5000, 1000 * (1 << std::min(m_restartAttempt, 3)));
-    ++m_restartAttempt;
-    lock.unlock();
+    int delay = 1000;
+    {
+      std::scoped_lock lock(m_mutex);
+      delay = std::min(5000, 1000 * (1 << std::min(m_restartAttempt, 3)));
+      ++m_restartAttempt;
+    }
+    launchLock.unlock();
     scheduleReconnect(delay);
     return;
   }
@@ -2706,9 +2763,13 @@ void OutOfProcessDropExecutor::ensureAgentRunning()
     CloseHandle(parentStdinWrite);
     CloseHandle(parentStdoutRead);
     LOG_WARN("FileDropBridge: failed to spawn user-session drop-agent (err=%lu)", lastErr);
-    const int delay = std::min(5000, 1000 * (1 << std::min(m_restartAttempt, 3)));
-    ++m_restartAttempt;
-    lock.unlock();
+    int delay = 1000;
+    {
+      std::scoped_lock lock(m_mutex);
+      delay = std::min(5000, 1000 * (1 << std::min(m_restartAttempt, 3)));
+      ++m_restartAttempt;
+    }
+    launchLock.unlock();
     scheduleReconnect(delay);
     return;
   }
@@ -2716,14 +2777,19 @@ void OutOfProcessDropExecutor::ensureAgentRunning()
   assignProcessHandleToKillOnCloseJob(pi.hProcess);
   CloseHandle(pi.hThread);
 
-  m_platform->hProcess = pi.hProcess;
-  m_platform->hStdinWrite = parentStdinWrite;
-  m_platform->hStdoutRead = parentStdoutRead;
-  m_agentReady = false;
-  m_reconnectScheduled = false;
-  ++m_sessionGeneration;
+  uint32_t sessionGen = 0;
+  {
+    std::scoped_lock lock(m_mutex);
+    std::scoped_lock wlock(m_writeMutex);
+    m_platform->hProcess = pi.hProcess;
+    m_platform->hStdinWrite = parentStdinWrite;
+    m_platform->hStdoutRead = parentStdoutRead;
+    m_agentReady = false;
+    m_reconnectScheduled = false;
+    sessionGen = ++m_sessionGeneration;
+  }
 
-  m_platform->readerThread = std::thread([this]() { readerLoop(); });
+  m_platform->readerThread = std::thread([this, sessionGen]() { readerLoop(sessionGen); });
   LOG_INFO("FileDropBridge: launched interactive user-session drop-agent (pid=%lu)", pi.dwProcessId);
 }
 
@@ -2763,15 +2829,37 @@ void OutOfProcessDropExecutor::scheduleReconnect(int delayMs)
   }
 }
 
-void OutOfProcessDropExecutor::readerLoop()
+void OutOfProcessDropExecutor::postToMainThread(std::function<void()> fn)
 {
+  if (!m_alive->load()) {
+    return;
+  }
+  if (auto *app = QCoreApplication::instance()) {
+    if (QThread::currentThread() == app->thread()) {
+      fn();
+    } else {
+      const auto alive = m_alive;
+      QMetaObject::invokeMethod(
+          app,
+          [alive, fn = std::move(fn)]() {
+            if (alive->load()) {
+              fn();
+            }
+          },
+          Qt::QueuedConnection
+      );
+    }
+  }
+}
+
+void OutOfProcessDropExecutor::readerLoop(uint32_t expectedGeneration)
+{
+  HANDLE readHandle = m_platform->hStdoutRead;
   std::string buffer;
   std::array<char, 4096> chunk{};
-  while (true) {
+  while (readHandle != nullptr) {
     DWORD bytesRead = 0;
-    const BOOL ok = ReadFile(
-        m_platform->hStdoutRead, chunk.data(), static_cast<DWORD>(chunk.size()), &bytesRead, nullptr
-    );
+    const BOOL ok = ReadFile(readHandle, chunk.data(), static_cast<DWORD>(chunk.size()), &bytesRead, nullptr);
     if (!ok || bytesRead == 0) {
       break;
     }
@@ -2798,22 +2886,38 @@ void OutOfProcessDropExecutor::readerLoop()
     }
   }
 
+  postToMainThread([this, expectedGeneration]() { handleAgentPipeClosed(expectedGeneration); });
+}
+
+void OutOfProcessDropExecutor::handleAgentPipeClosed(uint32_t expectedGeneration)
+{
   bool activeChanged = false;
   bool shouldRestart = false;
   int delayMs = 1000;
   {
-    std::scoped_lock lock(m_mutex);
-    m_agentReady = false;
-    if (m_activeTransfers) {
-      m_activeTransfers = false;
-      activeChanged = true;
+    std::scoped_lock launchLock(m_launchMutex);
+    {
+      std::scoped_lock lock(m_mutex);
+      if (m_shuttingDown || expectedGeneration != m_sessionGeneration) {
+        return;
+      }
     }
-    shouldRestart = !m_shuttingDown;
-    if (shouldRestart) {
-      delayMs = std::min(5000, 1000 * (1 << std::min(m_restartAttempt, 3)));
-      ++m_restartAttempt;
+    m_platform->closePipeAndProcess(false, m_writeMutex);
+    {
+      std::scoped_lock lock(m_mutex);
+      m_agentReady = false;
+      if (m_activeTransfers) {
+        m_activeTransfers = false;
+        activeChanged = true;
+      }
+      shouldRestart = !m_shuttingDown;
+      if (shouldRestart) {
+        delayMs = std::min(5000, 1000 * (1 << std::min(m_restartAttempt, 3)));
+        ++m_restartAttempt;
+      }
     }
   }
+
   if (auto *host = m_host.load()) {
     if (activeChanged) {
       host->onActiveTransfersChanged(false);
@@ -2870,7 +2974,6 @@ void OutOfProcessDropExecutor::replayCachedStateLocked()
 
 void OutOfProcessDropExecutor::handleAgentEvent(const DropAgentEvent &ev)
 {
-  IDropExecutorHost *host = m_host.load();
   switch (ev.type) {
   case DropAgentEventType::Ready:
     {
@@ -2880,6 +2983,25 @@ void OutOfProcessDropExecutor::handleAgentEvent(const DropAgentEvent &ev)
       m_restartAttempt = 0;
       replayCachedStateLocked();
     }
+    break;
+  case DropAgentEventType::ActiveTransfersChanged:
+    {
+      std::scoped_lock lock(m_mutex);
+      m_activeTransfers = ev.flag;
+    }
+    break;
+  default:
+    break;
+  }
+
+  postToMainThread([this, ev]() { dispatchHostEvent(ev); });
+}
+
+void OutOfProcessDropExecutor::dispatchHostEvent(const DropAgentEvent &ev)
+{
+  IDropExecutorHost *host = m_host.load();
+  switch (ev.type) {
+  case DropAgentEventType::Ready:
     if (host) {
       host->onExecutorReady();
     }
@@ -2900,10 +3022,6 @@ void OutOfProcessDropExecutor::handleAgentEvent(const DropAgentEvent &ev)
     }
     break;
   case DropAgentEventType::ActiveTransfersChanged:
-    {
-      std::scoped_lock lock(m_mutex);
-      m_activeTransfers = ev.flag;
-    }
     if (host) {
       host->onActiveTransfersChanged(ev.flag);
     }

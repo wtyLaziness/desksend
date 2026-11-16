@@ -90,8 +90,8 @@ public:
     ev.level = static_cast<int>(level);
     ev.text = message.toStdString();
     m_writer.writeEvent(ev);
-    // Stop propagation to console outputter so plain text never mixes onto JSON stdout pipe.
-    return true;
+    // Log::dispatch breaks out of its outputter loop when an outputter returns false.
+    return false;
   }
 
 private:

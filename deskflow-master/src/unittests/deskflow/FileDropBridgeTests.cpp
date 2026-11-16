@@ -580,18 +580,47 @@ private Q_SLOTS:
     using namespace deskflow;
 
     const std::vector<DropAgentCommand> commands = {
-        {DropAgentCommandType::UpdatePrimaryShape, 10, 20, 0, 0, 1920, 1080},
-        {DropAgentCommandType::PrimaryMouseMove, 500, 600, 0, 0, 1920, 1080, 0x06,
-         {{DragEdgeSide::Right, 16, 1064}}},
-        {DropAgentCommandType::PrimaryLeftMouseDown},
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::UpdatePrimaryShape;
+          c.x = 10;
+          c.y = 20;
+          c.aw = 1920;
+          c.ah = 1080;
+          return c;
+        }(),
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::PrimaryMouseMove;
+          c.x = 500;
+          c.y = 600;
+          c.aw = 1920;
+          c.ah = 1080;
+          c.activeSides = 0x06;
+          c.edgeSegments = {{DragEdgeSide::Right, 16, 1064}};
+          return c;
+        }(),
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::PrimaryLeftMouseDown;
+          return c;
+        }(),
         [] {
           DropAgentCommand c;
           c.type = DropAgentCommandType::LeftMouseUp;
           c.flag = true;
           return c;
         }(),
-        {DropAgentCommandType::HideSentinels},
-        {DropAgentCommandType::ShutdownSentinels},
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::HideSentinels;
+          return c;
+        }(),
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::ShutdownSentinels;
+          return c;
+        }(),
         [] {
           DropAgentCommand c;
           c.type = DropAgentCommandType::CancelNativeDrag;
@@ -606,15 +635,29 @@ private Q_SLOTS:
           c.y = 240;
           return c;
         }(),
-        {DropAgentCommandType::UpdateHoverCursor, 300, 400},
-        {DropAgentCommandType::HideHover},
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::UpdateHoverCursor;
+          c.x = 300;
+          c.y = 400;
+          return c;
+        }(),
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::HideHover;
+          return c;
+        }(),
         [] {
           DropAgentCommand c;
           c.type = DropAgentCommandType::BeginPreparing;
           c.fileCount = 3;
           return c;
         }(),
-        {DropAgentCommandType::CancelPreparing},
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::CancelPreparing;
+          return c;
+        }(),
         [] {
           DropAgentCommand c;
           c.type = DropAgentCommandType::TransferBegin;
@@ -635,6 +678,7 @@ private Q_SLOTS:
           c.type = DropAgentCommandType::TransferFinish;
           c.flag = true;
           c.dragActive = true;
+          c.success = true;
           c.text = "Done";
           return c;
         }(),
@@ -644,7 +688,11 @@ private Q_SLOTS:
           c.items = {"192.168.1.10", "2001:db8::5"};
           return c;
         }(),
-        {DropAgentCommandType::StopReceiver},
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::StopReceiver;
+          return c;
+        }(),
         [] {
           DropAgentCommand c;
           c.type = DropAgentCommandType::ReceiverAuthCommand;
@@ -680,7 +728,17 @@ private Q_SLOTS:
           c.items = {"C:/rx.txt"};
           return c;
         }(),
-        {DropAgentCommandType::Shutdown},
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::SetDragActive;
+          c.dragActive = true;
+          return c;
+        }(),
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::Shutdown;
+          return c;
+        }(),
     };
 
     for (const auto &cmd : commands) {
@@ -823,7 +881,7 @@ private Q_SLOTS:
     QCOMPARE(clientState->countCommands(deskflow::DropAgentCommandType::NudgeAcrossEdge), size_t{0});
     QCOMPARE(clientToServerMsgs.size(), size_t{1});
     QCOMPARE(clientToServerMsgs[0].first, 1u);
-    QCOMPARE(clientToServerMsgs[0].second, std::string("DESKSEND_CLIENT_PRECAPTURE:1:1919,500"));
+    QCOMPARE(clientToServerMsgs[0].second, std::string("DESKSEND_CLIENT_PRECAPTURE:R:1919,500"));
     clientState->clearCommands();
 
     // --- Phase 2: Server receives PreCapture and initiates two-phase handoff ---
@@ -1089,7 +1147,7 @@ private Q_SLOTS:
     // Case A: Client A -> Primary -> Client B, then Client B disconnects -> notify Client A
     MockDragClientProxy clientA("clientA", "10.0.0.11");
     MockDragClientProxy clientB("clientB", "10.0.0.22");
-    bridge.onServerReceiveClientDragInfo(&clientA, 1, "DESKSEND_CLIENT_PRECAPTURE:1:1919,500");
+    bridge.onServerReceiveClientDragInfo(&clientA, 1, "DESKSEND_CLIENT_PRECAPTURE:R:1919,500");
     bridge.prepareScreenSwitch(&clientA, nullptr);
     bridge.onScreenSwitch(&clientA, nullptr, 32, 500);
     bridge.onScreenSwitch(nullptr, &clientB, 32, 500);
@@ -1105,7 +1163,7 @@ private Q_SLOTS:
     bridge.resetAllStateForTesting();
     serverState->clearCommands();
     MockDragClientProxy clientA2("clientA", "10.0.0.11");
-    bridge.onServerReceiveClientDragInfo(&clientA2, 2, "DESKSEND_CLIENT_PRECAPTURE:1:1919,500");
+    bridge.onServerReceiveClientDragInfo(&clientA2, 2, "DESKSEND_CLIENT_PRECAPTURE:R:1919,500");
     bridge.prepareScreenSwitch(&clientA2, nullptr);
     bridge.onScreenSwitch(&clientA2, nullptr, 32, 500);
     QVERIFY(serverState->hoverVisible);
