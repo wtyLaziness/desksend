@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
+#include "deskflow/DragOverlayWidgets.h"
 #include "deskflow/DragProtocol.h"
 #include "deskflow/FileDropBridge.h"
 #include "base/Log.h"
@@ -362,6 +363,89 @@ private Q_SLOTS:
     QCOMPARE(
         deskflow::redactDragLogPayload("DESKSEND_SEND_CANCEL:secretC"), std::string("DESKSEND_SEND_CANCEL:<redacted>")
     );
+  }
+
+  void dragHoverIndicator_clampsToScreenEdgesAndFormatsCount()
+  {
+    QCOMPARE(
+        deskflow::formatDragHoverText(3), QCoreApplication::translate("DragHoverIndicator", "Drop to receive 3 file(s)")
+    );
+    QCOMPARE(
+        deskflow::formatDragHoverText(1), QCoreApplication::translate("DragHoverIndicator", "Drop to receive 1 file(s)")
+    );
+
+    const QRect bounds(0, 0, 1920, 1080);
+    const QSize capsuleSize(220, 36);
+    const QPoint normal = deskflow::clampDragHoverPosition(QPoint(500, 400), capsuleSize, bounds);
+    QCOMPARE(normal, QPoint(518, 422));
+
+    const QPoint bottomRight = deskflow::clampDragHoverPosition(QPoint(1915, 1075), capsuleSize, bounds);
+    QCOMPARE(bottomRight.x(), 1920 - 220);
+    QCOMPARE(bottomRight.y(), 1080 - 36);
+
+    const QPoint negativeOrigin =
+        deskflow::clampDragHoverPosition(QPoint(-1925, -10), capsuleSize, QRect(-1920, 0, 1920, 1080));
+    QCOMPARE(negativeOrigin.x(), -1920);
+    QCOMPARE(negativeOrigin.y(), 12);
+
+    deskflow::DragHoverIndicator indicator;
+    indicator.showHover(4, 100, 200);
+    QVERIFY(indicator.isVisible());
+    QCOMPARE(indicator.fileCount(), 4u);
+    QCOMPARE(indicator.cursorPos(), QPoint(100, 200));
+    indicator.updateCursor(250, 350);
+    QCOMPARE(indicator.cursorPos(), QPoint(250, 350));
+    indicator.hideHover();
+    QVERIFY(!indicator.isVisible());
+  }
+
+  void dragHoverAndTransferStatus_transitionsOnStartDropCancel()
+  {
+    QTemporaryDir fallbackDir;
+    QVERIFY(fallbackDir.isValid());
+    qputenv("DESKSEND_DEFAULT_DROP_DIR", fallbackDir.path().toUtf8());
+
+    auto &bridge = deskflow::FileDropBridge::instance();
+    bridge.onClientReceiveDragInfo(2, "DESKSEND_START:tokHover1");
+    QVERIFY(!bridge.isClientHoverVisible());
+
+    bridge.onClientReceiveDragInfo(2, "DESKSEND_HOVER_ENTER:120,240");
+    QVERIFY(bridge.isClientHoverVisible());
+    QCOMPARE(bridge.clientHoverFileCount(), 2u);
+    QCOMPARE(bridge.clientHoverCursorPos(), QPoint(120, 240));
+
+    bridge.onClientMouseMove(420, 560);
+    QCOMPARE(bridge.clientHoverCursorPos(), QPoint(420, 560));
+
+    bridge.onClientReceiveDragInfo(0, "DESKSEND_HOVER_LEAVE");
+    QVERIFY(!bridge.isClientHoverVisible());
+    QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Idle);
+
+    bridge.onClientReceiveDragInfo(3, "DESKSEND_START:tokHover2");
+    bridge.onClientReceiveDragInfo(3, "DESKSEND_HOVER_ENTER:50,60");
+    QVERIFY(bridge.isClientHoverVisible());
+
+    const QString tag2 = QString::fromStdString(deskflow::FileDropBridge::computeTokenTag("tokHover2"));
+    bridge.onClientReceiveDragInfo(3, "DESKSEND_DROP:300,400:" + tag2.toStdString());
+    QVERIFY(!bridge.isClientHoverVisible());
+    QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Preparing);
+    QCOMPARE(bridge.receiverPreparingFileCount(), 3u);
+
+    bridge.onClientReceiveDragInfo(0, "DESKSEND_CANCEL:tokHover2");
+    QVERIFY(!bridge.isClientHoverVisible());
+    QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Idle);
+
+    // Also test full Preparing -> Active -> Finished progression
+    bridge.onClientReceiveDragInfo(1, "DESKSEND_START:tokHover3");
+    const QString tag3 = QString::fromStdString(deskflow::FileDropBridge::computeTokenTag("tokHover3"));
+    bridge.onClientReceiveDragInfo(1, "DESKSEND_DROP:300,400:" + tag3.toStdString());
+    QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Preparing);
+    bridge.handleReceiveSessionStarted(1, tag3.toStdString());
+    QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Active);
+    bridge.handleReceiveSessionFinished(false);
+    QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Finished);
+
+    qunsetenv("DESKSEND_DEFAULT_DROP_DIR");
   }
 };
 

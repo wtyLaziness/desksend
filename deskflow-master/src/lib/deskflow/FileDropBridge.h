@@ -6,6 +6,9 @@
 
 #pragma once
 
+#include "deskflow/DragOverlayWidgets.h"
+
+#include <QPoint>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -68,6 +71,13 @@ public:
   void startReceiver(const std::string &serverHost);
   void stopReceiver();
   void onClientReceiveDragInfo(uint16_t fileCount, const std::string &info);
+  void onClientMouseMove(int32_t x, int32_t y);
+  bool isClientHoverVisible() const;
+  uint32_t clientHoverFileCount() const;
+  QPoint clientHoverCursorPos() const;
+  TransferStatusOverlay::Phase receiverOverlayPhase() const;
+  uint32_t receiverPreparingFileCount() const;
+  TransferStatusOverlay &overlayFor(bool receiving);
 
   // Resolves the Explorer folder or Desktop directory under (screenX, screenY) on Windows
   static std::string resolveDropTargetDirectory(
@@ -149,6 +159,9 @@ private:
   bool m_activeSessionFailed = false;
   bool m_activeReceiveSession = false;
   bool m_lastReportedActiveTransfers = false;
+  DragHoverIndicator m_clientHoverIndicator;
+  TransferStatusOverlay m_senderOverlay{false};
+  TransferStatusOverlay m_receiverOverlay{true};
   std::string m_stagingDir;
   std::string m_currentAllowedServerIp;
   bool m_receiverDesired = false;

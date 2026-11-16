@@ -45,6 +45,8 @@ add_library(${lib_name} STATIC ${PLATFORM_CODE}
   DisplayException.cpp
   DisplayException.h
   DisplayInvalidException.h
+  DragOverlayWidgets.cpp
+  DragOverlayWidgets.h
   DragProtocol.cpp
   DragProtocol.h
   FileDropBridge.cpp

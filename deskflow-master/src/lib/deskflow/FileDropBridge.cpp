@@ -10,6 +10,7 @@
 #include "base/Log.h"
 #include "common/Enums.h"
 #include "common/Settings.h"
+#include "deskflow/DragProtocol.h"
 #include "io/StreamFilter.h"
 #include "net/IDataSocket.h"
 #include "server/BaseClientProxy.h"
@@ -67,158 +68,19 @@ namespace deskflow {
 
 namespace {
 
-// 所有状态窗口操作均在 Qt 主线程执行，不抢走拖拽和键鼠输入的焦点。
-class TransferStatus : public QWidget
-{
-public:
-  explicit TransferStatus(bool receiving) : QWidget(nullptr, Qt::Tool | Qt::WindowStaysOnTopHint), m_receiving(receiving)
-  {
-    setWindowTitle(
-        receiving ? QCoreApplication::translate("FileDropBridge", "DeskSend · Receiving")
-                  : QCoreApplication::translate("FileDropBridge", "DeskSend · Sending")
-    );
-    setAttribute(Qt::WA_ShowWithoutActivating);
-    setWindowFlag(Qt::WindowDoesNotAcceptFocus);
-    setMinimumWidth(380);
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(18, 16, 18, 16);
-    m_title = new QLabel(this);
-    m_title->setWordWrap(true);
-    m_bar = new QProgressBar(this);
-    m_bar->setAccessibleName(QCoreApplication::translate("FileDropBridge", "File transfer progress"));
-    m_details = new QLabel(this);
-    m_details->setWordWrap(true);
-    layout->addWidget(m_title);
-    layout->addWidget(m_bar);
-    layout->addWidget(m_details);
-    m_hide.setSingleShot(true);
-    QObject::connect(&m_hide, &QTimer::timeout, this, &QWidget::hide);
-  }
-
-  void begin(const QString &description)
-  {
-    m_hide.stop();
-    m_elapsed.start();
-    m_done = 0;
-    m_total = 0;
-    m_title->setText(description);
-    m_bar->setRange(0, 0);
-    m_details->setText(QCoreApplication::translate("FileDropBridge", "Preparing transfer..."));
-    adjustSize();
-    if (auto *screen = QGuiApplication::primaryScreen()) {
-      const auto area = screen->availableGeometry();
-      move(area.right() - width() - 20, area.bottom() - height() - (m_receiving ? 200 : 20));
-    }
-    show();
-  }
-
-  void progress(quint64 done, quint64 total)
-  {
-    m_done = qMin(done, total);
-    m_total = total;
-    m_bar->setRange(0, 100);
-    m_bar->setValue(total ? static_cast<int>(100.0 * m_done / total) : 0);
-    const double seconds = qMax<qint64>(1, m_elapsed.elapsed()) / 1000.0;
-    const double speed = m_done / seconds;
-    const QString eta = speed > 0
-                            ? QCoreApplication::translate("FileDropBridge", "%1 s").arg(
-                                  static_cast<quint64>((total - m_done) / speed)
-                              )
-                            : QCoreApplication::translate("FileDropBridge", "estimating");
-    const QLocale locale;
-    m_details->setText(
-        QCoreApplication::translate("FileDropBridge", "%1 / %2\n%3/s · Elapsed %4 s · Remaining %5")
-            .arg(
-                locale.formattedDataSize(m_done), locale.formattedDataSize(total),
-                locale.formattedDataSize(static_cast<qint64>(speed))
-            )
-            .arg(static_cast<quint64>(seconds))
-            .arg(eta)
-    );
-  }
-
-  void finish(bool success, const QString &message)
-  {
-    if (success) {
-      progress(m_total, m_total);
-      m_bar->setValue(100);
-    } else {
-      m_bar->setRange(0, 100);
-    }
-    m_title->setText(message);
-    if (!success) {
-      m_details->setText(
-          QCoreApplication::translate(
-              "FileDropBridge", "Check network connection, receiver port, and localsend-cli.exe; see logs for details."
-          )
-      );
-    }
-    show();
-    m_hide.start(success ? 8000 : 20000);
-  }
-
-private:
-  bool m_receiving;
-  QLabel *m_title;
-  QLabel *m_details;
-  QProgressBar *m_bar;
-  QElapsedTimer m_elapsed;
-  QTimer m_hide;
-  quint64 m_done = 0;
-  quint64 m_total = 0;
-};
-
-TransferStatus &transferStatus(bool receiving)
-{
-  static auto *sender = new TransferStatus(false);
-  static auto *receiver = new TransferStatus(true);
-  return receiving ? *receiver : *sender;
-}
-
 void transferBegin(bool receiving, const QString &description)
 {
-  auto *app = QCoreApplication::instance();
-  if (!app || !app->inherits("QApplication")) {
-    return;
-  }
-  if (QThread::currentThread() != app->thread()) {
-    QMetaObject::invokeMethod(
-        app, [receiving, description]() { transferStatus(receiving).begin(description); }, Qt::QueuedConnection
-    );
-    return;
-  }
-  transferStatus(receiving).begin(description);
+  FileDropBridge::instance().overlayFor(receiving).begin(description);
 }
 
 void transferProgress(bool receiving, quint64 done, quint64 total)
 {
-  auto *app = QCoreApplication::instance();
-  if (!app || !app->inherits("QApplication")) {
-    return;
-  }
-  if (QThread::currentThread() != app->thread()) {
-    QMetaObject::invokeMethod(
-        app, [receiving, done, total]() { transferStatus(receiving).progress(done, total); }, Qt::QueuedConnection
-    );
-    return;
-  }
-  transferStatus(receiving).progress(done, total);
+  FileDropBridge::instance().overlayFor(receiving).progress(done, total);
 }
 
 void transferFinish(bool receiving, bool success, const QString &message)
 {
-  auto *app = QCoreApplication::instance();
-  if (!app || !app->inherits("QApplication")) {
-    return;
-  }
-  if (QThread::currentThread() != app->thread()) {
-    QMetaObject::invokeMethod(
-        app, [receiving, success, message]() { transferStatus(receiving).finish(success, message); },
-        Qt::QueuedConnection
-    );
-    return;
-  }
-  transferStatus(receiving).finish(success, message);
+  FileDropBridge::instance().overlayFor(receiving).finish(success, message);
 }
 
 uint64_t nowMs()
@@ -1730,10 +1592,58 @@ void FileDropBridge::queueReceiverAuthCommand(const std::string &command)
   }
 }
 
+void FileDropBridge::onClientMouseMove(int32_t x, int32_t y)
+{
+  m_clientHoverIndicator.updateCursor(x, y);
+}
+
+bool FileDropBridge::isClientHoverVisible() const
+{
+  return m_clientHoverIndicator.isVisible();
+}
+
+uint32_t FileDropBridge::clientHoverFileCount() const
+{
+  return m_clientHoverIndicator.fileCount();
+}
+
+QPoint FileDropBridge::clientHoverCursorPos() const
+{
+  return m_clientHoverIndicator.cursorPos();
+}
+
+TransferStatusOverlay::Phase FileDropBridge::receiverOverlayPhase() const
+{
+  return m_receiverOverlay.phase();
+}
+
+uint32_t FileDropBridge::receiverPreparingFileCount() const
+{
+  return m_receiverOverlay.preparingFileCount();
+}
+
+TransferStatusOverlay &FileDropBridge::overlayFor(bool receiving)
+{
+  return receiving ? m_receiverOverlay : m_senderOverlay;
+}
+
 void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::string &info)
 {
+  int32_t hx = 0;
+  int32_t hy = 0;
+  if (parseHoverEnterMessage(info, hx, hy)) {
+    m_clientHoverIndicator.showHover(fileCount, hx, hy);
+    return;
+  }
+  if (isHoverLeaveMessage(info)) {
+    m_clientHoverIndicator.hideHover();
+    return;
+  }
+
   const std::string dropPrefix = "DESKSEND_DROP:";
   if (info.rfind(dropPrefix, 0) == 0) {
+    m_clientHoverIndicator.hideHover();
+    m_receiverOverlay.beginPreparing(fileCount);
     const std::string coords = info.substr(dropPrefix.size());
     auto comma = coords.find(',');
     if (comma != std::string::npos) {
@@ -1784,6 +1694,8 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
     }
     LOG_INFO("FileDropBridge: incoming drag started (%u file(s))", fileCount);
   } else if (info.rfind("DESKSEND_CANCEL", 0) == 0) {
+    m_clientHoverIndicator.hideHover();
+    m_receiverOverlay.cancelPreparing();
     const std::string cancelPrefix = "DESKSEND_CANCEL:";
     if (info.rfind(cancelPrefix, 0) == 0) {
       std::string token = info.substr(cancelPrefix.size());
