@@ -587,8 +587,9 @@ void ServerProxyTests::sendDragInfo_writesDdrgFrameAndRedactsSensitiveLogs()
   stream.takeWritten();
 
   auto *logRecorder = new RecordingLogOutputter();
+  const auto prevFilter = CLOG->getFilter();
   CLOG->insert(logRecorder, true);
-  CLOG->setFilter(LogLevel::Info);
+  CLOG->setFilter(LogLevel::Level::Info);
 
   const std::string secretToken = "superSecretAuthToken1234";
   const std::string payload = "DESKSEND_SEND_DROP:100,200:" + secretToken + ":192.168.1.50";
@@ -622,6 +623,7 @@ void ServerProxyTests::sendDragInfo_writesDdrgFrameAndRedactsSensitiveLogs()
   QVERIFY(proxy.invokeHandleMessageIsOkay(reinterpret_cast<const uint8_t *>(kMsgDDragInfo)));
 
   CLOG->remove(logRecorder);
+  CLOG->setFilter(prevFilter);
   bool sawRedacted = false;
   for (const auto &line : logRecorder->m_messages) {
     QCOMPARE(line.find(secretToken), std::string::npos);
