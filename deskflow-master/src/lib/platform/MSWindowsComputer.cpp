@@ -1403,45 +1403,18 @@ void MSWindowsComputer::warpCursorNoFlush(int32_t x, int32_t y)
   // between the previous message and the following message.
   setThisCursorPos(x, y);
 
-  // check to see if the mouse pos was set correctly
-  POINT cursorPos;
-  getThisCursorPos(&cursorPos);
-
   // there is a bug or round error in SetCursorPos and GetCursorPos on
   // a high DPI setting. The check here is for Vista/7 login screen.
   // since this feature is mainly for client, so only check on client.
   if (!isPrimary()) {
+    POINT cursorPos;
+    getThisCursorPos(&cursorPos);
     if ((cursorPos.x != x) && (cursorPos.y != y)) {
       LOG_DEBUG("function 'SetCursorPos' failed; trying 'fakeMouseMove'");
       LOG_DEBUG("cursor pos %d, %d expected pos %d, %d", cursorPos.x, cursorPos.y, x, y);
-      // when at Vista/7 login screen, SetCursorPos does not work (which could
-      // be an MS security feature). instead we can use fakeMouseMove, which
-      // calls mouse_event. IMPORTANT: as of implementing this function, it has
-      // an annoying side effect; instead of the mouse returning to the correct
-      // exit point, it returns to the center of the computer. this could have
-      // something to do with the center computer warping technique used (see
-      // comments for onMouseMove definition).
       fakeMouseMove(x, y);
     }
   }
-
-  // yield the CPU.  there's a race condition when warping:
-  //   a hardware mouse event occurs
-  //   the mouse hook is not called because that process doesn't have the CPU
-  //   we send PRE_WARP, SetCursorPos(), send POST_WARP
-  //   we process all of those events and update m_x, m_y
-  //   we finish our time slice
-  //   the hook is called
-  //   the hook sends us a mouse event from the pre-warp position
-  //   we get the CPU
-  //   we compute a bogus warp
-  // we need the hook to process all mouse events that occur
-  // before we warp before we do the warp but i'm not sure how
-  // to guarantee that.  yielding the CPU here may reduce the
-  // chance of undesired behavior.  we'll also check for very
-  // large motions that look suspiciously like about half width
-  // or height of the computer.
-  Arch::sleep(0.0);
 
   // send an event that we can recognize after the mouse warp
   PostThreadMessage(GetCurrentThreadId(), DESKFLOW_MSG_POST_WARP, 0, 0);

@@ -14,6 +14,7 @@
 #include "deskflow/ProtocolUtil.h"
 #include "io/IStream.h"
 
+#include <algorithm>
 #include <cstring>
 
 //
@@ -38,7 +39,7 @@ ClientProxy1_0::ClientProxy1_0(const std::string &name, deskflow::IStream *strea
   m_events->addHandler(EventTypes::StreamOutputShutdown, stream->getEventTarget(), [this](const auto &) {
     handleWriteError();
   });
-  m_events->addHandler(EventTypes::Timer, this, [this](const auto &) { handleFlatline(); });
+  m_events->addHandler(EventTypes::Timer, this, [this](const auto &) { handleHeartbeatTimer(); });
 
   setHeartbeatRate(kHeartRate, kHeartRate * kHeartBeatsUntilDeath);
 
@@ -76,12 +77,16 @@ void ClientProxy1_0::removeHandlers()
 void ClientProxy1_0::addHeartbeatTimer()
 {
   if (m_heartbeatAlarm > 0.0) {
+    removeHeartbeatTimer();
+    m_heartbeatDirty = false;
+    m_lastHeartbeatActivity = std::chrono::steady_clock::now();
     m_heartbeatTimer = m_events->newOneShotTimer(m_heartbeatAlarm, this);
   }
 }
 
 void ClientProxy1_0::removeHeartbeatTimer()
 {
+  m_heartbeatDirty = false;
   if (m_heartbeatTimer != nullptr) {
     m_events->deleteTimer(m_heartbeatTimer);
     m_heartbeatTimer = nullptr;
@@ -90,9 +95,12 @@ void ClientProxy1_0::removeHeartbeatTimer()
 
 void ClientProxy1_0::resetHeartbeatTimer()
 {
-  // reset the alarm
-  removeHeartbeatTimer();
-  addHeartbeatTimer();
+  // 高频包路径仅刷新活跃时间戳，避免每次移动反复删建 EventQueueTimer。
+  m_heartbeatDirty = true;
+  m_lastHeartbeatActivity = std::chrono::steady_clock::now();
+  if (m_heartbeatTimer == nullptr) {
+    ClientProxy1_0::addHeartbeatTimer();
+  }
 }
 
 void ClientProxy1_0::resetHeartbeatRate()
@@ -200,6 +208,21 @@ void ClientProxy1_0::handleFlatline()
   // didn't get a heartbeat fast enough.  assume client is dead.
   LOG_DEBUG("client \"%s\" is dead", getName().c_str());
   disconnect();
+}
+
+void ClientProxy1_0::handleHeartbeatTimer()
+{
+  if (m_heartbeatDirty && m_heartbeatAlarm > 0.0) {
+    const auto elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - m_lastHeartbeatActivity).count();
+    if (elapsed < m_heartbeatAlarm) {
+      const double remaining = std::max(0.05, m_heartbeatAlarm - elapsed);
+      removeHeartbeatTimer();
+      m_heartbeatTimer = m_events->newOneShotTimer(remaining, this);
+      return;
+    }
+  }
+  handleFlatline();
 }
 
 bool ClientProxy1_0::getClipboard(ClipboardID id, IClipboard *clipboard) const

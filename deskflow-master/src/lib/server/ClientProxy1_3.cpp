@@ -62,15 +62,14 @@ void ClientProxy1_3::setHeartbeatRate(double rate, double)
 
 void ClientProxy1_3::resetHeartbeatTimer()
 {
-  // reset the alarm but not the keep alive timer
-  ClientProxy1_2::removeHeartbeatTimer();
-  ClientProxy1_2::addHeartbeatTimer();
+  // reset the alarm in O(1) without touching the keep alive timer
+  ClientProxy1_2::resetHeartbeatTimer();
 }
 
 void ClientProxy1_3::addHeartbeatTimer()
 {
   // create and install a timer to periodically send keep alives
-  if (m_keepAliveRate > 0.0) {
+  if (m_keepAliveRate > 0.0 && m_keepAliveTimer == nullptr) {
     m_keepAliveTimer = m_events->newTimer(m_keepAliveRate, nullptr);
     m_events->addHandler(EventTypes::Timer, m_keepAliveTimer, [this](const auto &) { keepAlive(); });
   }

@@ -21,6 +21,8 @@
 #include "platform/MSWindowsComputer.h"
 #include "platform/MSWindowsHook.h"
 
+#include <algorithm>
+#include <cmath>
 #include <malloc.h>
 
 // these are only defined when WINVER >= 0x0500
@@ -453,55 +455,42 @@ LRESULT CALLBACK MSWindowsDesks::secondaryDeskProc(HWND hwnd, UINT msg, WPARAM w
   return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
+std::pair<uint32_t, uint32_t> MSWindowsDesks::normalizeVirtualDesktopPoint(
+    int32_t x, int32_t y, int32_t vx, int32_t vy, int32_t vw, int32_t vh
+)
+{
+  auto normalizeAxis = [](int32_t coord, int32_t origin, int32_t extent) -> uint32_t {
+    if (extent <= 1) {
+      return 0;
+    }
+    const double clamped = std::clamp(static_cast<double>(coord - origin), 0.0, static_cast<double>(extent - 1));
+    const long long scaled = std::llround((clamped * 65535.0) / static_cast<double>(extent - 1));
+    return static_cast<uint32_t>(std::clamp<long long>(scaled, 0, 65535));
+  };
+  return {normalizeAxis(x, vx, vw), normalizeAxis(y, vy, vh)};
+}
+
 void MSWindowsDesks::deskMouseMove(int32_t x, int32_t y) const
 {
-  // when using absolute positioning with mouse_event(),
-  // the normalized device coordinates range over only
-  // the primary computer.
-  int32_t w = GetSystemMetrics(SM_CXSCREEN);
-  int32_t h = GetSystemMetrics(SM_CYSCREEN);
-  DWORD nx = w > 1 ? (DWORD)((65535.0f * x) / (w - 1) + 0.5f) : 0;
-  DWORD ny = h > 1 ? (DWORD)((65535.0f * y) / (h - 1) + 0.5f) : 0;
-  if (!send_mouse_input(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, nx, ny, 0)) {
+  // 使用全虚拟桌面坐标与双精度归一化映射，兼容负坐标副屏及高 DPI 多显示器边界。
+  const int32_t vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+  const int32_t vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+  const int32_t vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+  const int32_t vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+  const auto [nx, ny] = normalizeVirtualDesktopPoint(x, y, vx, vy, vw, vh);
+  if (!send_mouse_input(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, nx, ny, 0)) {
     SetCursorPos(x, y);
   }
 }
 
 void MSWindowsDesks::deskMouseRelativeMove(int32_t dx, int32_t dy) const
 {
-  // relative moves are subject to cursor acceleration which we don't
-  // want.so we disable acceleration, do the relative move, then
-  // restore acceleration.  there's a slight chance we'll end up in
-  // the wrong place if the user moves the cursor using this system's
-  // mouse while simultaneously moving the mouse on the server
-  // system.  that defeats the purpose of deskflow so we'll assume
-  // that won't happen.  even if it does, the next mouse move will
-  // correct the position.
-
-  // save mouse speed & acceleration
-  int oldSpeed[4];
-  bool accelChanged =
-      SystemParametersInfo(SPI_GETMOUSE, 0, oldSpeed, 0) && SystemParametersInfo(SPI_GETMOUSESPEED, 0, oldSpeed + 3, 0);
-
-  // use 1:1 motion
-  if (accelChanged) {
-    int newSpeed[4] = {0, 0, 0, 1};
-    accelChanged = SystemParametersInfo(SPI_SETMOUSE, 0, newSpeed, 0) ||
-                   SystemParametersInfo(SPI_SETMOUSESPEED, 0, newSpeed + 3, 0);
-  }
-
-  // move relative to mouse position
+  // 避免高频相对移动包反复调用同步 SystemParametersInfo(SPI_GET/SETMOUSE) 造成线程卡顿。
   if (!send_mouse_input(MOUSEEVENTF_MOVE, dx, dy, 0)) {
     POINT pos{};
     if (GetCursorPos(&pos)) {
       SetCursorPos(pos.x + dx, pos.y + dy);
     }
-  }
-
-  // restore mouse speed & acceleration
-  if (accelChanged) {
-    SystemParametersInfo(SPI_SETMOUSE, 0, oldSpeed, 0);
-    SystemParametersInfo(SPI_SETMOUSESPEED, 0, oldSpeed + 3, 0);
   }
 }
 

@@ -162,6 +162,35 @@ private Q_SLOTS:
     QVERIFY(!IsWindowVisible(realDesk->m_window));
   }
 
+  void defaultShapeYIsZero()
+  {
+    DummyScreenSaver screensaver;
+    MSWindowsDesks desks(false, false, &screensaver, m_events.get(), new NoopJob());
+    QCOMPARE(desks.m_y, 0);
+  }
+
+  void normalizeVirtualDesktopPoint_handlesNegativeOriginMonitors()
+  {
+    // Two 1920x1080 monitors side-by-side with the left monitor at x=-1920..0
+    const auto topLeft = MSWindowsDesks::normalizeVirtualDesktopPoint(-1920, 0, -1920, 0, 3840, 1080);
+    QCOMPARE(topLeft.first, 0u);
+    QCOMPARE(topLeft.second, 0u);
+
+    const auto bottomRight = MSWindowsDesks::normalizeVirtualDesktopPoint(1919, 1079, -1920, 0, 3840, 1080);
+    QCOMPARE(bottomRight.first, 65535u);
+    QCOMPARE(bottomRight.second, 65535u);
+
+    const auto midLeft = MSWindowsDesks::normalizeVirtualDesktopPoint(-960, 540, -1920, 0, 3840, 1080);
+    QCOMPARE(midLeft.first, 16388u);
+    QCOMPARE(midLeft.second, 32798u);
+    QVERIFY(midLeft.first <= 65535u);
+    QVERIFY(midLeft.second <= 65535u);
+
+    const auto clamped = MSWindowsDesks::normalizeVirtualDesktopPoint(-2500, 2000, -1920, 0, 3840, 1080);
+    QCOMPARE(clamped.first, 0u);
+    QCOMPARE(clamped.second, 65535u);
+  }
+
 private:
   Arch m_arch;
   Log m_log;

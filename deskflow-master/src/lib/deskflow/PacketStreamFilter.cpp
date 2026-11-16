@@ -9,7 +9,9 @@
 #include "base/IEventQueue.h"
 #include "deskflow/ProtocolTypes.h"
 
+#include <array>
 #include <cstring>
+#include <vector>
 
 //
 // PacketStreamFilter
@@ -68,16 +70,31 @@ uint32_t PacketStreamFilter::read(void *buffer, uint32_t n)
 
 void PacketStreamFilter::write(const void *buffer, uint32_t count)
 {
-  // write the length of the payload
-  uint8_t length[4];
-  length[0] = (uint8_t)((count >> 24) & 0xff);
-  length[1] = (uint8_t)((count >> 16) & 0xff);
-  length[2] = (uint8_t)((count >> 8) & 0xff);
-  length[3] = (uint8_t)(count & 0xff);
-  getStream()->write(length, sizeof(length));
+  const size_t total = sizeof(uint32_t) + static_cast<size_t>(count);
+  auto writeHeader = [count](uint8_t *dst) {
+    dst[0] = static_cast<uint8_t>((count >> 24) & 0xff);
+    dst[1] = static_cast<uint8_t>((count >> 16) & 0xff);
+    dst[2] = static_cast<uint8_t>((count >> 8) & 0xff);
+    dst[3] = static_cast<uint8_t>(count & 0xff);
+  };
 
-  // write the payload
-  getStream()->write(buffer, count);
+  // 将 4 字节包长与负载合并为单次底层写入，避免短输入包触发双倍 TLS 记录开销。
+  std::array<uint8_t, 4096> stackBuffer;
+  if (total <= stackBuffer.size()) {
+    writeHeader(stackBuffer.data());
+    if (count > 0 && buffer != nullptr) {
+      std::memcpy(stackBuffer.data() + sizeof(uint32_t), buffer, count);
+    }
+    getStream()->write(stackBuffer.data(), static_cast<uint32_t>(total));
+    return;
+  }
+
+  std::vector<uint8_t> heapBuffer(total);
+  writeHeader(heapBuffer.data());
+  if (count > 0 && buffer != nullptr) {
+    std::memcpy(heapBuffer.data() + sizeof(uint32_t), buffer, count);
+  }
+  getStream()->write(heapBuffer.data(), static_cast<uint32_t>(total));
 }
 
 void PacketStreamFilter::shutdownInput()

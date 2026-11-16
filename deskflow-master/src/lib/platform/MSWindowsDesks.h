@@ -13,8 +13,10 @@
 #include "mt/CondVar.h"
 #include "mt/Mutex.h"
 
+#include <cstdint>
 #include <map>
 #include <string>
+#include <utility>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -58,6 +60,9 @@ public:
   */
   MSWindowsDesks(bool isPrimary, bool useHooks, const IScreenSaver *screensaver, IEventQueue *events, IJob *updateKeys);
   ~MSWindowsDesks();
+
+  static std::pair<uint32_t, uint32_t>
+  normalizeVirtualDesktopPoint(int32_t x, int32_t y, int32_t vx, int32_t vy, int32_t vw, int32_t vh);
 
   //! @name manipulators
   //@{
@@ -251,7 +256,7 @@ private:
 
   // computer shape stuff
   int32_t m_x = 0;
-  int32_t m_y = 9;
+  int32_t m_y = 0;
   int32_t m_w = 0;
   int32_t m_h = 0;
   int32_t m_xCenter = 0;

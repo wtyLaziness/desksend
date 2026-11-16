@@ -63,6 +63,7 @@ protected:
 
   virtual ConnectionResult parseHandshakeMessage(const uint8_t *code);
   virtual ConnectionResult parseMessage(const uint8_t *code);
+  ConnectionResult handleMessage(const uint8_t *code);
   void keyDown(uint16_t id, uint16_t mask, uint16_t button, const std::string &lang);
   void keyRepeat(uint16_t id, uint16_t mask, uint16_t count, uint16_t button, const std::string &lang);
 
@@ -86,7 +87,6 @@ private:
 
   // event handlers
   void handleData();
-  ConnectionResult handleMessage(const uint8_t *code);
   void handleKeepAliveAlarm();
   void requestDisconnect(const char *message);
   void requestRefuseConnection(deskflow::core::ConnectionRefusal reason, const char *message);

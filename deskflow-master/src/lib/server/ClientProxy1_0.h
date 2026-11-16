@@ -12,6 +12,8 @@
 #include "deskflow/ProtocolTypes.h"
 #include "server/ClientProxy.h"
 
+#include <chrono>
+
 class Event;
 class EventQueueTimer;
 class IEventQueue;
@@ -74,6 +76,7 @@ private:
   void handleDisconnect();
   void handleWriteError();
   void handleFlatline();
+  void handleHeartbeatTimer();
 
   bool recvInfo();
   bool recvGrabClipboard();
@@ -98,6 +101,8 @@ private:
   ClientInfo m_info;
   double m_heartbeatAlarm;
   EventQueueTimer *m_heartbeatTimer = nullptr;
+  bool m_heartbeatDirty = false;
+  std::chrono::steady_clock::time_point m_lastHeartbeatActivity{};
   MessageParser m_parser = &ClientProxy1_0::parseHandshakeMessage;
   IEventQueue *m_events;
 };

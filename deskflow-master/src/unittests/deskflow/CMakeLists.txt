@@ -54,6 +54,14 @@ create_test(
 )
 
 create_test(
+  NAME PacketStreamFilterTests
+  DEPENDS app
+  LIBS arch base io ${extra_libs}
+  SOURCE PacketStreamFilterTests.cpp
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/deskflow"
+)
+
+create_test(
   NAME FileDropBridgeTests
   DEPENDS app
   LIBS arch base io mt net server ${extra_libs}

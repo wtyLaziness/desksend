@@ -11,8 +11,12 @@
 #include "client/Client.h"
 #include "client/ServerProxy.h"
 #include "deskflow/AppUtil.h"
+#include "deskflow/Computer.h"
+#include "deskflow/IPlatformComputer.h"
 #include "deskflow/ProtocolTypes.h"
 #include "io/IStream.h"
+#include "net/ISocketFactory.h"
+#include "net/NetworkAddress.h"
 
 #include <QTest>
 
@@ -79,8 +83,18 @@ public:
     return static_cast<uint32_t>(bytesToRead);
   }
 
-  void write(const void *, uint32_t) override
+  void write(const void *buffer, uint32_t size) override
   {
+    if (buffer != nullptr && size > 0) {
+      m_written.append(static_cast<const char *>(buffer), size);
+    }
+  }
+
+  std::string takeWritten()
+  {
+    auto out = std::move(m_written);
+    m_written.clear();
+    return out;
   }
 
   void flush() override
@@ -117,6 +131,7 @@ public:
 
 private:
   std::deque<std::string> m_chunks;
+  std::string m_written;
   bool m_inputShutdown = false;
 };
 
@@ -244,6 +259,203 @@ public:
   {
     return parseHandshakeMessage(code) == ConnectionResult::Disconnect;
   }
+
+  bool invokeHandleMessageIsOkay(const uint8_t *code)
+  {
+    return handleMessage(code) == ConnectionResult::Okay;
+  }
+};
+
+class NoopSocketFactory final : public ISocketFactory
+{
+public:
+  IDataSocket *create(IArchNetwork::AddressFamily, SecurityLevel) const override
+  {
+    return nullptr;
+  }
+  IListenSocket *createListen(IArchNetwork::AddressFamily, SecurityLevel) const override
+  {
+    return nullptr;
+  }
+};
+
+class StubPlatformComputer final : public IPlatformComputer
+{
+public:
+  explicit StubPlatformComputer(const IEventQueue *events) : IPlatformComputer(events)
+  {
+  }
+
+  void *getEventTarget() const override
+  {
+    return const_cast<StubPlatformComputer *>(this);
+  }
+  bool getClipboard(ClipboardID, IClipboard *) const override
+  {
+    return false;
+  }
+  void getShape(int32_t &x, int32_t &y, int32_t &width, int32_t &height) const override
+  {
+    x = 0;
+    y = 0;
+    width = 1920;
+    height = 1080;
+  }
+  void getCursorPos(int32_t &x, int32_t &y) const override
+  {
+    x = 0;
+    y = 0;
+  }
+  void reconfigure(uint32_t) override
+  {
+  }
+  uint32_t activeSides() override
+  {
+    return 0;
+  }
+  void warpCursor(int32_t, int32_t) override
+  {
+  }
+  uint32_t registerHotKey(KeyID, KeyModifierMask) override
+  {
+    return 0;
+  }
+  void unregisterHotKey(uint32_t) override
+  {
+  }
+  void fakeInputBegin() override
+  {
+  }
+  void fakeInputEnd() override
+  {
+  }
+  int32_t getJumpZoneSize() const override
+  {
+    return 1;
+  }
+  bool isAnyMouseButtonDown(uint32_t &) const override
+  {
+    return false;
+  }
+  void getCursorCenter(int32_t &x, int32_t &y) const override
+  {
+    x = 960;
+    y = 540;
+  }
+  void fakeMouseButton(ButtonID, bool) override
+  {
+  }
+  void fakeMouseMove(int32_t, int32_t) override
+  {
+  }
+  void fakeMouseRelativeMove(int32_t, int32_t) const override
+  {
+  }
+  void fakeMouseWheel(ScrollDelta) const override
+  {
+  }
+  void updateKeyMap() override
+  {
+  }
+  void updateKeyState() override
+  {
+  }
+  void setHalfDuplexMask(KeyModifierMask) override
+  {
+  }
+  void fakeKeyDown(KeyID, KeyModifierMask, KeyButton, const std::string &) override
+  {
+  }
+  bool fakeKeyRepeat(KeyID, KeyModifierMask, int32_t, KeyButton, const std::string &) override
+  {
+    return false;
+  }
+  bool fakeKeyUp(KeyButton) override
+  {
+    return false;
+  }
+  void fakeAllKeysUp() override
+  {
+  }
+  bool fakeCtrlAltDel() override
+  {
+    return false;
+  }
+  bool fakeMediaKey(KeyID) override
+  {
+    return false;
+  }
+  bool isKeyDown(KeyButton) const override
+  {
+    return false;
+  }
+  KeyModifierMask getActiveModifiers() const override
+  {
+    return 0;
+  }
+  KeyModifierMask pollActiveModifiers() const override
+  {
+    return 0;
+  }
+  int32_t pollActiveGroup() const override
+  {
+    return 0;
+  }
+  void pollPressedKeys(KeyButtonSet &) const override
+  {
+  }
+  void enable() override
+  {
+  }
+  void disable() override
+  {
+  }
+  void enter() override
+  {
+  }
+  bool canLeave() override
+  {
+    return true;
+  }
+  void leave() override
+  {
+  }
+  bool setClipboard(ClipboardID, const IClipboard *) override
+  {
+    return false;
+  }
+  void checkClipboards() override
+  {
+  }
+  void openScreensaver(bool) override
+  {
+  }
+  void closeScreensaver() override
+  {
+  }
+  void screensaver(bool) override
+  {
+  }
+  void resetOptions() override
+  {
+  }
+  void setOptions(const OptionsList &) override
+  {
+  }
+  void setSequenceNumber(uint32_t) override
+  {
+  }
+  std::string getSecureInputApp() const override
+  {
+    return {};
+  }
+  bool isPrimary() const override
+  {
+    return false;
+  }
+  void handleSystemEvent(const Event &) override
+  {
+  }
 };
 
 Client *undereferenceableClient()
@@ -326,6 +538,23 @@ void ServerProxyTests::parseHandshakeMessage_protocolError_queuesRefusalRequest(
   QVERIFY(request->kind() == Client::DisconnectRequest::Kind::Refuse);
   QVERIFY(request->refusalReason() == deskflow::core::ConnectionRefusal::ProtocolError);
   QCOMPARE(QString::fromUtf8(request->message()), QStringLiteral("server reported a protocol error"));
+}
+
+void ServerProxyTests::handleMessage_doesNotSendNoopPerMouseMove()
+{
+  RecordingEventQueue events;
+  FakeStream stream;
+  auto *computer = new deskflow::Computer(new StubPlatformComputer(&events), &events);
+  Client client(&events, "client", NetworkAddress("127.0.0.1", 24800), new NoopSocketFactory(), computer);
+  TestServerProxy proxy(&client, &stream, &events);
+  stream.takeWritten();
+
+  // kMsgDMouseMove payload: (10, 20) in big-endian int16_t
+  stream.push(std::string("\x00\x0a\x00\x14", 4));
+  QVERIFY(proxy.invokeHandleMessageIsOkay(reinterpret_cast<const uint8_t *>(kMsgDMouseMove)));
+
+  const std::string written = stream.takeWritten();
+  QCOMPARE(written.find(std::string(kMsgCNoop, 4)), std::string::npos);
 }
 
 QTEST_MAIN(ServerProxyTests)

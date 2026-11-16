@@ -15,7 +15,9 @@
 #include "server/ClientProxy1_7.h"
 #include "server/ClientProxy1_8.h"
 
+#include <chrono>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -220,6 +222,126 @@ void ClientProxyTests::keyUp()
   ProxyUnderTest test(minor);
   test.proxy->keyUp(kKey, kMask, kButton);
   QCOMPARE(test.stream->take(), expected);
+}
+
+namespace {
+
+class CountingEventQueue final : public MockEventQueue
+{
+public:
+  EventQueueTimer *newOneShotTimer(double, void *) override
+  {
+    ++m_newOneShotTimerCalls;
+    auto *timer = reinterpret_cast<EventQueueTimer *>(static_cast<uintptr_t>(++m_nextTimerId));
+    m_activeTimers.insert(timer);
+    return timer;
+  }
+
+  void deleteTimer(EventQueueTimer *timer) override
+  {
+    ++m_deleteTimerCalls;
+    m_activeTimers.erase(timer);
+  }
+
+  void addHandler(EventTypes type, void *target, const EventHandler &handler) override
+  {
+    if (type == EventTypes::Timer && target != nullptr) {
+      m_timerHandlers[target] = handler;
+    }
+  }
+
+  void removeHandler(EventTypes type, void *target) override
+  {
+    if (type == EventTypes::Timer) {
+      m_timerHandlers.erase(target);
+    }
+  }
+
+  void addEvent(Event &&event) override
+  {
+    if (event.getType() == EventTypes::ClientProxyDisconnected) {
+      ++m_disconnectEvents;
+    }
+    Event::deleteData(event);
+  }
+
+  bool fireTimer(void *target)
+  {
+    auto it = m_timerHandlers.find(target);
+    if (it == m_timerHandlers.end()) {
+      return false;
+    }
+    const auto cb = it->second;
+    cb(Event(EventTypes::Timer, target));
+    return true;
+  }
+
+  int newOneShotTimerCalls() const
+  {
+    return m_newOneShotTimerCalls;
+  }
+  int deleteTimerCalls() const
+  {
+    return m_deleteTimerCalls;
+  }
+  size_t activeTimerCount() const
+  {
+    return m_activeTimers.size();
+  }
+  int disconnectEvents() const
+  {
+    return m_disconnectEvents;
+  }
+
+private:
+  uintptr_t m_nextTimerId = 0x1000;
+  int m_newOneShotTimerCalls = 0;
+  int m_deleteTimerCalls = 0;
+  int m_disconnectEvents = 0;
+  std::set<EventQueueTimer *> m_activeTimers;
+  std::map<void *, EventHandler> m_timerHandlers;
+};
+
+class TestClientProxy1_6 final : public ClientProxy1_6
+{
+public:
+  using ClientProxy1_6::ClientProxy1_6;
+  using ClientProxy1_6::addHeartbeatTimer;
+  using ClientProxy1_6::resetHeartbeatTimer;
+  using ClientProxy1_6::setHeartbeatRate;
+};
+
+} // namespace
+
+void ClientProxyTests::resetHeartbeatTimer_reusesTimersWithoutChurn()
+{
+  CountingEventQueue events;
+  auto *stream = new CapturingStream;
+  auto *server = reinterpret_cast<Server *>(0x1);
+  TestClientProxy1_6 proxy("client", stream, server, &events);
+  proxy.setHeartbeatRate(1.0, 5.0);
+  proxy.addHeartbeatTimer();
+
+  const int initialNewCalls = events.newOneShotTimerCalls();
+  QCOMPARE(events.deleteTimerCalls(), 0);
+  QCOMPARE(events.activeTimerCount(), static_cast<size_t>(1));
+
+  for (int i = 0; i < 50; ++i) {
+    proxy.resetHeartbeatTimer();
+  }
+
+  QCOMPARE(events.deleteTimerCalls(), 0);
+  QCOMPARE(events.newOneShotTimerCalls(), initialNewCalls);
+  QCOMPARE(events.activeTimerCount(), static_cast<size_t>(1));
+
+  // Firing the timer right after activity must re-arm for remaining alarm without disconnecting
+  QVERIFY(events.fireTimer(&proxy));
+  QCOMPARE(events.disconnectEvents(), 0);
+  QCOMPARE(events.activeTimerCount(), static_cast<size_t>(1));
+
+  // Firing again with no intervening activity must mark the client flatlined
+  QVERIFY(events.fireTimer(&proxy));
+  QCOMPARE(events.disconnectEvents(), 1);
 }
 
 QTEST_MAIN(ClientProxyTests)

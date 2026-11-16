@@ -22,6 +22,7 @@ private Q_SLOTS:
   void keyRepeat();
   void keyUp_data();
   void keyUp();
+  void resetHeartbeatTimer_reusesTimersWithoutChurn();
 
 private:
   Log m_log;
