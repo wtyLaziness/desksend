@@ -23,3 +23,5 @@ deskflow-bin/
 !.env.sample
 __pycache__/
 *.pyc
+.worktrees/
+.superpowers/
