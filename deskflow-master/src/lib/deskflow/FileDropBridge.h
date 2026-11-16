@@ -7,21 +7,21 @@
 #pragma once
 
 #include "deskflow/DragOverlayWidgets.h"
+#include "deskflow/DropExecutor.h"
 
 #include <QPoint>
 #include <cstdint>
-#include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
 class BaseClientProxy;
-class QProcess;
 class FileDropBridgeTests;
 
 namespace deskflow {
 
-class FileDropBridge
+class FileDropBridge final : public IDropExecutorHost
 {
 public:
   static FileDropBridge &instance();
@@ -96,42 +96,34 @@ public:
   // Computes a 16-hex-char SHA-256 correlation tag for a transfer auth token
   static std::string computeTokenTag(const std::string &token);
 
+  // Testing hooks
+  void setDropExecutorForTesting(std::unique_ptr<IDropExecutor> executor);
+  InProcessDropExecutor *inProcessExecutorForTesting() const;
+
 private:
   friend class ::FileDropBridgeTests;
 
-  struct SendJob
-  {
-    std::string targetIp;
-    std::vector<std::string> files;
-    std::string authToken;
-  };
+  FileDropBridge();
+  ~FileDropBridge() override;
 
-  struct DropTargetEntry
-  {
-    std::string dir;
-    bool copyToClipboard = false;
-    uint64_t timestampMs = 0;
-    std::string tokenTag;
-  };
+  // IDropExecutorHost implementation
+  void onPendingDragCaptured(std::vector<std::string> files, int sideIndex, int32_t x, int32_t y) override;
+  void onDragCancellationCompleted(bool stillPressed) override;
+  void onPendingDragCleared() override;
+  void onActiveTransfersChanged(bool active) override;
+  void onExecutorLog(int level, const std::string &message) override;
 
-  FileDropBridge() = default;
-  ~FileDropBridge();
-
-  void startReceiverInternal(const std::string &serverHost, bool isRestart);
-  void sendFilesViaLocalSend(const std::string &targetIp, const std::vector<std::string> &files, const std::string &authToken);
-  void processNextSendJob();
-  void queueReceiverAuthCommand(const std::string &command);
-  void handleReceivedFileLine(const std::string &filePath);
-  void handleReceiveFileFailedLine();
+  IDropExecutor *executor() const;
   void handleReceiveSessionStarted(size_t expectedFiles, const std::string &tokenTag = {});
   void handleReceiveSessionFinished(bool cancelled);
-  void finalizeActiveSession();
-  void notifyActiveTransfersChangedLocked();
   void setDragCancellationState(bool inProgress, bool complete);
 
   mutable std::mutex m_mutex;
+  std::unique_ptr<IDropExecutor> m_executor;
+
   std::vector<std::string> m_pendingFiles;
   uint64_t m_pendingTimestampMs = 0;
+  int m_lastCapturedSide = 0;
   bool m_canCaptureDrag = false;
   bool m_sourceButtonNeedsRelease = false;
   bool m_dragCancellationInProgress = false;
@@ -141,33 +133,6 @@ private:
   std::vector<std::string> m_activeDragFiles;
   std::string m_activeDragToken;
   BaseClientProxy *m_dragTargetClient = nullptr;
-
-  // Server-side serial send queue
-  std::deque<SendJob> m_sendQueue;
-  bool m_sendingInProgress = false;
-
-  // Client-side drop target state & session queue
-  std::string m_defaultDropFallbackDir;
-  std::string m_lastResolvedDropDir;
-  std::deque<std::string> m_pendingReceiverAuthLines;
-  std::deque<DropTargetEntry> m_pendingDropTargets;
-  DropTargetEntry m_activeSessionTarget;
-  std::vector<std::string> m_activeSessionPlacedFiles;
-  size_t m_activeSessionExpectedFiles = 0;
-  size_t m_activeSessionHandledFiles = 0;
-  bool m_activeSessionEnded = false;
-  bool m_activeSessionFailed = false;
-  bool m_activeReceiveSession = false;
-  bool m_lastReportedActiveTransfers = false;
-  DragHoverIndicator m_clientHoverIndicator;
-  TransferStatusOverlay m_senderOverlay{false};
-  TransferStatusOverlay m_receiverOverlay{true};
-  std::string m_stagingDir;
-  std::string m_currentAllowedServerIp;
-  bool m_receiverDesired = false;
-  uint32_t m_receiverGeneration = 0;
-  int m_receiverRestartAttempt = 0;
-  QProcess *m_receiverProcess = nullptr;
 };
 
 } // namespace deskflow

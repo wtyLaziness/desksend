@@ -62,6 +62,20 @@ create_test(
 )
 
 create_test(
+  NAME CoreArgParserTests
+  DEPENDS app
+  LIBS arch base ${extra_libs}
+  SOURCE CoreArgParserTests.cpp
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/deskflow"
+)
+target_sources(CoreArgParserTests PRIVATE
+  "${CMAKE_SOURCE_DIR}/src/apps/deskflow-core/CoreArgParser.cpp"
+  "${CMAKE_SOURCE_DIR}/src/apps/deskflow-core/CoreArgParser.h"
+  "${CMAKE_SOURCE_DIR}/src/apps/deskflow-core/CoreArgs.h"
+)
+target_include_directories(CoreArgParserTests PRIVATE "${CMAKE_SOURCE_DIR}/src/apps/deskflow-core")
+
+create_test(
   NAME FileDropBridgeTests
   DEPENDS app
   LIBS arch base io mt net server ${extra_libs}

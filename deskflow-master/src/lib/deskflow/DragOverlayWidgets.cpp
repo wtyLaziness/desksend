@@ -326,6 +326,9 @@ QPoint clampDragHoverPosition(
 
 struct DragHoverIndicator::Impl
 {
+  explicit Impl(bool stateOnlyMode) : stateOnly(stateOnlyMode) {}
+
+  const bool stateOnly;
   mutable std::mutex mutex;
   bool visible = false;
   uint32_t fileCount = 0;
@@ -340,7 +343,7 @@ struct DragHoverIndicator::Impl
   }
 };
 
-DragHoverIndicator::DragHoverIndicator() : m_impl(std::make_shared<Impl>())
+DragHoverIndicator::DragHoverIndicator(bool stateOnly) : m_impl(std::make_shared<Impl>(stateOnly))
 {
 }
 
@@ -354,7 +357,7 @@ void DragHoverIndicator::showHover(uint32_t fileCount, int32_t x, int32_t y)
     m_impl->fileCount = fileCount;
     m_impl->cursorPos = QPoint(x, y);
   }
-  if (!hasGuiApplication()) {
+  if (m_impl->stateOnly || !hasGuiApplication()) {
     return;
   }
   std::weak_ptr<Impl> weak = m_impl;
@@ -384,7 +387,7 @@ void DragHoverIndicator::updateCursor(int32_t x, int32_t y)
     }
     m_impl->cursorPos = QPoint(x, y);
   }
-  if (!hasGuiApplication()) {
+  if (m_impl->stateOnly || !hasGuiApplication()) {
     return;
   }
   std::weak_ptr<Impl> weak = m_impl;
@@ -403,7 +406,7 @@ void DragHoverIndicator::hideHover()
     std::scoped_lock lock(m_impl->mutex);
     m_impl->visible = false;
   }
-  if (!hasGuiApplication()) {
+  if (m_impl->stateOnly || !hasGuiApplication()) {
     return;
   }
   std::weak_ptr<Impl> weak = m_impl;
@@ -436,7 +439,7 @@ QPoint DragHoverIndicator::cursorPos() const
 
 struct TransferStatusOverlay::Impl
 {
-  explicit Impl(bool isReceiving) : receiving(isReceiving) {}
+  explicit Impl(bool isReceiving, bool stateOnlyMode) : receiving(isReceiving), stateOnly(stateOnlyMode) {}
 
   ~Impl()
   {
@@ -462,13 +465,15 @@ struct TransferStatusOverlay::Impl
   }
 
   const bool receiving;
+  const bool stateOnly;
   mutable std::mutex mutex;
   Phase phase = Phase::Idle;
   uint32_t preparingFileCount = 0;
   QPointer<TransferStatusWidget> widget;
 };
 
-TransferStatusOverlay::TransferStatusOverlay(bool receiving) : m_impl(std::make_shared<Impl>(receiving))
+TransferStatusOverlay::TransferStatusOverlay(bool receiving, bool stateOnly)
+    : m_impl(std::make_shared<Impl>(receiving, stateOnly))
 {
 }
 
@@ -481,7 +486,7 @@ void TransferStatusOverlay::beginPreparing(uint32_t fileCount)
     m_impl->phase = Phase::Preparing;
     m_impl->preparingFileCount = fileCount;
   }
-  if (!hasGuiApplication()) {
+  if (m_impl->stateOnly || !hasGuiApplication()) {
     return;
   }
   std::weak_ptr<Impl> weak = m_impl;
@@ -502,7 +507,7 @@ void TransferStatusOverlay::cancelPreparing()
     m_impl->phase = Phase::Idle;
     m_impl->preparingFileCount = 0;
   }
-  if (!hasGuiApplication()) {
+  if (m_impl->stateOnly || !hasGuiApplication()) {
     return;
   }
   std::weak_ptr<Impl> weak = m_impl;
@@ -520,7 +525,7 @@ void TransferStatusOverlay::begin(const QString &description)
     m_impl->phase = Phase::Active;
     m_impl->preparingFileCount = 0;
   }
-  if (!hasGuiApplication()) {
+  if (m_impl->stateOnly || !hasGuiApplication()) {
     return;
   }
   std::weak_ptr<Impl> weak = m_impl;
@@ -533,7 +538,7 @@ void TransferStatusOverlay::begin(const QString &description)
 
 void TransferStatusOverlay::progress(uint64_t done, uint64_t total)
 {
-  if (!hasGuiApplication()) {
+  if (m_impl->stateOnly || !hasGuiApplication()) {
     return;
   }
   std::weak_ptr<Impl> weak = m_impl;
@@ -551,7 +556,7 @@ void TransferStatusOverlay::finish(bool success, const QString &message)
     m_impl->phase = Phase::Finished;
     m_impl->preparingFileCount = 0;
   }
-  if (!hasGuiApplication()) {
+  if (m_impl->stateOnly || !hasGuiApplication()) {
     return;
   }
   std::weak_ptr<Impl> weak = m_impl;

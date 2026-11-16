@@ -34,6 +34,7 @@ public:
   bool serverMode() const;
   bool clientMode() const;
   bool singleInstanceOnly() const;
+  bool dropAgentMode() const;
 
 private:
   [[noreturn]] void showHelpText() const;
@@ -42,5 +43,6 @@ private:
   bool m_clientMode = false;
   bool m_serverMode = false;
   bool m_singleInstance = true;
+  bool m_dropAgentMode = false;
   static const QString s_headerText;
 };

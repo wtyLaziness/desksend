@@ -29,10 +29,15 @@ CoreArgParser::CoreArgParser(const QStringList &args)
   m_helpText.replace("[options] coremode", "coremode [options]");
 
   m_singleInstance = !m_parser.isSet(CoreArgs::multiInstanceOption);
+  m_dropAgentMode = m_parser.isSet(CoreArgs::dropAgentOption);
 }
 
 void CoreArgParser::parse()
 {
+  if (m_dropAgentMode) {
+    return;
+  }
+
   auto posArgs = m_parser.positionalArguments();
   if (posArgs.isEmpty()) {
     showHelpText();
@@ -101,4 +106,9 @@ bool CoreArgParser::clientMode() const
 bool CoreArgParser::singleInstanceOnly() const
 {
   return m_singleInstance;
+}
+
+bool CoreArgParser::dropAgentMode() const
+{
+  return m_dropAgentMode;
 }

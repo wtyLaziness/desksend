@@ -49,6 +49,12 @@ add_library(${lib_name} STATIC ${PLATFORM_CODE}
   DragOverlayWidgets.h
   DragProtocol.cpp
   DragProtocol.h
+  DropAgentHost.cpp
+  DropAgentHost.h
+  DropAgentIpc.cpp
+  DropAgentIpc.h
+  DropExecutor.cpp
+  DropExecutor.h
   FileDropBridge.cpp
   FileDropBridge.h
   IApp.h
@@ -111,5 +117,5 @@ endif()
 if(WIN32)
   # 状态提示含中文，明确指定 MSVC 的源码和执行字符集。
   target_compile_options(${lib_name} PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
-  target_link_libraries(${lib_name} PRIVATE ole32 shell32 uuid shlwapi)
+  target_link_libraries(${lib_name} PRIVATE ole32 shell32 uuid shlwapi wtsapi32 userenv advapi32)
 endif()

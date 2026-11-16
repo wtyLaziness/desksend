@@ -27,7 +27,7 @@ class DragHoverIndicator
 public:
   static constexpr int kAutoHideMs = 2500;
 
-  DragHoverIndicator();
+  explicit DragHoverIndicator(bool stateOnly = false);
   ~DragHoverIndicator();
   DragHoverIndicator(const DragHoverIndicator &) = delete;
   DragHoverIndicator &operator=(const DragHoverIndicator &) = delete;
@@ -56,7 +56,7 @@ public:
     Finished
   };
 
-  explicit TransferStatusOverlay(bool receiving);
+  explicit TransferStatusOverlay(bool receiving, bool stateOnly = false);
   ~TransferStatusOverlay();
   TransferStatusOverlay(const TransferStatusOverlay &) = delete;
   TransferStatusOverlay &operator=(const TransferStatusOverlay &) = delete;

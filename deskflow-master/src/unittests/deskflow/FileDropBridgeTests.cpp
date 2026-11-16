@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
 #include "deskflow/DragOverlayWidgets.h"
 #include "deskflow/DragProtocol.h"
+#include "deskflow/DropAgentIpc.h"
+#include "deskflow/DropExecutor.h"
 #include "deskflow/FileDropBridge.h"
 #include "base/Log.h"
 #include "server/BaseClientProxy.h"
@@ -188,45 +190,47 @@ private Q_SLOTS:
 
     auto &bridge = deskflow::FileDropBridge::instance();
     bridge.stopReceiver();
+    auto *exec = bridge.inProcessExecutorForTesting();
+    QVERIFY(exec != nullptr);
     {
-      std::scoped_lock lock(bridge.m_mutex);
-      bridge.m_receiverDesired = true;
-      bridge.m_defaultDropFallbackDir = fallback.path().toStdString();
+      std::scoped_lock lock(exec->m_mutex);
+      exec->m_receiverDesired = true;
+      exec->m_defaultDropFallbackDir = fallback.path().toStdString();
     }
     bridge.onClientReceiveDragInfo(1, "DESKSEND_DROP:999999,999999:" + tagA);
     {
-      std::scoped_lock lock(bridge.m_mutex);
-      QCOMPARE(bridge.m_pendingDropTargets.size(), size_t{1});
-      QCOMPARE(bridge.m_pendingDropTargets.back().tokenTag, tagA);
-      bridge.m_pendingDropTargets.back().dir = dirA.path().toStdString();
+      std::scoped_lock lock(exec->m_mutex);
+      QCOMPARE(exec->m_pendingDropTargets.size(), size_t{1});
+      QCOMPARE(exec->m_pendingDropTargets.back().tokenTag, tagA);
+      exec->m_pendingDropTargets.back().dir = dirA.path().toStdString();
       const uint64_t t = steadyNowMs();
-      bridge.m_pendingDropTargets.push_back({dirB.path().toStdString(), true, t, tagB});
-      bridge.m_pendingDropTargets.push_back({dirC.path().toStdString(), false, t, tagC});
+      exec->m_pendingDropTargets.push_back({dirB.path().toStdString(), true, t, tagB});
+      exec->m_pendingDropTargets.push_back({dirC.path().toStdString(), false, t, tagC});
     }
 
     // Cancel token A only: removes tag A while leaving tag B and tag C intact
     bridge.onClientReceiveDragInfo(0, "DESKSEND_CANCEL:" + tokenA);
     {
-      std::scoped_lock lock(bridge.m_mutex);
-      QCOMPARE(bridge.m_pendingDropTargets.size(), size_t{2});
-      QCOMPARE(bridge.m_pendingDropTargets[0].tokenTag, tagB);
-      QCOMPARE(bridge.m_pendingDropTargets[1].tokenTag, tagC);
-      QVERIFY(!bridge.m_pendingReceiverAuthLines.empty());
-      QCOMPARE(bridge.m_pendingReceiverAuthLines.back(), std::string("REVOKE " + tokenA));
+      std::scoped_lock lock(exec->m_mutex);
+      QCOMPARE(exec->m_pendingDropTargets.size(), size_t{2});
+      QCOMPARE(exec->m_pendingDropTargets[0].tokenTag, tagB);
+      QCOMPARE(exec->m_pendingDropTargets[1].tokenTag, tagC);
+      QVERIFY(!exec->m_pendingReceiverAuthLines.empty());
+      QCOMPARE(exec->m_pendingReceiverAuthLines.back(), std::string("REVOKE " + tokenA));
       // Refresh timestamps relative to steady_clock so neither expires
       const uint64_t now = steadyNowMs();
-      bridge.m_pendingDropTargets[0].timestampMs = now;
-      bridge.m_pendingDropTargets[1].timestampMs = now;
+      exec->m_pendingDropTargets[0].timestampMs = now;
+      exec->m_pendingDropTargets[1].timestampMs = now;
     }
 
     // Session for token C arrives even though orphaned tag B never started: jumps to C and discards B
     bridge.handleReceiveSessionStarted(2, tagC);
     {
-      std::scoped_lock lock(bridge.m_mutex);
-      QCOMPARE(bridge.m_activeSessionTarget.dir, dirC.path().toStdString());
-      QCOMPARE(bridge.m_activeSessionTarget.tokenTag, tagC);
-      QVERIFY(!bridge.m_activeSessionTarget.copyToClipboard);
-      QVERIFY(bridge.m_pendingDropTargets.empty());
+      std::scoped_lock lock(exec->m_mutex);
+      QCOMPARE(exec->m_activeSessionTarget.dir, dirC.path().toStdString());
+      QCOMPARE(exec->m_activeSessionTarget.tokenTag, tagC);
+      QVERIFY(!exec->m_activeSessionTarget.copyToClipboard);
+      QVERIFY(exec->m_pendingDropTargets.empty());
     }
 
     bridge.stopReceiver();
@@ -446,6 +450,211 @@ private Q_SLOTS:
     QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Finished);
 
     qunsetenv("DESKSEND_DEFAULT_DROP_DIR");
+  }
+
+  void dropAgentIpc_roundTripsAllCommandsAndEvents()
+  {
+    using namespace deskflow;
+
+    const std::vector<DropAgentCommand> commands = {
+        {DropAgentCommandType::UpdatePrimaryShape, 10, 20, 0, 0, 1920, 1080},
+        {DropAgentCommandType::PrimaryMouseMove, 500, 600, 0, 0, 1920, 1080, 0x06,
+         {{DragEdgeSide::Right, 16, 1064}}},
+        {DropAgentCommandType::PrimaryLeftMouseDown},
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::LeftMouseUp;
+          c.flag = true;
+          return c;
+        }(),
+        {DropAgentCommandType::HideSentinels},
+        {DropAgentCommandType::ShutdownSentinels},
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::CancelNativeDrag;
+          c.sideIndex = 1;
+          return c;
+        }(),
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::ShowHover;
+          c.fileCount = 5;
+          c.x = 120;
+          c.y = 240;
+          return c;
+        }(),
+        {DropAgentCommandType::UpdateHoverCursor, 300, 400},
+        {DropAgentCommandType::HideHover},
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::BeginPreparing;
+          c.fileCount = 3;
+          return c;
+        }(),
+        {DropAgentCommandType::CancelPreparing},
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::TransferBegin;
+          c.flag = true;
+          c.text = "Receiving 3 file(s)";
+          return c;
+        }(),
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::TransferProgress;
+          c.flag = false;
+          c.done = 1024;
+          c.total = 4096;
+          return c;
+        }(),
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::TransferFinish;
+          c.flag = true;
+          c.dragActive = true;
+          c.text = "Done";
+          return c;
+        }(),
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::StartReceiver;
+          c.items = {"192.168.1.10", "2001:db8::5"};
+          return c;
+        }(),
+        {DropAgentCommandType::StopReceiver},
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::ReceiverAuthCommand;
+          c.text = "GRANT tok123";
+          return c;
+        }(),
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::DropTarget;
+          c.fileCount = 2;
+          c.x = 777;
+          c.y = 888;
+          c.text = "tag456";
+          return c;
+        }(),
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::CancelDropToken;
+          c.text = "tag456";
+          return c;
+        }(),
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::SendFiles;
+          c.text = "192.168.1.99";
+          c.items = {"C:/a.txt", "D:/dir/b.txt"};
+          c.authToken = "secret99";
+          return c;
+        }(),
+        [] {
+          DropAgentCommand c;
+          c.type = DropAgentCommandType::CopyFilesToClipboard;
+          c.items = {"C:/rx.txt"};
+          return c;
+        }(),
+        {DropAgentCommandType::Shutdown},
+    };
+
+    for (const auto &cmd : commands) {
+      const std::string json = serializeDropAgentCommand(cmd);
+      QCOMPARE(json.find('\n'), std::string::npos);
+      const auto parsed = deserializeDropAgentCommand(json);
+      QVERIFY(parsed.has_value());
+      QCOMPARE(*parsed, cmd);
+    }
+
+    const std::vector<DropAgentEvent> events = {
+        {DropAgentEventType::Ready},
+        [] {
+          DropAgentEvent e;
+          e.type = DropAgentEventType::PendingDragCaptured;
+          e.files = {"C:/foo.txt", "C:/bar.txt"};
+          e.sideIndex = 1;
+          e.x = 1919;
+          e.y = 500;
+          return e;
+        }(),
+        [] {
+          DropAgentEvent e;
+          e.type = DropAgentEventType::DragCancellationCompleted;
+          e.flag = true;
+          return e;
+        }(),
+        {DropAgentEventType::PendingDragCleared},
+        [] {
+          DropAgentEvent e;
+          e.type = DropAgentEventType::ActiveTransfersChanged;
+          e.flag = true;
+          return e;
+        }(),
+        [] {
+          DropAgentEvent e;
+          e.type = DropAgentEventType::SendCompleted;
+          e.text = "192.168.1.99";
+          e.flag = true;
+          return e;
+        }(),
+        [] {
+          DropAgentEvent e;
+          e.type = DropAgentEventType::LogMessage;
+          e.level = 2;
+          e.text = "hello agent";
+          return e;
+        }(),
+    };
+
+    for (const auto &ev : events) {
+      const std::string json = serializeDropAgentEvent(ev);
+      QCOMPARE(json.find('\n'), std::string::npos);
+      const auto parsed = deserializeDropAgentEvent(json);
+      QVERIFY(parsed.has_value());
+      QCOMPARE(*parsed, ev);
+    }
+
+    QVERIFY(!deserializeDropAgentCommand("").has_value());
+    QVERIFY(!deserializeDropAgentCommand("{bad json").has_value());
+    QVERIFY(!deserializeDropAgentEvent("").has_value());
+    QVERIFY(!deserializeDropAgentEvent("{\"type\":\"unknown\"}").has_value());
+  }
+
+  void dropExecutor_defersReceiverRestartWhileTransferOrDragActive()
+  {
+    deskflow::ReceiverRestartPolicy policy;
+
+    const auto init = policy.requestHosts({"192.168.1.10"}, false, false);
+    QVERIFY(init.has_value());
+    QCOMPARE(*init, (std::vector<std::string>{"192.168.1.10"}));
+    QVERIFY(!policy.hasDeferredRestart());
+
+    // Duplicate same hosts -> no restart
+    QVERIFY(!policy.requestHosts({"::ffff:192.168.1.10", "192.168.1.10"}, false, false).has_value());
+
+    // Peer update during active drag must defer
+    QVERIFY(!policy.requestHosts({"192.168.1.10", "192.168.1.20"}, true, false).has_value());
+    QVERIFY(policy.hasDeferredRestart());
+    QCOMPARE(policy.activeHosts(), (std::vector<std::string>{"192.168.1.10"}));
+
+    // Drag ended, transfer still running -> still deferred
+    QVERIFY(!policy.onActivityChanged(false, true).has_value());
+    QVERIFY(policy.hasDeferredRestart());
+
+    // Transfer finished -> deferred restart now flushes
+    const auto flushed = policy.onActivityChanged(false, false);
+    QVERIFY(flushed.has_value());
+    QCOMPARE(*flushed, (std::vector<std::string>{"192.168.1.10", "192.168.1.20"}));
+    QVERIFY(!policy.hasDeferredRestart());
+
+    // Deferring then reverting to same active hosts elides unnecessary restart
+    QVERIFY(!policy.requestHosts({"192.168.1.10"}, false, true).has_value());
+    QVERIFY(policy.hasDeferredRestart());
+    QVERIFY(!policy.requestHosts({"192.168.1.10", "192.168.1.20"}, false, true).has_value());
+    QVERIFY(!policy.onActivityChanged(false, false).has_value());
+    QVERIFY(!policy.hasDeferredRestart());
   }
 };
 

@@ -14,6 +14,7 @@
 #include "common/Constants.h"
 #include "common/ExitCodes.h"
 #include "deskflow/ClientApp.h"
+#include "deskflow/DropAgentHost.h"
 #include "deskflow/ServerApp.h"
 #include "deskflow/ipc/CoreIpcServer.h"
 
@@ -99,6 +100,10 @@ int main(int argc, char **argv)
   if (parser.version()) {
     QTextStream(stdout) << parser.versionText();
     return s_exitSuccess;
+  }
+
+  if (parser.dropAgentMode()) {
+    return deskflow::runDropAgentMain();
   }
 
   // Before we check any more args we need to check for a duplicate process.
