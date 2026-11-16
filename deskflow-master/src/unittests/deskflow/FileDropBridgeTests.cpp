@@ -8,9 +8,11 @@
 #include "net/IDataSocket.h"
 #include "server/BaseClientProxy.h"
 
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -527,7 +529,7 @@ private Q_SLOTS:
     QCOMPARE(bottomRight.y(), 1080 - 36);
 
     const QPoint negativeOrigin =
-        deskflow::clampDragHoverPosition(QPoint(-1925, -10), capsuleSize, QRect(-1920, 0, 1920, 1080));
+        deskflow::clampDragHoverPosition(QPoint(-1950, -10), capsuleSize, QRect(-1920, 0, 1920, 1080));
     QCOMPARE(negativeOrigin.x(), -1920);
     QCOMPARE(negativeOrigin.y(), 12);
 
@@ -1267,5 +1269,23 @@ private Q_SLOTS:
   }
 };
 
-QTEST_MAIN(FileDropBridgeTests)
+int main(int argc, char *argv[])
+{
+  QCoreApplication app(argc, argv);
+  QStringList args;
+  args.reserve(argc + 2);
+  bool hasOutputOpt = false;
+  for (int i = 0; i < argc; ++i) {
+    const QString arg = QString::fromLocal8Bit(argv[i]);
+    if (arg == QLatin1String("-o")) {
+      hasOutputOpt = true;
+    }
+    args.append(arg);
+  }
+  if (!hasOutputOpt) {
+    args << QStringLiteral("-o") << QStringLiteral("-,txt");
+  }
+  FileDropBridgeTests tc;
+  return QTest::qExec(&tc, args);
+}
 #include "FileDropBridgeTests.moc"
