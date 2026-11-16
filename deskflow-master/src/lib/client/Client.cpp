@@ -424,6 +424,15 @@ void Client::sendEvent(EventTypes type)
   m_events->addEvent(Event(type, getEventTarget()));
 }
 
+bool Client::sendDragInfo(uint32_t fileCount, const std::string &info)
+{
+  if (m_server == nullptr) {
+    return false;
+  }
+  m_server->sendDragInfo(fileCount, info);
+  return true;
+}
+
 void Client::sendConnectionFailedEvent(const char *msg)
 {
   auto *info = new FailInfo(msg);

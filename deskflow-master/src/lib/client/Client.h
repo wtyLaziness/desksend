@@ -219,6 +219,9 @@ private:
   void sendClipboardThread(void *);
   void bindNetworkInterface(IDataSocket *socket) const;
 
+public:
+  bool sendDragInfo(uint32_t fileCount, const std::string &info);
+
 private:
   std::string m_name;
   NetworkAddress m_serverAddress;

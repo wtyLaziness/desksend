@@ -20,6 +20,7 @@ private Q_SLOTS:
   void handleData_incompleteMessage_queuesDisconnectRequest();
   void parseHandshakeMessage_protocolError_queuesRefusalRequest();
   void handleMessage_doesNotSendNoopPerMouseMove();
+  void sendDragInfo_writesDdrgFrameAndRedactsSensitiveLogs();
 
 private:
   Log m_log;

@@ -23,6 +23,7 @@ private Q_SLOTS:
   void keyUp_data();
   void keyUp();
   void resetHeartbeatTimer_reusesTimersWithoutChurn();
+  void dragInfoReceived_consumesStreamBeforeNextKeepAlive();
 
 private:
   Log m_log;

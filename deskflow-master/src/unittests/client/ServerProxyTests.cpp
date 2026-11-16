@@ -10,6 +10,7 @@
 #include "base/IEventQueue.h"
 #include "client/Client.h"
 #include "client/ServerProxy.h"
+#include "base/ILogOutputter.h"
 #include "deskflow/AppUtil.h"
 #include "deskflow/Computer.h"
 #include "deskflow/IPlatformComputer.h"
@@ -19,6 +20,7 @@
 #include "net/NetworkAddress.h"
 
 #include <QTest>
+#include <vector>
 
 #include <algorithm>
 #include <cstdint>
@@ -555,6 +557,80 @@ void ServerProxyTests::handleMessage_doesNotSendNoopPerMouseMove()
 
   const std::string written = stream.takeWritten();
   QCOMPARE(written.find(std::string(kMsgCNoop, 4)), std::string::npos);
+}
+
+namespace {
+
+class RecordingLogOutputter final : public ILogOutputter
+{
+public:
+  void open(const QString &) override {}
+  void close() override {}
+  bool write(LogLevel::Level, const QString &message) override
+  {
+    m_messages.push_back(message.toStdString());
+    return false;
+  }
+
+  std::vector<std::string> m_messages;
+};
+
+} // namespace
+
+void ServerProxyTests::sendDragInfo_writesDdrgFrameAndRedactsSensitiveLogs()
+{
+  RecordingEventQueue events;
+  FakeStream stream;
+  auto *computer = new deskflow::Computer(new StubPlatformComputer(&events), &events);
+  Client client(&events, "client", NetworkAddress("127.0.0.1", 24800), new NoopSocketFactory(), computer);
+  TestServerProxy proxy(&client, &stream, &events);
+  stream.takeWritten();
+
+  auto *logRecorder = new RecordingLogOutputter();
+  CLOG->insert(logRecorder, true);
+  CLOG->setFilter(LogLevel::Info);
+
+  const std::string secretToken = "superSecretAuthToken1234";
+  const std::string payload = "DESKSEND_SEND_DROP:100,200:" + secretToken + ":192.168.1.50";
+  QVERIFY(!client.sendDragInfo(1, "unconnected"));
+  proxy.sendDragInfo(3, payload);
+
+  const std::string written = stream.takeWritten();
+  const uint32_t expectedLen = static_cast<uint32_t>(payload.size());
+  std::string expectedFrame(kMsgDDragInfo, 4);
+  expectedFrame.push_back(0x00);
+  expectedFrame.push_back(0x03);
+  expectedFrame.push_back(static_cast<char>((expectedLen >> 24) & 0xFF));
+  expectedFrame.push_back(static_cast<char>((expectedLen >> 16) & 0xFF));
+  expectedFrame.push_back(static_cast<char>((expectedLen >> 8) & 0xFF));
+  expectedFrame.push_back(static_cast<char>(expectedLen & 0xFF));
+  expectedFrame.append(payload);
+  QCOMPARE(written, expectedFrame);
+
+  // Also check receive-side redaction via kMsgDDragInfo
+  const std::string recvPayload = "DESKSEND_SEND_CANCEL:" + secretToken;
+  const uint32_t recvLen = static_cast<uint32_t>(recvPayload.size());
+  std::string wireRecvPayload;
+  wireRecvPayload.push_back(0x00);
+  wireRecvPayload.push_back(0x01);
+  wireRecvPayload.push_back(static_cast<char>((recvLen >> 24) & 0xFF));
+  wireRecvPayload.push_back(static_cast<char>((recvLen >> 16) & 0xFF));
+  wireRecvPayload.push_back(static_cast<char>((recvLen >> 8) & 0xFF));
+  wireRecvPayload.push_back(static_cast<char>(recvLen & 0xFF));
+  wireRecvPayload.append(recvPayload);
+  stream.push(wireRecvPayload);
+  QVERIFY(proxy.invokeHandleMessageIsOkay(reinterpret_cast<const uint8_t *>(kMsgDDragInfo)));
+
+  CLOG->remove(logRecorder);
+  bool sawRedacted = false;
+  for (const auto &line : logRecorder->m_messages) {
+    QCOMPARE(line.find(secretToken), std::string::npos);
+    if (line.find("<redacted>") != std::string::npos) {
+      sawRedacted = true;
+    }
+  }
+  delete logRecorder;
+  QVERIFY(sawRedacted);
 }
 
 QTEST_MAIN(ServerProxyTests)

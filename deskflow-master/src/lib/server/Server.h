@@ -202,6 +202,7 @@ public:
   static bool shouldClearSwitchWaitForDirection(
       Direction dir, int32_t x, int32_t y, int32_t ax, int32_t ay, int32_t aw, int32_t ah, int32_t zoneSize
   );
+  void onClientDragInfo(BaseClientProxy *client, uint16_t fileCount, const std::string &info);
 
   //@}
 

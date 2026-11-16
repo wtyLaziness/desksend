@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
+#include "deskflow/DragProtocol.h"
 #include "deskflow/FileDropBridge.h"
 #include "base/Log.h"
 #include "server/BaseClientProxy.h"
@@ -277,6 +278,90 @@ private Q_SLOTS:
       QVERIFY(!bridge.m_dragCancellationInProgress);
       QVERIFY(!bridge.m_dragCancellationComplete);
     }
+  }
+
+  void dragProtocol_serializesParsesEdgesAndClipsCorners()
+  {
+    using deskflow::DragEdgeSegment;
+    using deskflow::DragEdgeSide;
+
+    const std::vector<DragEdgeSegment> raw = {
+        {DragEdgeSide::Right, 0, 1080},
+        {DragEdgeSide::Top, 0, 16},
+        {DragEdgeSide::Top, 1904, 1920},
+        {DragEdgeSide::Left, 200, 500},
+        {DragEdgeSide::Bottom, 0, 1920},
+    };
+    const auto clipped = deskflow::clipEdgeSegmentsForCorners(raw, 1920, 1080, 16);
+    QCOMPARE(clipped.size(), static_cast<size_t>(3));
+    QCOMPARE(clipped[0].side, DragEdgeSide::Right);
+    QCOMPARE(clipped[0].start, 16);
+    QCOMPARE(clipped[0].end, 1064);
+    QCOMPARE(clipped[1].side, DragEdgeSide::Left);
+    QCOMPARE(clipped[1].start, 200);
+    QCOMPARE(clipped[1].end, 500);
+    QCOMPARE(clipped[2].side, DragEdgeSide::Bottom);
+    QCOMPARE(clipped[2].start, 16);
+    QCOMPARE(clipped[2].end, 1904);
+
+    const std::string wireEdges = deskflow::serializeDragEdgesMessage(clipped);
+    std::vector<DragEdgeSegment> parsedEdges;
+    QVERIFY(deskflow::parseDragEdgesMessage(wireEdges, parsedEdges));
+    QCOMPARE(parsedEdges, clipped);
+
+    std::vector<DragEdgeSegment> emptyEdges;
+    QVERIFY(deskflow::parseDragEdgesMessage(deskflow::serializeDragEdgesMessage({}), emptyEdges));
+    QVERIFY(emptyEdges.empty());
+
+    const std::vector<std::string> peers = {"192.168.1.5", "2001:db8::42"};
+    std::vector<std::string> parsedPeers;
+    QVERIFY(deskflow::parseDragPeersMessage(deskflow::serializeDragPeersMessage(peers), parsedPeers));
+    QCOMPARE(parsedPeers, peers);
+
+    DragEdgeSide parsedSide = DragEdgeSide::Left;
+    int32_t x = 0;
+    int32_t y = 0;
+    QVERIFY(deskflow::parseClientPreCaptureMessage(
+        deskflow::serializeClientPreCaptureMessage(DragEdgeSide::Bottom, 640, 1079), parsedSide, x, y
+    ));
+    QCOMPARE(parsedSide, DragEdgeSide::Bottom);
+    QCOMPARE(x, 640);
+    QCOMPARE(y, 1079);
+
+    QVERIFY(deskflow::isClientPreCaptureClearMessage(deskflow::kMsgDragClientPreCaptureClear));
+    QVERIFY(deskflow::isCommitHandoffMessage(deskflow::kMsgDragCommitHandoff));
+    QVERIFY(deskflow::isHoverLeaveMessage(deskflow::kMsgDragHoverLeave));
+
+    QVERIFY(deskflow::parseHoverEnterMessage(deskflow::serializeHoverEnterMessage(320, 480), x, y));
+    QCOMPARE(x, 320);
+    QCOMPARE(y, 480);
+
+    std::string token;
+    std::string target;
+    const std::string wireSendDropIpv6 = deskflow::serializeSendDropMessage(120, 240, "secretTok99", "2001:db8::42");
+    QVERIFY(deskflow::parseSendDropMessage(wireSendDropIpv6, x, y, token, target));
+    QCOMPARE(x, 120);
+    QCOMPARE(y, 240);
+    QCOMPARE(token, std::string("secretTok99"));
+    QCOMPARE(target, std::string("2001:db8::42"));
+
+    QVERIFY(deskflow::parseDragCancelMessage("DESKSEND_CANCEL", token));
+    QVERIFY(token.empty());
+    QVERIFY(deskflow::parseDragCancelMessage("DESKSEND_CANCEL:tokA", token));
+    QCOMPARE(token, std::string("tokA"));
+    QVERIFY(deskflow::parseSendCancelMessage("DESKSEND_SEND_CANCEL", token));
+    QVERIFY(token.empty());
+    QVERIFY(deskflow::parseSendCancelMessage("DESKSEND_SEND_CANCEL:tokB", token));
+    QCOMPARE(token, std::string("tokB"));
+
+    const std::string redactedSendDrop = deskflow::redactDragLogPayload(wireSendDropIpv6);
+    QCOMPARE(redactedSendDrop, std::string("DESKSEND_SEND_DROP:120,240:<redacted>:2001:db8::42"));
+    QCOMPARE(redactedSendDrop.find("secretTok99"), std::string::npos);
+    QCOMPARE(deskflow::redactDragLogPayload("DESKSEND_START:secretA"), std::string("DESKSEND_START:<redacted>"));
+    QCOMPARE(deskflow::redactDragLogPayload("DESKSEND_CANCEL:secretB"), std::string("DESKSEND_CANCEL:<redacted>"));
+    QCOMPARE(
+        deskflow::redactDragLogPayload("DESKSEND_SEND_CANCEL:secretC"), std::string("DESKSEND_SEND_CANCEL:<redacted>")
+    );
   }
 };
 

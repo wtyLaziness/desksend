@@ -6,6 +6,8 @@
 
 #include "server/ClientProxy1_5.h"
 
+#include "base/Log.h"
+#include "deskflow/DragProtocol.h"
 #include "deskflow/ProtocolUtil.h"
 #include "deskflow/StreamChunker.h"
 #include "io/IStream.h"
@@ -52,7 +54,24 @@ void ClientProxy1_5::fileChunkReceived() const
   // do nothing
 }
 
-void ClientProxy1_5::dragInfoReceived() const
+void ClientProxy1_5::dragInfoReceived()
 {
-  // do nothing
+  uint16_t fileCount = 0;
+  std::string dragInfo;
+  if (!ProtocolUtil::readf(getStream(), kMsgDDragInfo + 4, &fileCount, &dragInfo)) {
+    LOG_WARN("failed to read drag info from client \"%s\"", getName().c_str());
+    return;
+  }
+  LOG_INFO(
+      "recv client \"%s\" drag info count=%u info=\"%s\"", getName().c_str(), fileCount,
+      deskflow::redactDragLogPayload(dragInfo).c_str()
+  );
+  handleDragInfoMessage(fileCount, dragInfo);
+}
+
+void ClientProxy1_5::handleDragInfoMessage(uint16_t fileCount, const std::string &dragInfo)
+{
+  if (getServer() != nullptr) {
+    getServer()->onClientDragInfo(this, fileCount, dragInfo);
+  }
 }

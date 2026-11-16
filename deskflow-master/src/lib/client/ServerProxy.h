@@ -108,6 +108,9 @@ private:
   void queryInfo();
   void infoAcknowledgment();
 
+public:
+  void sendDragInfo(uint32_t fileCount, const std::string &info);
+
 private:
   using MessageParser = ConnectionResult (ServerProxy::*)(const uint8_t *);
 

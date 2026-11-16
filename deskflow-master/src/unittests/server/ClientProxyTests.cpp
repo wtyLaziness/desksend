@@ -14,8 +14,13 @@
 #include "server/ClientProxy1_6.h"
 #include "server/ClientProxy1_7.h"
 #include "server/ClientProxy1_8.h"
+#include "deskflow/ProtocolTypes.h"
+#include "io/IStream.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cstring>
+#include <deque>
 #include <memory>
 #include <set>
 #include <string>
@@ -342,6 +347,108 @@ void ClientProxyTests::resetHeartbeatTimer_reusesTimersWithoutChurn()
   // Firing again with no intervening activity must mark the client flatlined
   QVERIFY(events.fireTimer(&proxy));
   QCOMPARE(events.disconnectEvents(), 1);
+}
+
+namespace {
+
+class ReadableCaptureStream final : public deskflow::IStream
+{
+public:
+  void push(const std::string &bytes)
+  {
+    m_in.append(bytes);
+  }
+
+  void close() override {}
+
+  uint32_t read(void *buffer, uint32_t n) override
+  {
+    const uint32_t avail = static_cast<uint32_t>(m_in.size() - m_pos);
+    const uint32_t count = std::min(n, avail);
+    if (count > 0) {
+      if (buffer != nullptr) {
+        memcpy(buffer, m_in.data() + m_pos, count);
+      }
+      m_pos += count;
+    }
+    return count;
+  }
+
+  void write(const void *buffer, uint32_t n) override
+  {
+    if (buffer != nullptr && n > 0) {
+      m_out.append(static_cast<const char *>(buffer), n);
+    }
+  }
+
+  void flush() override {}
+  void shutdownInput() override {}
+  void shutdownOutput() override {}
+  void *getEventTarget() const override
+  {
+    return const_cast<ReadableCaptureStream *>(this);
+  }
+  bool isReady() const override
+  {
+    return m_pos < m_in.size();
+  }
+  uint32_t getSize() const override
+  {
+    return static_cast<uint32_t>(m_in.size() - m_pos);
+  }
+
+private:
+  std::string m_in;
+  size_t m_pos = 0;
+  std::string m_out;
+};
+
+class TestDragClientProxy1_5 final : public ClientProxy1_5
+{
+public:
+  using ClientProxy1_5::ClientProxy1_5;
+  using ClientProxy1_5::parseMessage;
+
+  std::vector<std::pair<uint16_t, std::string>> receivedDragInfos;
+
+protected:
+  void handleDragInfoMessage(uint16_t fileCount, const std::string &dragInfo) override
+  {
+    receivedDragInfos.emplace_back(fileCount, dragInfo);
+  }
+};
+
+} // namespace
+
+void ClientProxyTests::dragInfoReceived_consumesStreamBeforeNextKeepAlive()
+{
+  MockEventQueue events;
+  auto *stream = new ReadableCaptureStream;
+  auto *server = reinterpret_cast<Server *>(0x1);
+  TestDragClientProxy1_5 proxy("client", stream, server, &events);
+
+  const std::string info = "DESKSEND_CLIENT_PRECAPTURE:R:1919,500";
+  const uint32_t infoLen = static_cast<uint32_t>(info.size());
+  std::string payload;
+  payload.push_back(0x00);
+  payload.push_back(0x02);
+  payload.push_back(static_cast<char>((infoLen >> 24) & 0xFF));
+  payload.push_back(static_cast<char>((infoLen >> 16) & 0xFF));
+  payload.push_back(static_cast<char>((infoLen >> 8) & 0xFF));
+  payload.push_back(static_cast<char>(infoLen & 0xFF));
+  payload.append(info);
+  payload.append(kMsgCKeepAlive, 4);
+  stream->push(payload);
+
+  QVERIFY(proxy.parseMessage(reinterpret_cast<const uint8_t *>(kMsgDDragInfo)));
+  QCOMPARE(proxy.receivedDragInfos.size(), static_cast<size_t>(1));
+  QCOMPARE(proxy.receivedDragInfos[0].first, static_cast<uint16_t>(2));
+  QCOMPARE(proxy.receivedDragInfos[0].second, info);
+
+  uint8_t nextCode[4] = {};
+  QCOMPARE(stream->read(nextCode, 4), static_cast<uint32_t>(4));
+  QCOMPARE(std::string(reinterpret_cast<const char *>(nextCode), 4), std::string(kMsgCKeepAlive, 4));
+  QVERIFY(proxy.parseMessage(nextCode));
 }
 
 QTEST_MAIN(ClientProxyTests)

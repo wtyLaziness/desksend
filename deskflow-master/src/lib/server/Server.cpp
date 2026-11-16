@@ -13,6 +13,7 @@
 #include "deskflow/AppUtil.h"
 #include "deskflow/Computer.h"
 #include "deskflow/DeskflowException.h"
+#include "deskflow/DragProtocol.h"
 #include "deskflow/FileDropBridge.h"
 #include "deskflow/DragHandoff.h"
 #include "deskflow/IPlatformComputer.h"
@@ -226,6 +227,15 @@ bool Server::shouldClearSwitchWaitForDirection(
 size_t Server::getMaximumClipboardSizeBytes() const
 {
   return m_maximumClipboardSize * 1024;
+}
+
+void Server::onClientDragInfo(BaseClientProxy *client, uint16_t fileCount, const std::string &info)
+{
+  if (client == nullptr) {
+    return;
+  }
+  const std::string logInfo = deskflow::redactDragLogPayload(info);
+  LOG_DEBUG("server recv drag info from \"%s\" count=%u info=\"%s\"", client->getName().c_str(), fileCount, logInfo.c_str());
 }
 
 bool Server::setConfig(const ServerConfig &config)

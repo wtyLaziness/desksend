@@ -27,5 +27,8 @@ public:
   void fileChunkSending(uint8_t mark, char *data, size_t dataSize) override;
   bool parseMessage(const uint8_t *code) override;
   void fileChunkReceived() const;
-  void dragInfoReceived() const;
+  void dragInfoReceived();
+
+protected:
+  virtual void handleDragInfoMessage(uint16_t fileCount, const std::string &dragInfo);
 };
