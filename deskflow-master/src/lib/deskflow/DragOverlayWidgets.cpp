@@ -500,11 +500,11 @@ void TransferStatusOverlay::beginPreparing(uint32_t fileCount)
   });
 }
 
-void TransferStatusOverlay::cancelPreparing()
+void TransferStatusOverlay::resetOverlayPhase(bool onlyIfPreparing)
 {
   {
     std::scoped_lock lock(m_impl->mutex);
-    if (m_impl->phase != Phase::Preparing) {
+    if (onlyIfPreparing && m_impl->phase != Phase::Preparing) {
       return;
     }
     m_impl->phase = Phase::Idle;
@@ -519,6 +519,16 @@ void TransferStatusOverlay::cancelPreparing()
       impl->widget->cancelPreparing();
     }
   });
+}
+
+void TransferStatusOverlay::cancelPreparing()
+{
+  resetOverlayPhase(true);
+}
+
+void TransferStatusOverlay::resetToIdle()
+{
+  resetOverlayPhase(false);
 }
 
 void TransferStatusOverlay::begin(const QString &description)

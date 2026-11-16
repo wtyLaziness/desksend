@@ -63,6 +63,7 @@ public:
 
   void beginPreparing(uint32_t fileCount);
   void cancelPreparing();
+  void resetToIdle();
   void begin(const QString &description);
   void progress(uint64_t done, uint64_t total);
   void finish(bool success, const QString &message);
@@ -71,6 +72,8 @@ public:
   uint32_t preparingFileCount() const;
 
 private:
+  void resetOverlayPhase(bool onlyIfPreparing);
+
   struct Impl;
   std::shared_ptr<Impl> m_impl;
 };

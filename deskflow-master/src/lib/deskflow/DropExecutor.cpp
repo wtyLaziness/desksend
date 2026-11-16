@@ -1837,6 +1837,10 @@ void InProcessDropExecutor::stopReceiver()
     oldProc->waitForFinished(1000);
     delete oldProc;
   }
+  if (m_receiverOverlay.phase() == TransferStatusOverlay::Phase::Preparing ||
+      m_receiverOverlay.phase() == TransferStatusOverlay::Phase::Active) {
+    m_receiverOverlay.resetToIdle();
+  }
 }
 
 void InProcessDropExecutor::queueReceiverAuthCommand(const std::string &command)

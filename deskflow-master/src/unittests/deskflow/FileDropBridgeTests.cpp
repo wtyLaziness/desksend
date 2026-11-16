@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <memory>
 
 namespace {
@@ -188,6 +189,21 @@ private:
   Log m_log;
 
 private Q_SLOTS:
+  void initTestCase()
+  {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+  }
+
+  void cleanupTestCase()
+  {
+    auto &bridge = deskflow::FileDropBridge::instance();
+    bridge.resetAllStateForTesting();
+    bridge.shutdownSentinels();
+    bridge.stopReceiver();
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(std::make_shared<RecordedExecutorState>()));
+  }
+
   void uniqueDestinationPathPreservesDotfilesAndMultiExtensions()
   {
     QTemporaryDir tempDir;
@@ -533,6 +549,8 @@ private Q_SLOTS:
     qputenv("DESKSEND_DEFAULT_DROP_DIR", fallbackDir.path().toUtf8());
 
     auto &bridge = deskflow::FileDropBridge::instance();
+    bridge.resetAllStateForTesting();
+    bridge.stopReceiver();
     bridge.onClientReceiveDragInfo(2, "DESKSEND_START:tokHover1");
     QVERIFY(!bridge.isClientHoverVisible());
 
