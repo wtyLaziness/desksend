@@ -426,17 +426,22 @@ public:
 
   HRESULT STDMETHODCALLTYPE DragEnter(IDataObject *obj, DWORD, POINTL pt, DWORD *eff) override
   {
-    auto files = extractFilesFromDataObject(obj);
-    if (!files.empty()) {
+    FORMATETC hdropFmt = {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    FORMATETC idListFmt = {
+        static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_SHELLIDLIST)), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL
+    };
+    const bool hasDropFormat =
+        obj != nullptr && (obj->QueryGetData(&hdropFmt) == S_OK || obj->QueryGetData(&idListFmt) == S_OK);
+    auto files = hasDropFormat ? extractFilesFromDataObject(obj) : std::vector<std::string>{};
+    if (FileDropBridge::isSentinelCaptureSupportedFormat(hasDropFormat, !files.empty()) &&
+        !g_sentinelMgr.cancellingNativeDrag.load()) {
       LOG_INFO("FileDropBridge: sentinel DragEnter at (%ld,%ld) captured %zu file(s)", pt.x, pt.y, files.size());
       if (FileDropBridge::instance().setPendingDragFiles(std::move(files))) {
         armNativeDragHandoff(sideIndex);
       }
-      // 本地目标永远不接收原生放下，避免源文件或桌面图标被移动。
-      *eff = DROPEFFECT_NONE;
-    } else {
-      *eff = DROPEFFECT_NONE;
     }
+    // 本地目标永远不接收原生放下，避免非文件拖放阻断及源文件误移动。
+    *eff = DROPEFFECT_NONE;
     return S_OK;
   }
 
@@ -448,8 +453,10 @@ public:
 
   HRESULT STDMETHODCALLTYPE DragLeave() override
   {
-    // Note: Do not clear pending files here because Deskflow's leave() warps
-    // the cursor to screen center immediately upon switching screens.
+    // 若尚未进入切屏提交态且用户主动拖离边缘，清除未提交的文件预捕获。
+    if (!g_sentinelMgr.cancellingNativeDrag.load() && !g_sentinelMgr.nativeDragCancellationComplete.load()) {
+      FileDropBridge::instance().clearPendingDragOnMouseLeaveOrRelease();
+    }
     return S_OK;
   }
 
@@ -464,8 +471,8 @@ public:
 
 struct Win32SentinelManager
 {
-  static constexpr int kThickness = 8;
-  static constexpr int kActivationZone = 36;
+  static constexpr int kThickness = 2;
+  static constexpr int kActivationZone = 16;
 
   bool initialized = false;
   int32_t lastX = 0;
@@ -614,6 +621,7 @@ void CALLBACK finishNativeDragCancellation(HWND hwnd, UINT, UINT_PTR timerId, DW
   }
   sendEscapeKeyUp(static_cast<ULONG_PTR>(0x44534B54));
   g_sentinelMgr.nativeDragCancellationComplete.store(true);
+  FileDropBridge::instance().setDragCancellationState(false, true);
   if (!FileDropBridge::instance().hasPendingDragFiles()) {
     return;
   }
@@ -635,9 +643,11 @@ void cancelNativeDragBeforeSwitch(int sideIndex)
   g_sentinelMgr.cancellingNativeDrag.store(true);
   g_sentinelMgr.cancellingSide.store(sideIndex);
   g_sentinelMgr.cancelTimerWindow.store(hwnd);
+  FileDropBridge::instance().setDragCancellationState(true, false);
   if (!SetTimer(hwnd, 1, 80, finishNativeDragCancellation)) {
     g_sentinelMgr.cancellingNativeDrag.store(false);
     g_sentinelMgr.cancelTimerWindow.store(nullptr);
+    FileDropBridge::instance().setDragCancellationState(false, false);
     FileDropBridge::instance().cancelActiveDrag();
     LOG_WARN("FileDropBridge: could not schedule native drag cancellation");
     return;
@@ -650,6 +660,7 @@ void cancelNativeDragBeforeSwitch(int sideIndex)
     KillTimer(hwnd, 1);
     g_sentinelMgr.cancellingNativeDrag.store(false);
     g_sentinelMgr.cancelTimerWindow.store(nullptr);
+    FileDropBridge::instance().setDragCancellationState(false, false);
     FileDropBridge::instance().cancelActiveDrag();
     LOG_WARN("FileDropBridge: could not cancel source native drag");
   }
@@ -838,6 +849,9 @@ void FileDropBridge::shutdownSentinels()
   m_pendingFiles.clear();
   m_canCaptureDrag = false;
   m_sourceButtonNeedsRelease = false;
+  m_dragCancellationInProgress = false;
+  m_dragCancellationComplete = false;
+  m_visibleSentinelEdgeMask = 0;
   m_activeDragFiles.clear();
   m_dragTargetClient = nullptr;
 }
@@ -852,6 +866,7 @@ void FileDropBridge::onPrimaryMouseMove(
   if (!leftButtonDown) {
     g_sentinelMgr.hideAll();
     std::scoped_lock lock(m_mutex);
+    m_visibleSentinelEdgeMask = 0;
     if (!m_pendingFiles.empty() && (nowMs() - m_pendingTimestampMs > 500)) {
       m_pendingFiles.clear();
     }
@@ -869,6 +884,22 @@ void FileDropBridge::onPrimaryMouseMove(
   g_sentinelMgr.setEdgeVisible(1, nearRight);
   g_sentinelMgr.setEdgeVisible(2, nearTop);
   g_sentinelMgr.setEdgeVisible(3, nearBottom);
+
+  uint32_t visibleMask = 0;
+  if (nearLeft) {
+    visibleMask |= static_cast<uint32_t>(LeftMask);
+  }
+  if (nearRight) {
+    visibleMask |= static_cast<uint32_t>(RightMask);
+  }
+  if (nearTop) {
+    visibleMask |= static_cast<uint32_t>(TopMask);
+  }
+  if (nearBottom) {
+    visibleMask |= static_cast<uint32_t>(BottomMask);
+  }
+  std::scoped_lock lock(m_mutex);
+  m_visibleSentinelEdgeMask = visibleMask;
 #else
   (void)x;
   (void)y;
@@ -880,11 +911,50 @@ void FileDropBridge::onPrimaryMouseMove(
 #endif
 }
 
+bool FileDropBridge::isSentinelCaptureSupportedFormat(bool hasHdrop, bool nonEmpty)
+{
+  return hasHdrop && nonEmpty;
+}
+
+void FileDropBridge::clearPendingDragOnMouseLeaveOrRelease()
+{
+#if defined(_WIN32)
+  g_sentinelMgr.hideAll();
+  if (g_sentinelMgr.cancellingNativeDrag.exchange(false)) {
+    if (HWND timerHwnd = g_sentinelMgr.cancelTimerWindow.exchange(nullptr)) {
+      KillTimer(timerHwnd, 1);
+    }
+  }
+  g_sentinelMgr.nativeDragCancellationComplete.store(false);
+#endif
+  std::scoped_lock lock(m_mutex);
+  m_pendingFiles.clear();
+  m_canCaptureDrag = false;
+  m_dragCancellationInProgress = false;
+  m_dragCancellationComplete = false;
+  m_visibleSentinelEdgeMask = 0;
+}
+
+bool FileDropBridge::isDragHandoffInProgress() const
+{
+  std::scoped_lock lock(m_mutex);
+  return m_dragCancellationInProgress;
+}
+
+void FileDropBridge::setDragCancellationState(bool inProgress, bool complete)
+{
+  std::scoped_lock lock(m_mutex);
+  m_dragCancellationInProgress = inProgress;
+  m_dragCancellationComplete = complete;
+}
+
 void FileDropBridge::onPrimaryLeftMouseDown()
 {
   std::scoped_lock lock(m_mutex);
   m_pendingFiles.clear();
   m_canCaptureDrag = true;
+  m_dragCancellationInProgress = false;
+  m_dragCancellationComplete = false;
 }
 
 void FileDropBridge::onLeftMouseUp(bool onSecondary)
@@ -894,8 +964,20 @@ void FileDropBridge::onLeftMouseUp(bool onSecondary)
     std::scoped_lock lock(m_mutex);
     releaseSourceButton = m_sourceButtonNeedsRelease;
     m_sourceButtonNeedsRelease = false;
+    m_pendingFiles.clear();
+    m_canCaptureDrag = false;
+    m_dragCancellationInProgress = false;
+    m_dragCancellationComplete = false;
+    m_visibleSentinelEdgeMask = 0;
   }
 #if defined(_WIN32)
+  g_sentinelMgr.hideAll();
+  if (g_sentinelMgr.cancellingNativeDrag.exchange(false)) {
+    if (HWND timerHwnd = g_sentinelMgr.cancelTimerWindow.exchange(nullptr)) {
+      KillTimer(timerHwnd, 1);
+    }
+  }
+  g_sentinelMgr.nativeDragCancellationComplete.store(false);
   if (onSecondary && releaseSourceButton) {
     // 物理松手在副屏时被钩子转发，另给源系统补一次松手，清除本地按下状态。
     // 此事件只到本地 OS，不再次转发给副机，也不触发发送逻辑。

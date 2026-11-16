@@ -41,6 +41,9 @@ public:
   bool hasActiveTransfers() const;
 
   // Called by sentinel DropTarget::DragEnter or by tests
+  static bool isSentinelCaptureSupportedFormat(bool hasHdrop, bool nonEmpty);
+  void clearPendingDragOnMouseLeaveOrRelease();
+  bool isDragHandoffInProgress() const;
   bool setPendingDragFiles(std::vector<std::string> files);
   void onPrimaryLeftMouseDown();
   void onLeftMouseUp(bool onSecondary);
@@ -114,12 +117,16 @@ private:
   void handleReceiveSessionFinished(bool cancelled);
   void finalizeActiveSession();
   void notifyActiveTransfersChangedLocked();
+  void setDragCancellationState(bool inProgress, bool complete);
 
   mutable std::mutex m_mutex;
   std::vector<std::string> m_pendingFiles;
   uint64_t m_pendingTimestampMs = 0;
   bool m_canCaptureDrag = false;
   bool m_sourceButtonNeedsRelease = false;
+  bool m_dragCancellationInProgress = false;
+  bool m_dragCancellationComplete = false;
+  uint32_t m_visibleSentinelEdgeMask = 0;
 
   std::vector<std::string> m_activeDragFiles;
   std::string m_activeDragToken;

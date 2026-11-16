@@ -200,6 +200,29 @@ Server::~Server()
   removeClient(m_primaryClient);
 }
 
+bool Server::shouldClearSwitchWaitForDirection(
+    Direction dir, int32_t x, int32_t y, int32_t ax, int32_t ay, int32_t aw, int32_t ah, int32_t zoneSize
+)
+{
+  using enum Direction;
+  switch (dir) {
+  case Left:
+    return x >= ax + zoneSize;
+
+  case Right:
+    return x <= ax + aw - 1 - zoneSize;
+
+  case Top:
+    return y >= ay + zoneSize;
+
+  case Bottom:
+    return y <= ay + ah - 1 - zoneSize;
+
+  default:
+    return false;
+  }
+}
+
 size_t Server::getMaximumClipboardSizeBytes() const
 {
   return m_maximumClipboardSize * 1024;
@@ -897,6 +920,10 @@ bool Server::isSwitchOkay(
 void Server::noSwitch(int32_t x, int32_t y)
 {
   armSwitchTwoTap(x, y);
+  if (deskflow::FileDropBridge::instance().isDragHandoffInProgress()) {
+    // 正在等待本机 VK_ESCAPE 取消完成时，忽略微小回弹导致的切屏等待取消。
+    return;
+  }
   stopSwitchWait();
 }
 
@@ -1850,29 +1877,8 @@ void Server::onMouseMoveSecondary(int32_t dx, int32_t dy)
       // on then stop waiting.  also if it's not on the border
       // then arm the double tap.
       if (m_switchComputer != nullptr) {
-        bool clearWait;
-        int32_t zoneSize = m_primaryClient->getJumpZoneSize();
-        switch (m_switchDir) {
-        case Left:
-          clearWait = (m_x >= ax + zoneSize);
-          break;
-
-        case Right:
-          clearWait = (m_x <= ax + aw - 1 - zoneSize);
-          break;
-
-        case Top:
-          clearWait = (m_y >= ay + zoneSize);
-          break;
-
-        case Bottom:
-          clearWait = (m_y <= ay + ah - 1 + zoneSize);
-          break;
-
-        default:
-          clearWait = false;
-          break;
-        }
+        const int32_t zoneSize = m_primaryClient->getJumpZoneSize();
+        const bool clearWait = shouldClearSwitchWaitForDirection(m_switchDir, m_x, m_y, ax, ay, aw, ah, zoneSize);
         if (clearWait) {
           // still on local computer
           noSwitch(m_x, m_y);

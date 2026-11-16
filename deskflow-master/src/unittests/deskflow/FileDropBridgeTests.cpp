@@ -229,6 +229,55 @@ private Q_SLOTS:
 
     bridge.stopReceiver();
   }
+
+  void nonFileDragDoesNotSetPendingFiles()
+  {
+    QVERIFY(!deskflow::FileDropBridge::isSentinelCaptureSupportedFormat(false, true));
+    QVERIFY(!deskflow::FileDropBridge::isSentinelCaptureSupportedFormat(true, false));
+    QVERIFY(deskflow::FileDropBridge::isSentinelCaptureSupportedFormat(true, true));
+
+    auto &bridge = deskflow::FileDropBridge::instance();
+    bridge.onPrimaryLeftMouseDown();
+    QVERIFY(!bridge.setPendingDragFiles({}));
+    QVERIFY(!bridge.hasPendingDragFiles());
+
+    bridge.clearPendingDragOnMouseLeaveOrRelease();
+    QVERIFY(!bridge.hasPendingDragFiles());
+  }
+
+  void onLeftMouseUp_hidesSentinelAndClearsCancellationFlags()
+  {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString filePath = tempDir.filePath("sample.txt");
+    QFile file(filePath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("data");
+    file.close();
+
+    auto &bridge = deskflow::FileDropBridge::instance();
+    bridge.onPrimaryLeftMouseDown();
+    QVERIFY(bridge.setPendingDragFiles({filePath.toStdString()}));
+    QVERIFY(bridge.hasPendingDragFiles());
+
+    {
+      std::scoped_lock lock(bridge.m_mutex);
+      bridge.m_visibleSentinelEdgeMask = 0x0F;
+      bridge.m_dragCancellationInProgress = true;
+      bridge.m_dragCancellationComplete = true;
+    }
+
+    bridge.onLeftMouseUp(false);
+    QVERIFY(!bridge.hasPendingDragFiles());
+    QVERIFY(!bridge.isDragHandoffInProgress());
+    {
+      std::scoped_lock lock(bridge.m_mutex);
+      QCOMPARE(bridge.m_visibleSentinelEdgeMask, 0u);
+      QVERIFY(!bridge.m_sourceButtonNeedsRelease);
+      QVERIFY(!bridge.m_dragCancellationInProgress);
+      QVERIFY(!bridge.m_dragCancellationComplete);
+    }
+  }
 };
 
 QTEST_MAIN(FileDropBridgeTests)

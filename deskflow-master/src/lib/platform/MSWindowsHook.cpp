@@ -617,8 +617,8 @@ static bool mouseHookHandler(WPARAM wParam, int32_t x, int32_t y, int32_t data)
       // relay the event
       PostThreadMessage(g_threadID, DESKFLOW_MSG_MOUSE_MOVE, x, y);
 
-      // pass through while dragging with left button so edge drop target receives DragEnter
-      if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) {
+      // 仅当左键拖拽进入有效切换边带时放行 OS 鼠标事件，确保 OLE DoDragDrop 送达边缘哨兵。
+      if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0 && (inside || bogus)) {
         return false;
       }
 
