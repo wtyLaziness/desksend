@@ -583,7 +583,16 @@ private Q_SLOTS:
     QVERIFY(!bridge.isClientHoverVisible());
     QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Idle);
 
-    // Also test full Preparing -> Active -> Finished progression
+    // Also test full Preparing -> Active -> Finished progression (including out-of-order FINISHED + FILE completion)
+    QTemporaryDir stagingTemp;
+    QVERIFY(stagingTemp.isValid());
+    const QString stagedPath = stagingTemp.filePath(QStringLiteral("received.txt"));
+    {
+      QFile stagedFile(stagedPath);
+      QVERIFY(stagedFile.open(QIODevice::WriteOnly));
+      stagedFile.write("payload");
+    }
+
     bridge.onClientReceiveDragInfo(1, "DESKSEND_START:tokHover3");
     const QString tag3 = QString::fromStdString(deskflow::FileDropBridge::computeTokenTag("tokHover3"));
     bridge.onClientReceiveDragInfo(1, "DESKSEND_DROP:300,400:" + tag3.toStdString());
@@ -591,7 +600,12 @@ private Q_SLOTS:
     bridge.handleReceiveSessionStarted(1, tag3.toStdString());
     QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Active);
     bridge.handleReceiveSessionFinished(false);
+    QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Active);
+    auto *inProcExec = bridge.inProcessExecutorForTesting();
+    QVERIFY(inProcExec != nullptr);
+    inProcExec->handleReceivedFileLine(stagedPath.toStdString());
     QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Finished);
+    QVERIFY(QFileInfo::exists(fallbackDir.filePath(QStringLiteral("received.txt"))));
 
     qunsetenv("DESKSEND_DEFAULT_DROP_DIR");
   }
@@ -1293,13 +1307,15 @@ int main(int argc, char *argv[])
   FileDropBridgeTests tc;
   const int rc = QTest::qExec(&tc, args);
   if (!diagPath.isEmpty()) {
-    QFile f(diagPath);
-    if (f.open(QIODevice::ReadOnly)) {
-      std::cerr << f.readAll().toStdString() << std::flush;
-      f.close();
+    if (rc != 0) {
+      QFile f(diagPath);
+      if (f.open(QIODevice::ReadOnly)) {
+        std::cerr << f.readAll().toStdString() << std::flush;
+        f.close();
+      }
+      std::cerr << "FileDropBridgeTests QTest::qExec rc=" << rc << std::endl;
     }
     QFile::remove(diagPath);
-    std::cerr << "FileDropBridgeTests QTest::qExec rc=" << rc << std::endl;
   }
   return rc;
 }
