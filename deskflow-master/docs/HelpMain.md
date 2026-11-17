@@ -1,24 +1,34 @@
-Welcome to the Deskflow Help!
+# DeskSend 帮助
 
-## Introduction
-* [Homepage](https://deskflow.org) - Project home page
-* [Code](https://github.com/deskflow/deskflow) - Read the code
+DeskSend 支持在多台 Windows 电脑间共享键鼠、双向拖文件，并显示拖拽和传输状态。
 
-## User Guides
-* [Configuration] - Configuration files
-* [Raising Issues] - What to do if you have found an issue.
-* [Security Policy] - Our policy around security related topics
+## 连接电脑
 
-## Getting help online
+1. 两端使用相同版本的完整便携包，解压后运行 `DeskSend.exe`。
+2. 主机选择共享此计算机的键盘和鼠标，在“配置服务器”中添加副机，并按实际屏幕位置排列。屏幕名称与副机显示的计算机名一致。
+3. 副机选择使用另一台电脑的键鼠，填入主机局域网 IP 并启动。首次 TLS 连接时核对证书指纹。
+4. 主机放行入站 TCP 24800；双向传文件时，主机和副机都需放行入站 TCP 53318。
 
-* View the [Wiki](https://github.com/deskflow/deskflow/wiki) Online resource
+## 双向拖文件
 
-### Chat with us
-* Main discussion on Matrix: [`#deskflow:matrix.org`](https://matrix.to/#/#deskflow:matrix.org) ([Matrix clients](https://matrix.org/ecosystem/clients/))
-* Discussion also happens on IRC: `#deskflow` or `#deskflow-dev` on [Libera Chat](https://libera.chat/)
-* Start a [new discussion](https://github.com/deskflow/deskflow/discussions) on our GitHub project.
+使用主机共享的鼠标，在主机或副机的桌面、资源管理器中拖起文件或文件夹，跨入目标屏幕后松手。副机自己的实体鼠标不能独立发起跨屏切换。
 
-[Configuration]:Configuration.md
-[Raising Issues]:Issues.md
-[Security Policy]:Security.md
+进入目标屏幕后，光标旁显示松手接收提示；松手后显示准备接收、进度和结果。松手前按 Esc 或拖回源屏可取消跨屏发送。源文件保留，开始传输后可继续使用鼠标。
 
+桌面和资源管理器文件夹可作为落点。其他窗口回退到接收电脑的“下载”目录，无法取得该路径时回退到桌面，并提供文件剪贴板供 Ctrl+V 粘贴。空文件夹不传输。
+
+多台副机连接同一主机时，可拖着副机 A 的文件穿过主机屏幕，到副机 B 松手；中途保持左键按下，文件由源电脑直传最终接收电脑。
+
+## 更新与迁移
+
+在“帮助 → 检查 DeskSend 更新…”中下载并安装；英文入口为 `Help → Check for DeskSend Updates...`。请先等待文件传输结束。
+
+手动换目录升级时，退出旧程序，将新包完整解压，并复制旧目录的整个 `settings/` 到新目录。不要只复制 EXE，不要改名 `settings/Deskflow.conf`。便携版不安装服务，不能控制登录界面、锁屏或 UAC 安全桌面。
+
+## 更多说明
+
+- [详细使用与排障指南](https://github.com/wtyLaziness/desksend/blob/main/docs/使用指南.md)
+- [问题排查与反馈](Issues.md)
+- [底层配置参考](Configuration.md)
+- [下载最新完整包](https://github.com/wtyLaziness/desksend-releases/releases/latest)
+- [DeskSend 源码仓库](https://github.com/wtyLaziness/desksend)

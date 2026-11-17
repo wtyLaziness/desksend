@@ -48,15 +48,22 @@ if any(p.is_file() and p.name != 'Deskflow.conf' for p in settings.rglob('*')):
 解压完整目录，运行 DeskSend.exe。两台电脑均使用此完整包。
 DeskSend 已整合键鼠共享与局域网文件传输，无需单独安装 LocalSend。
 帮助 → 检查 DeskSend 更新，可下载完整更新包并安装重启。
+英文入口：Help → Check for DeskSend Updates...。安装前请等待文件传输结束。
 更新会保留 settings 目录中的配置、证书和配对。
 安装失败时查看提示中的更新日志，旧程序备份在 .desksend-backups 中。
 
-从旧版手动迁移：先退出旧程序，再将旧目录的整个 settings 目录复制到新目录，
+从旧版手动迁移：先等传输结束并退出旧程序，再将旧目录的整个 settings 目录复制到新目录，
 覆盖新包的默认 settings；运行 DeskSend.exe。不要只复制其中一个 exe。
 
-主机监听 TCP 24800；双向跨屏文件传输时，主机与副机的文件接收组件均会监听 TCP 53318，需要防火墙放行。
+使用主机共享的鼠标，可从主机拖文件到副机，也可从副机拖回主机。
+多台副机连接同一主机时，可拖着文件穿过主机屏幕，到另一台副机松手。
+拖入目标屏幕显示松手接收提示，松手后显示准备接收、进度和结果。
+源文件保留；松手前按 Esc 或拖回源屏可取消，空目录不传输。
+
+主机监听 TCP 24800；双向跨屏文件传输时，主机与副机均需放行入站 TCP 53318。
 便携版不包含系统服务，不能控制 UAC 提示和 Windows 登录界面。
 
+使用指南：https://github.com/wtyLaziness/desksend/blob/main/docs/使用指南.md
 更新和对应源码：https://github.com/wtyLaziness/desksend-releases/releases
 DeskSend 基于 Deskflow（GPLv2 + OpenSSL exception）及 LocalSend（Apache-2.0）。
 版权和许可证随包附带，对应构建源码作为同一 Release 附件提供。

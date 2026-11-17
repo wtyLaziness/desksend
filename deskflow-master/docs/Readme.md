@@ -1,18 +1,12 @@
-# Deskflow
+# DeskSend
 
-Deskflow is a free and open source keyboard and mouse sharing app. Use the keyboard, mouse, or trackpad of one computer to control nearby computers, and work seamlessly between them.
+DeskSend 将 Deskflow 键鼠共享与 LocalSend 局域网文件传输整合在 Windows x64 便携包中。使用主机的一套键鼠控制多台电脑，也能双向拖动文件和文件夹，并查看接收提示、传输进度和结果。
 
-[Homepage](https://deskflow.org) [Code](https://github.com/deskflow/deskflo)
+日常入口为 `DeskSend.exe`。随包的 `deskflow-core.exe` 和 `localsend-cli.exe` 在后台工作，无需单独启动 LocalSend。
 
-## Getting help online
+- [本地帮助](HelpMain.md)
+- [详细使用指南](https://github.com/wtyLaziness/desksend/blob/main/docs/使用指南.md)
+- [下载与更新](https://github.com/wtyLaziness/desksend-releases/releases/latest)
+- [源码与许可证说明](https://github.com/wtyLaziness/desksend)
 
- - View the [wiki](https://github.com/deskflow/deskflow/wiki) Online resource
-
-### Chat with us
- - Main discussion on Matrix: [`#deskflow:matrix.org`](https://matrix.to/#/#deskflow:matrix.org) ([Matrix clients](https://matrix.org/ecosystem/clients/))
- - Discussion also happens on IRC: `#deskflow` or `#deskflow-dev` on [Libera Chat](https://libera.chat/)
- - Start a [new discussion](https://github.com/deskflow/deskflow/discussions) on our GitHub project.
-
-## Reporting security issues
-
-Check [Security](Security.md) to find out how to report security issues.
+Deskflow 和 LocalSend 的原作者版权及许可文本保留；部分内部程序、协议和配置名称继续使用 Deskflow，以维持兼容。

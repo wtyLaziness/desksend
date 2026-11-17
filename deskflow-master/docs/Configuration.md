@@ -1,4 +1,8 @@
-# GUI Config
+# GUI 配置参考
+
+本页保留 Deskflow 核心的配置参考，包含上游多平台配置；不表示 DeskSend 已提供这些平台的完整包。DeskSend 的使用和更新以[使用指南](https://github.com/wtyLaziness/desksend/blob/main/docs/使用指南.md)为准。
+
+Windows 便携包使用程序目录中的 `settings/Deskflow.conf`。迁移时复制整个 `settings/`，不要改名配置文件，也不要将私钥公开。内部的 Deskflow 路径与键名用于兼容，继续保留。
 
  Deskflow will automatically figure out where to save settings and other files.
 
@@ -27,9 +31,10 @@ The path of the settings file will be used as the base for all other config file
 ### Windows
 
   1. `<install-path>/settings/Deskflow.conf`
-  2. Windows Registry `HKCU\Software\Deskflow\Deskflow`
+  2. `<用户目录>/AppData/Roaming/Deskflow/Deskflow.conf`
+  3. `<系统盘>/ProgramData/Deskflow/Deskflow.conf`
 
-Windows will save to the install dir if settings are loaded from there. If not, it saves any other config files in: `C:\ProgramData\Deskflow\`
+便携模式优先使用程序目录中的配置。未发现便携配置时，依次查找用户和系统配置；均不存在时，在用户目录创建 INI 配置。证书等配置相对于当前配置文件目录保存，当前实现不以 Windows 注册表作为上述查找路径。
 
 When using settings from the install dir, the service mode will not be available.
 
@@ -52,7 +57,7 @@ It will begin with `[client]`
 | Option                    |    Valid Values    | Description |
 |:--------------------------|:------------------:|:-----------|
 | dynamicConnectionInterval | `true` or `false`  | Use dynamic connection retry times based on number of previously failed attempts [default: false] |
-| languageSync              | `true` or `false`  | Sync to server language [default: true] |
+| languageSync              | `true` or `false`  | Sync to server language [default: false] |
 | remoteHost                | `IP` or `hostname` | The remote host(s) to connect to. Use a comma separated list when you want to try several hosts |
 | yScrollScale              | Double 0.1 - 10.0  | Vertical mouse scrolling will be scaled by this amount on the client [default: 1.0] |
 | xScrollScale              | Double 0.1 - 10.0  | Horizontal mouse scrolling will be scaled by this amount on the client [default: 1.0] |
@@ -69,12 +74,12 @@ This section contains general options it will begin with `[core]`
 | display       |  int              | The XWindow display to use [default: autodetected] |
 | interface     | IP Address        | Preferred IP to use for network communication. By default the server board casts on any available address |
 | lastVersion   | M.m.p.t           | The version last run used for checking for updates |
-| port          | port #            | Port to use when connecting [default: 24800 |
+| port          | port #            | Port to use when connecting [default: 24800] |
 | preventSleep  | `true` or `false` | Prevent sleep when Deskflow is active [default: false] |
-| processMode   | `1` or `0`        | The mode we use to start the process Service or Desktop |
+| processMode   | `1` or `0`        | Core launch mode: 0 = Service, 1 = Desktop; portable packages use Desktop |
 | computerName  | string            | Name used to identify the computer [default: machine's hostname] |
 | useHooks      | `true` or `false` | If Windows uses hooks or not [default: true] |
-| language      | 639 language      | The language to display the GUI in [default: en] |
+| language      | 639 language      | GUI language; the DeskSend portable package sets zh_CN |
 | enableEnterCommand | `true` or `false` | Should the enter command be triggered when the computer is entered [defaut: false] |
 | enterCommand  | command | A command to run when the computer is entered. |
 | enableExitCommand | `true` or `false` | Should the exit command be triggered when the computer is exited [defaut: false] |
@@ -97,17 +102,16 @@ This section contains options used by the GUI it will begin with `[gui]`
 |Option                          | Valid Values      |Description|
 |:-------------------------------|:-----------------:|:-----------|
 | autoHide                       | `true` or `false` | When true the app will hide itself on start up [default: false] |
-| enableUpdateCheck              | `true` or `false` | When true check the update URL to see if a new version was released on start up [default: false] |
+| enableUpdateCheck              | `true` or `false` | Check for updates on startup; enabled in the DeskSend portable package |
 | closeReminder                  | `true` or `false` | Used to track if we have shown the reminder that when you close the app it remain running in the background  [default: true]|
 | closeToTray                    | `true` or `false` | When `true` the gui will run in the systemTray when its closed [default: true] |
-| logExpanded                    | `true` or `false` | Should the log section of the GUI be opened [default: false] |
+| logExpanded                    | `true` or `false` | Should the log section of the GUI be opened [default: true] |
 | symbolicTrayIcon               | `true` or `false` | When true use the monocolor (symbolic) icon false uses a colorful icon for the tray [default: true] |
-| showGenericClientFailureDialog | `true` or `false` | When `true` client connection errors will not show popup error messages [default: true] |
 | shownFirstConnectedMessage     | `true` or `false` | When `true` GUI has shown the user the message for connecting the first time [default: false] |
 | shownServerFirstStartMessage   | `true` or `false` | When `true` GUI has shown the user the Deskflow server is now running message [default: false] |
-| shownVerionInTitle             | `true` or `false` | When `true` GUI will include the version in the window title [default: false] |
+| showVersionInTitle             | `true` or `false` | When `true` GUI will include the version in the window title [default: false] |
 | startCoreWithGui               | `true` or `false` | When true the Core will be started with the GUI. It is set to the Core's state on exit. |
-| updateCheckUrl                 | URL               | The URL to use when checking for a new version number, it should return a version [default: https://api.deskflow.org/version]|
+| updateCheckUrl                 | URL               | Legacy setting; the DeskSend updater uses its fixed desksend-releases channel and ignores saved overrides|
 
 ### Log
 
