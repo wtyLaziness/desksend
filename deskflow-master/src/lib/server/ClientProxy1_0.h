@@ -71,6 +71,7 @@ protected:
 private:
   void disconnect();
   void removeHandlers();
+  void removeHeartbeatAlarmTimer();
 
   void handleData();
   void handleDisconnect();

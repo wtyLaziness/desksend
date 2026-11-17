@@ -318,7 +318,9 @@ impl DiscoveryHandle {
             self.discover_known_http_channels(known_channels).await?;
             tokio::time::sleep(grace).await;
 
-            if self.state.confirmations.load(Ordering::Relaxed) == confirmations {
+            if should_scan_subnet_port(port)
+                && self.state.confirmations.load(Ordering::Relaxed) == confirmations
+            {
                 futures_util::future::try_join_all(
                     interface_ips
                         .into_iter()
@@ -345,6 +347,9 @@ impl DiscoveryHandle {
         port: u16,
         protocol: ProtocolType,
     ) -> Result<Vec<StatefulDevice>, ClientError> {
+        if !should_scan_subnet_port(port) {
+            return Ok(Vec::new());
+        }
         if !self.state.scanning.lock().unwrap().insert(interface_ip) {
             return Ok(Vec::new());
         }
@@ -561,6 +566,21 @@ async fn answer_announcement(
                 ErrorChain(&err),
             );
         }
+    }
+}
+
+fn should_scan_subnet_port(port: u16) -> bool {
+    port > 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_scan_subnet_port;
+
+    #[test]
+    fn port_zero_never_triggers_subnet_scan() {
+        assert!(!should_scan_subnet_port(0));
+        assert!(should_scan_subnet_port(53318));
     }
 }
 

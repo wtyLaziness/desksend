@@ -40,12 +40,13 @@ void clearSettings(bool enableRestart)
   // the app config and server configs from being applied.
   Settings::save(false);
 
+  const bool wasPortable = Settings::isPortableMode();
   auto profileDir = QDir(Settings::settingsPath());
   qDebug("removing profile dir: %s", qPrintable(profileDir.absolutePath()));
   profileDir.removeRecursively();
 
 #ifdef Q_OS_WIN
-  if (Settings::isPortableMode()) {
+  if (wasPortable) {
     // make a new empty portable settings file
     if (profileDir.mkpath(Settings::settingsPath())) {
       QFile file(Settings::settingsFile());

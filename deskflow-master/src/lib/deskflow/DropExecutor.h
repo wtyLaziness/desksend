@@ -49,6 +49,28 @@ private:
   bool m_hasDeferred = false;
 };
 
+class ReceiverAuthCache
+{
+public:
+  struct Entry
+  {
+    std::string command;
+    uint64_t timestampMs = 0;
+  };
+
+  static constexpr uint64_t kDefaultTtlMs = 300000;
+  static constexpr size_t kMaxEntries = 64;
+
+  void record(const std::string &command, uint64_t timestampMs, uint64_t ttlMs = kDefaultTtlMs);
+  std::vector<std::string> unexpiredGrants(uint64_t timestampMs, uint64_t ttlMs = kDefaultTtlMs);
+  void clear();
+
+private:
+  void pruneExpired(uint64_t timestampMs, uint64_t ttlMs);
+
+  std::deque<Entry> m_entries;
+};
+
 class IDropExecutorHost
 {
 public:
@@ -180,6 +202,7 @@ private:
   std::string m_defaultDropFallbackDir;
   std::string m_lastResolvedDropDir;
   std::deque<std::string> m_pendingReceiverAuthLines;
+  ReceiverAuthCache m_cachedReceiverGrants;
   std::deque<DropTargetEntry> m_pendingDropTargets;
   DropTargetEntry m_activeSessionTarget;
   std::vector<std::string> m_activeSessionPlacedFiles;
@@ -193,6 +216,8 @@ private:
   DragHoverIndicator m_clientHoverIndicator{false};
   TransferStatusOverlay m_senderOverlay{false, false};
   TransferStatusOverlay m_receiverOverlay{true, false};
+
+  static constexpr int kMaxConsecutiveReceiverRestarts = 5;
 
   std::string m_stagingDir;
   std::string m_currentAllowedHostsKey;

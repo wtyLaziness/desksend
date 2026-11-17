@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <iostream>
 #include <memory>
+#include <thread>
 
 namespace {
 
@@ -1282,11 +1283,287 @@ private Q_SLOTS:
     QVERIFY(releaseCmd != nullptr);
     QVERIFY(releaseCmd->flag);
   }
+
+  void receiverAuthCache_tracksUnexpiredNonRevokedGrants()
+  {
+    deskflow::ReceiverAuthCache cache;
+    cache.record("GRANT tok_a", 1000);
+    cache.record("GRANT tok_b", 2000);
+    cache.record("REVOKE tok_a", 3000);
+    cache.record("IGNORE_UNKNOWN tok_c", 3500);
+
+    auto active = cache.unexpiredGrants(4000);
+    QCOMPARE(active.size(), size_t{1});
+    QCOMPARE(active[0], std::string("GRANT tok_b"));
+
+    // Grant expires after 300000 ms TTL
+    QVERIFY(cache.unexpiredGrants(2000 + 300001).empty());
+
+    // Capacity bounded at kMaxEntries (64) keeping newest grants
+    cache.clear();
+    for (size_t i = 0; i < 70; ++i) {
+      cache.record("GRANT tok_" + std::to_string(i), 10000 + i);
+    }
+    const auto bounded = cache.unexpiredGrants(11000);
+    QCOMPARE(bounded.size(), deskflow::ReceiverAuthCache::kMaxEntries);
+    QCOMPARE(bounded.front(), std::string("GRANT tok_6"));
+    QCOMPARE(bounded.back(), std::string("GRANT tok_69"));
+  }
+
+  void inProcessDropExecutor_replaysCachedGrantsOnReceiverRestart()
+  {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    struct ScopedTestEnv
+    {
+      ScopedTestEnv(const QString &exe, const QString &dir)
+      {
+        qputenv("DESKSEND_LOCALSEND_CLI", exe.toUtf8());
+        qputenv("DESKSEND_TEST_MOCK_CLI", "1");
+        qputenv("DESKSEND_TEST_MOCK_CLI_MODE", "receiver_replay");
+        qputenv("DESKSEND_TEST_MOCK_CLI_DIR", dir.toUtf8());
+        qputenv("DESKSEND_RECEIVER_BACKOFF_MS", "20");
+      }
+      ~ScopedTestEnv()
+      {
+        qunsetenv("DESKSEND_LOCALSEND_CLI");
+        qunsetenv("DESKSEND_TEST_MOCK_CLI");
+        qunsetenv("DESKSEND_TEST_MOCK_CLI_MODE");
+        qunsetenv("DESKSEND_TEST_MOCK_CLI_DIR");
+        qunsetenv("DESKSEND_RECEIVER_BACKOFF_MS");
+      }
+    } envGuard(QCoreApplication::applicationFilePath(), tempDir.path());
+
+    deskflow::InProcessDropExecutor executor(false);
+    deskflow::DropAgentCommand startCmd;
+    startCmd.type = deskflow::DropAgentCommandType::StartReceiver;
+    startCmd.items = {"10.0.0.2"};
+    executor.execute(startCmd);
+
+    auto sendAuth = [&executor](const std::string &cmd) {
+      deskflow::DropAgentCommand authCmd;
+      authCmd.type = deskflow::DropAgentCommandType::ReceiverAuthCommand;
+      authCmd.text = cmd;
+      executor.execute(authCmd);
+    };
+    sendAuth("GRANT tok_revoked");
+    sendAuth("REVOKE tok_revoked");
+    sendAuth("GRANT tok_keep");
+
+    const QString rx2ReadyFlag = tempDir.filePath(QStringLiteral("rx_2_ready.flag"));
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(rx2ReadyFlag), 5000);
+
+    QFile rx2Log(tempDir.filePath(QStringLiteral("rx_2.log")));
+    QVERIFY(rx2Log.open(QIODevice::ReadOnly));
+    const QString contents = QString::fromUtf8(rx2Log.readAll());
+    QVERIFY(contents.contains(QStringLiteral("GRANT tok_keep")));
+    QVERIFY(!contents.contains(QStringLiteral("tok_revoked")));
+
+    executor.execute({deskflow::DropAgentCommandType::StopReceiver});
+  }
+
+  void inProcessDropExecutor_capsConsecutiveEarlyReceiverFailures()
+  {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    struct ScopedTestEnv
+    {
+      ScopedTestEnv(const QString &exe, const QString &dir)
+      {
+        qputenv("DESKSEND_LOCALSEND_CLI", exe.toUtf8());
+        qputenv("DESKSEND_TEST_MOCK_CLI", "1");
+        qputenv("DESKSEND_TEST_MOCK_CLI_MODE", "receiver_fail_early");
+        qputenv("DESKSEND_TEST_MOCK_CLI_DIR", dir.toUtf8());
+        qputenv("DESKSEND_RECEIVER_BACKOFF_MS", "15");
+      }
+      ~ScopedTestEnv()
+      {
+        qunsetenv("DESKSEND_LOCALSEND_CLI");
+        qunsetenv("DESKSEND_TEST_MOCK_CLI");
+        qunsetenv("DESKSEND_TEST_MOCK_CLI_MODE");
+        qunsetenv("DESKSEND_TEST_MOCK_CLI_DIR");
+        qunsetenv("DESKSEND_RECEIVER_BACKOFF_MS");
+      }
+    } envGuard(QCoreApplication::applicationFilePath(), tempDir.path());
+
+    deskflow::InProcessDropExecutor executor(false);
+    deskflow::DropAgentCommand startCmd;
+    startCmd.type = deskflow::DropAgentCommandType::StartReceiver;
+    startCmd.items = {"10.0.0.2"};
+    executor.execute(startCmd);
+
+    const QString countPath = tempDir.filePath(QStringLiteral("fail_count.txt"));
+    auto launchCount = [&countPath]() -> int {
+      QFile f(countPath);
+      if (!f.open(QIODevice::ReadOnly)) {
+        return 0;
+      }
+      return static_cast<int>(f.readAll().size());
+    };
+
+    const int expectedLaunches = 1 + deskflow::InProcessDropExecutor::kMaxConsecutiveReceiverRestarts;
+    QTRY_COMPARE_WITH_TIMEOUT(launchCount(), expectedLaunches, 5000);
+    QTest::qWait(150);
+    QCOMPARE(launchCount(), expectedLaunches);
+    QVERIFY(!executor.m_receiverDesired);
+    QCOMPARE(executor.overlayFor(true).phase(), deskflow::TransferStatusOverlay::Phase::Failed);
+  }
+
+  void inProcessDropExecutor_sendWatchdogKillsStalledJobAndAdvancesQueue()
+  {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString samplePath = tempDir.filePath(QStringLiteral("sample.txt"));
+    {
+      QFile f(samplePath);
+      QVERIFY(f.open(QIODevice::WriteOnly));
+      f.write("hello");
+    }
+
+    struct ScopedTestEnv
+    {
+      ScopedTestEnv(const QString &exe, const QString &dir)
+      {
+        qputenv("DESKSEND_LOCALSEND_CLI", exe.toUtf8());
+        qputenv("DESKSEND_TEST_MOCK_CLI", "1");
+        qputenv("DESKSEND_TEST_MOCK_CLI_MODE", "send_watchdog");
+        qputenv("DESKSEND_TEST_MOCK_CLI_DIR", dir.toUtf8());
+        qputenv("DESKSEND_SEND_INACTIVITY_TIMEOUT_MS", "150");
+      }
+      ~ScopedTestEnv()
+      {
+        qunsetenv("DESKSEND_LOCALSEND_CLI");
+        qunsetenv("DESKSEND_TEST_MOCK_CLI");
+        qunsetenv("DESKSEND_TEST_MOCK_CLI_MODE");
+        qunsetenv("DESKSEND_TEST_MOCK_CLI_DIR");
+        qunsetenv("DESKSEND_SEND_INACTIVITY_TIMEOUT_MS");
+      }
+    } envGuard(QCoreApplication::applicationFilePath(), tempDir.path());
+
+    struct SendHost final : public deskflow::IDropExecutorHost
+    {
+      void onPendingDragCaptured(std::vector<std::string>, int, int32_t, int32_t) override {}
+      void onDragCancellationCompleted(bool) override {}
+      void onPendingDragCleared() override {}
+      void onActiveTransfersChanged(bool) override {}
+      void onSendCompleted(const std::string &targetIp, bool success) override
+      {
+        results.emplace_back(targetIp, success);
+      }
+      std::vector<std::pair<std::string, bool>> results;
+    } host;
+
+    deskflow::InProcessDropExecutor executor(false);
+    executor.setHost(&host);
+
+    deskflow::DropAgentCommand job1;
+    job1.type = deskflow::DropAgentCommandType::SendFiles;
+    job1.text = "10.0.0.10";
+    job1.items = {samplePath.toStdString()};
+    job1.authToken = "tok1";
+    executor.execute(job1);
+
+    deskflow::DropAgentCommand job2;
+    job2.type = deskflow::DropAgentCommandType::SendFiles;
+    job2.text = "10.0.0.11";
+    job2.items = {samplePath.toStdString()};
+    job2.authToken = "tok2";
+    executor.execute(job2);
+
+    QTRY_COMPARE_WITH_TIMEOUT(host.results.size(), size_t{2}, 5000);
+    QCOMPARE(host.results[0].first, std::string("10.0.0.10"));
+    QCOMPARE(host.results[0].second, false);
+    QCOMPARE(host.results[1].first, std::string("10.0.0.11"));
+    QCOMPARE(host.results[1].second, true);
+    QVERIFY(!executor.hasActiveTransfers());
+  }
 };
+
+namespace {
+
+int runMockLocalSendCli()
+{
+  const QString mode = qEnvironmentVariable("DESKSEND_TEST_MOCK_CLI_MODE");
+  const QString dirPath = qEnvironmentVariable("DESKSEND_TEST_MOCK_CLI_DIR");
+  QDir dir(dirPath);
+
+  if (mode == QLatin1String("receiver_fail_early")) {
+    QFile f(dir.filePath(QStringLiteral("fail_count.txt")));
+    if (f.open(QIODevice::Append | QIODevice::WriteOnly)) {
+      f.write("x");
+      f.flush();
+    }
+    return 1;
+  }
+
+  if (mode == QLatin1String("receiver_replay")) {
+    const QString marker = dir.filePath(QStringLiteral("launch_1.done"));
+    const bool isFirst = !QFileInfo::exists(marker);
+    if (isFirst) {
+      QFile logFile(dir.filePath(QStringLiteral("rx_1.log")));
+      std::string line;
+      while (std::getline(std::cin, line)) {
+        if (logFile.open(QIODevice::Append | QIODevice::WriteOnly)) {
+          logFile.write(line.c_str(), static_cast<qint64>(line.size()));
+          logFile.write("\n");
+          logFile.close();
+        }
+        if (line == "GRANT tok_keep") {
+          break;
+        }
+      }
+      QFile doneFile(marker);
+      if (doneFile.open(QIODevice::WriteOnly)) {
+        doneFile.close();
+      }
+      return 1;
+    }
+
+    QFile logFile(dir.filePath(QStringLiteral("rx_2.log")));
+    std::string line;
+    while (std::getline(std::cin, line)) {
+      if (logFile.open(QIODevice::Append | QIODevice::WriteOnly)) {
+        logFile.write(line.c_str(), static_cast<qint64>(line.size()));
+        logFile.write("\n");
+        logFile.close();
+      }
+      if (line == "GRANT tok_keep") {
+        std::cout << "LOCALSEND_RECEIVER_READY:53318\n" << std::flush;
+        QFile readyFile(dir.filePath(QStringLiteral("rx_2_ready.flag")));
+        if (readyFile.open(QIODevice::WriteOnly)) {
+          readyFile.close();
+        }
+      }
+    }
+    return 0;
+  }
+
+  if (mode == QLatin1String("send_watchdog")) {
+    const QString marker = dir.filePath(QStringLiteral("send_1.done"));
+    const bool isFirst = !QFileInfo::exists(marker);
+    if (isFirst) {
+      QFile doneFile(marker);
+      if (doneFile.open(QIODevice::WriteOnly)) {
+        doneFile.close();
+      }
+      std::this_thread::sleep_for(std::chrono::seconds(5));
+      return 1;
+    }
+    std::cout << "SEND_PROGRESS:5:5\n" << std::flush;
+    return 0;
+  }
+
+  return 1;
+}
+
+} // namespace
 
 int main(int argc, char *argv[])
 {
   QCoreApplication app(argc, argv);
+  if (qEnvironmentVariableIsSet("DESKSEND_TEST_MOCK_CLI")) {
+    return runMockLocalSendCli();
+  }
   QStringList args;
   args.reserve(argc + 3);
   bool hasOutputOpt = false;

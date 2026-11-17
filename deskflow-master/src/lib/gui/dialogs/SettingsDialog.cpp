@@ -291,7 +291,7 @@ void SettingsDialog::loadFromConfig()
   ui->rbExitOnClose->setChecked(!closeToTray);
 
   ui->lblDebugWarning->setVisible(
-      Settings::value(Settings::Log::Level).toInt() > static_cast<int>(LogLevel::Level::Info)
+      ui->comboLogLevel->currentIndex() > static_cast<int>(LogLevel::Level::Info)
   );
 
   ui->comboInterface->setCurrentText(Settings::value(Settings::Core::Interface).toString());

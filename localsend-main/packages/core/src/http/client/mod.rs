@@ -16,7 +16,17 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
+
+pub(super) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn effective_client_timeouts(timeout: Option<Duration>) -> (Duration, Duration) {
+    let connect = timeout.map_or(DEFAULT_CONNECT_TIMEOUT, |t| t.min(DEFAULT_CONNECT_TIMEOUT));
+    let read = timeout.map_or(DEFAULT_READ_TIMEOUT, |t| t.min(DEFAULT_READ_TIMEOUT));
+    (connect, read)
+}
 
 pub enum LsHttpClient {
     V2(LsHttpClientV2),
@@ -229,6 +239,8 @@ pub(super) fn create_reqwest_client(
     // HTTP/1.1 only: HTTP/2's flow-control window caps bulk upload throughput.
     tls_config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
+    let (connect_timeout, read_timeout) = effective_client_timeouts(timeout);
+
     let mut builder = reqwest::Client::builder()
         .tls_backend_preconfigured(tls_config)
         .tls_info(true)
@@ -239,7 +251,9 @@ pub(super) fn create_reqwest_client(
         // Peers never redirect; following one would talk to a different host
         // than the one whose certificate is being verified.
         .redirect(reqwest::redirect::Policy::none())
-        .dns_resolver(Arc::new(ScopedHostResolver));
+        .dns_resolver(Arc::new(ScopedHostResolver))
+        .connect_timeout(connect_timeout)
+        .read_timeout(read_timeout);
 
     if let Some(timeout) = timeout {
         builder = builder.timeout(timeout);
@@ -346,5 +360,21 @@ impl ResponseExt for Response {
                 Some(message)
             },
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_timeouts_bound_stalled_connections() {
+        assert_eq!(
+            effective_client_timeouts(None),
+            (DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT)
+        );
+        let short = Duration::from_millis(500);
+        assert_eq!(effective_client_timeouts(Some(short)), (short, short));
+        assert!(LsHttpClientV2::try_new_without_cert().is_ok());
     }
 }

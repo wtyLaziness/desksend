@@ -10,6 +10,7 @@
 #include "base/Log.h"
 #include "common/Settings.h"
 #include "deskflow/DragProtocol.h"
+#include "deskflow/ipc/CoreIpc.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -59,6 +60,32 @@ uint64_t nowMs()
 {
   using namespace std::chrono;
   return static_cast<uint64_t>(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+}
+
+int receiverRestartDelayMs(int attempt)
+{
+  if (const char *envDelay = std::getenv("DESKSEND_RECEIVER_BACKOFF_MS"); envDelay && envDelay[0] != '\0') {
+    bool ok = false;
+    const int overrideMs = QString::fromUtf8(envDelay).toInt(&ok);
+    if (ok && overrideMs >= 0) {
+      return overrideMs;
+    }
+  }
+  const int shift = std::min(attempt, 4);
+  return std::min(15000, 1000 * (1 << shift));
+}
+
+int sendInactivityTimeoutMs()
+{
+  if (const char *envTimeout = std::getenv("DESKSEND_SEND_INACTIVITY_TIMEOUT_MS");
+      envTimeout && envTimeout[0] != '\0') {
+    bool ok = false;
+    const int overrideMs = QString::fromUtf8(envTimeout).toInt(&ok);
+    if (ok && overrideMs >= 50) {
+      return overrideMs;
+    }
+  }
+  return 120000;
 }
 
 QString resolveLocalSendConfigDir(const char *envOverride, const QString &roleSubdir)
@@ -609,6 +636,44 @@ void ReceiverRestartPolicy::reset()
   m_deferredHosts.clear();
   m_hasActive = false;
   m_hasDeferred = false;
+}
+
+void ReceiverAuthCache::pruneExpired(uint64_t timestampMs, uint64_t ttlMs)
+{
+  std::erase_if(m_entries, [timestampMs, ttlMs](const Entry &entry) {
+    return timestampMs >= entry.timestampMs && (timestampMs - entry.timestampMs > ttlMs);
+  });
+}
+
+void ReceiverAuthCache::record(const std::string &command, uint64_t timestampMs, uint64_t ttlMs)
+{
+  pruneExpired(timestampMs, ttlMs);
+  if (command.rfind("GRANT ", 0) == 0) {
+    std::erase_if(m_entries, [&command](const Entry &entry) { return entry.command == command; });
+    while (m_entries.size() >= kMaxEntries) {
+      m_entries.pop_front();
+    }
+    m_entries.push_back(Entry{command, timestampMs});
+  } else if (command.rfind("REVOKE ", 0) == 0) {
+    const std::string grantCmd = "GRANT " + command.substr(7);
+    std::erase_if(m_entries, [&grantCmd](const Entry &entry) { return entry.command == grantCmd; });
+  }
+}
+
+std::vector<std::string> ReceiverAuthCache::unexpiredGrants(uint64_t timestampMs, uint64_t ttlMs)
+{
+  pruneExpired(timestampMs, ttlMs);
+  std::vector<std::string> out;
+  out.reserve(m_entries.size());
+  for (const auto &entry : m_entries) {
+    out.push_back(entry.command);
+  }
+  return out;
+}
+
+void ReceiverAuthCache::clear()
+{
+  m_entries.clear();
 }
 
 // --- InProcessDropExecutor::SentinelBridge ---
@@ -1486,6 +1551,7 @@ void InProcessDropExecutor::notifyActiveTransfersChangedLocked(bool &outShouldNo
 void InProcessDropExecutor::emitActiveTransfersChanged(bool active)
 {
   LOG_INFO("FileDropBridge: activeTransfers=%d", active ? 1 : 0);
+  ipcSendToClient(QStringLiteral("activeTransfers"), active ? QStringLiteral("1") : QStringLiteral("0"));
   if (auto *host = m_host.load()) {
     host->onActiveTransfersChanged(active);
   }
@@ -1574,11 +1640,20 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
     if (!isRestart) {
       m_receiverRestartAttempt = 0;
       m_pendingReceiverAuthLines.clear();
+      m_cachedReceiverGrants.clear();
       m_pendingDropTargets.clear();
       m_activeSessionTarget = DropTargetEntry{};
       m_lastResolvedDropDir.clear();
       m_activeReceiveSession = false;
       notifyActiveTransfersChangedLocked(shouldNotify, notifyActive);
+    } else {
+      const auto cachedGrants = m_cachedReceiverGrants.unexpiredGrants(nowMs());
+      for (auto it = cachedGrants.rbegin(); it != cachedGrants.rend(); ++it) {
+        if (std::find(m_pendingReceiverAuthLines.begin(), m_pendingReceiverAuthLines.end(), *it) ==
+            m_pendingReceiverAuthLines.end()) {
+          m_pendingReceiverAuthLines.push_front(*it);
+        }
+      }
     }
     staging = QDir(QDir::tempPath()).filePath(QStringLiteral("DeskSend_Staging"));
     QDir().mkpath(staging);
@@ -1660,6 +1735,9 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
           m_receiverProcess = nullptr;
         }
         shouldWarn = (generation == m_receiverGeneration);
+        if (shouldWarn) {
+          m_receiverDesired = false;
+        }
       }
       proc->deleteLater();
       if (shouldWarn) {
@@ -1676,6 +1754,7 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
         int delayMs = 0;
         int attempt = 0;
         bool shouldRestart = false;
+        bool cappedRestart = false;
         bool hadActiveSession = false;
         bool currentGen = false;
         {
@@ -1687,11 +1766,15 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
           if (currentGen) {
             hadActiveSession = m_activeReceiveSession;
             if (m_receiverDesired && m_currentAllowedHostsKey == hostsKey) {
-              shouldRestart = true;
-              const int shift = std::min(m_receiverRestartAttempt, 4);
-              delayMs = std::min(15000, 1000 * (1 << shift));
-              ++m_receiverRestartAttempt;
-              attempt = m_receiverRestartAttempt;
+              if (m_receiverRestartAttempt < kMaxConsecutiveReceiverRestarts) {
+                shouldRestart = true;
+                delayMs = receiverRestartDelayMs(m_receiverRestartAttempt);
+                ++m_receiverRestartAttempt;
+                attempt = m_receiverRestartAttempt;
+              } else {
+                m_receiverDesired = false;
+                cappedRestart = true;
+              }
             }
           }
         }
@@ -1700,6 +1783,12 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
         }
         if (hadActiveSession) {
           handleReceiveSessionFinished(true);
+        }
+        if (cappedRestart) {
+          LOG_WARN(
+              "FileDropBridge: receiver exited unexpectedly %d consecutive times (last code=%d, status=%d); stopping automatic recovery",
+              kMaxConsecutiveReceiverRestarts, exitCode, static_cast<int>(exitStatus)
+          );
         }
         m_receiverOverlay.finish(
             false,
@@ -1815,6 +1904,7 @@ void InProcessDropExecutor::stopReceiver()
     m_receiverRestartAttempt = 0;
     m_currentAllowedHostsKey.clear();
     m_pendingReceiverAuthLines.clear();
+    m_cachedReceiverGrants.clear();
     m_pendingDropTargets.clear();
     m_activeSessionTarget = DropTargetEntry{};
     m_activeSessionPlacedFiles.clear();
@@ -1863,6 +1953,7 @@ void InProcessDropExecutor::queueReceiverAuthCommand(const std::string &command)
   if (!m_receiverDesired) {
     return;
   }
+  m_cachedReceiverGrants.record(command, nowMs());
   if (m_receiverProcess && m_receiverProcess->state() == QProcess::Running) {
     const QByteArray line = QByteArray::fromStdString(command + "\n");
     m_receiverProcess->write(line);
@@ -2031,6 +2122,10 @@ void InProcessDropExecutor::processNextSendJob()
   }
 
   auto *proc = new QProcess();
+  auto *inactivityTimer = new QTimer(proc);
+  inactivityTimer->setSingleShot(true);
+  const int inactivityMs = sendInactivityTimeoutMs();
+  auto timedOut = std::make_shared<bool>(false);
   {
     std::scoped_lock lock(m_mutex);
     m_activeSendProcess = proc;
@@ -2043,10 +2138,24 @@ void InProcessDropExecutor::processNextSendJob()
   proc->setProcessEnvironment(env);
   m_senderOverlay.begin(QCoreApplication::translate("FileDropBridge", "Sending to %1").arg(destination));
   const auto alive = m_alive;
-  QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [this, alive, proc]() {
+  QObject::connect(inactivityTimer, &QTimer::timeout, proc, [alive, proc, timedOut, destination, inactivityMs]() {
     if (!alive->load()) {
       return;
     }
+    *timedOut = true;
+    LOG_WARN(
+        "FileDropBridge: LocalSend transfer to %s stalled (no progress for %d ms); terminating",
+        destination.toStdString().c_str(), inactivityMs
+    );
+    if (proc->state() != QProcess::NotRunning) {
+      proc->kill();
+    }
+  });
+  QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [this, alive, proc, inactivityTimer, inactivityMs]() {
+    if (!alive->load()) {
+      return;
+    }
+    inactivityTimer->start(inactivityMs);
     while (proc->canReadLine()) {
       const QString line = QString::fromUtf8(proc->readLine()).trimmed();
       if (line.startsWith(QStringLiteral("SEND_PROGRESS:"))) {
@@ -2060,10 +2169,11 @@ void InProcessDropExecutor::processNextSendJob()
     }
   });
 
-  QObject::connect(proc, &QProcess::started, proc, [proc, stdinPayload]() {
+  QObject::connect(proc, &QProcess::started, proc, [proc, stdinPayload, inactivityTimer, inactivityMs]() {
 #if defined(_WIN32)
     assignPidToKillOnCloseJob(proc->processId());
 #endif
+    inactivityTimer->start(inactivityMs);
     if (proc->write(stdinPayload) == stdinPayload.size()) {
       proc->waitForBytesWritten(2000);
     }
@@ -2072,12 +2182,15 @@ void InProcessDropExecutor::processNextSendJob()
 
   const std::string jobTargetIp = job.targetIp;
   QObject::connect(
-      proc, &QProcess::errorOccurred, proc, [this, alive, proc, destination, jobTargetIp](QProcess::ProcessError error) {
+      proc, &QProcess::errorOccurred, proc,
+      [this, alive, proc, inactivityTimer, destination, jobTargetIp](QProcess::ProcessError error) {
         if (!alive->load()) {
+          inactivityTimer->stop();
           proc->deleteLater();
           return;
         }
         if (error == QProcess::FailedToStart) {
+          inactivityTimer->stop();
           {
             std::scoped_lock lock(m_mutex);
             if (m_activeSendProcess == proc) {
@@ -2099,7 +2212,8 @@ void InProcessDropExecutor::processNextSendJob()
 
   QObject::connect(
       proc, &QProcess::finished, proc,
-      [this, alive, proc, destination, jobTargetIp](int exitCode, QProcess::ExitStatus status) {
+      [this, alive, proc, inactivityTimer, timedOut, destination, jobTargetIp](int exitCode, QProcess::ExitStatus status) {
+        inactivityTimer->stop();
         proc->deleteLater();
         if (!alive->load()) {
           return;
@@ -2112,7 +2226,7 @@ void InProcessDropExecutor::processNextSendJob()
         }
         const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
         const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
-        const bool success = exitCode == 0 && status == QProcess::NormalExit;
+        const bool success = !(*timedOut) && exitCode == 0 && status == QProcess::NormalExit;
         m_senderOverlay.finish(
             success, success ? QCoreApplication::translate("FileDropBridge", "File transfer completed")
                              : QCoreApplication::translate("FileDropBridge", "File transfer failed")
@@ -2121,8 +2235,9 @@ void InProcessDropExecutor::processNextSendJob()
           LOG_INFO("FileDropBridge: LocalSend transfer to %s succeeded", destination.toStdString().c_str());
         } else {
           LOG_WARN(
-              "FileDropBridge: LocalSend transfer to %s failed (exit=%d) out=\"%s\" err=\"%s\"",
-              destination.toStdString().c_str(), exitCode, out.toStdString().c_str(), err.toStdString().c_str()
+              "FileDropBridge: LocalSend transfer to %s failed (timedOut=%d exit=%d) out=\"%s\" err=\"%s\"",
+              destination.toStdString().c_str(), *timedOut ? 1 : 0, exitCode, out.toStdString().c_str(),
+              err.toStdString().c_str()
           );
         }
         if (auto *host = m_host.load()) {
@@ -2133,6 +2248,7 @@ void InProcessDropExecutor::processNextSendJob()
   );
 
   LOG_INFO("FileDropBridge: spawning %s %s", cliPath.toStdString().c_str(), args.join(' ').toStdString().c_str());
+  inactivityTimer->start(inactivityMs);
   proc->start(cliPath, args);
 }
 
@@ -2725,6 +2841,14 @@ void OutOfProcessDropExecutor::ensureAgentRunning()
   std::wstring exeW = QDir::toNativeSeparators(agentExe).toStdWString();
   std::wstring workDirW = QDir::toNativeSeparators(QFileInfo(agentExe).absolutePath()).toStdWString();
   std::wstring cmdLineW = L"\"" + exeW + L"\" --drop-agent";
+  if (!Settings::isPortableMode()) {
+    const QString settingsFile = Settings::settingsFile();
+    if (!settingsFile.isEmpty()) {
+      QString escapedSettings = QDir::toNativeSeparators(settingsFile);
+      escapedSettings.replace(QLatin1Char('"'), QStringLiteral("\\\""));
+      cmdLineW += L" --settings \"" + escapedSettings.toStdWString() + L"\"";
+    }
+  }
   wchar_t desktopName[] = L"winsta0\\default";
 
   STARTUPINFOW si = {};
@@ -2922,6 +3046,9 @@ void OutOfProcessDropExecutor::handleAgentPipeClosed(uint32_t expectedGeneration
     }
   }
 
+  if (activeChanged) {
+    ipcSendToClient(QStringLiteral("activeTransfers"), QStringLiteral("0"));
+  }
   if (auto *host = m_host.load()) {
     if (activeChanged) {
       host->onActiveTransfersChanged(false);
@@ -3026,6 +3153,7 @@ void OutOfProcessDropExecutor::dispatchHostEvent(const DropAgentEvent &ev)
     }
     break;
   case DropAgentEventType::ActiveTransfersChanged:
+    ipcSendToClient(QStringLiteral("activeTransfers"), ev.flag ? QStringLiteral("1") : QStringLiteral("0"));
     if (host) {
       host->onActiveTransfersChanged(ev.flag);
     }

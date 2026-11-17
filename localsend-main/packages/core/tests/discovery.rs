@@ -453,3 +453,29 @@ async fn test_announcement_is_answered_and_device_stored() {
         "answering over HTTP must not make the receiver appear on the announcer's side"
     );
 }
+
+#[tokio::test]
+async fn discover_staged_with_zero_port_skips_subnet_scan() {
+    let multicast_port = NEXT_MULTICAST_PORT.fetch_add(1, Ordering::Relaxed);
+    let Some(instance) = start_instance("ZeroPort", multicast_port, 0).await else {
+        return skip("no network interface available for multicast");
+    };
+
+    let res = instance
+        .handle
+        .discover_staged(
+            Vec::new(),
+            vec![Ipv4Addr::LOCALHOST],
+            0,
+            ProtocolType::Http,
+            Duration::from_millis(10),
+        )
+        .await;
+    assert!(res.is_ok(), "discover_staged should succeed when skipping port 0 scan: {res:?}");
+
+    let scanned = instance
+        .handle
+        .scan_subnet(Ipv4Addr::LOCALHOST, 0, ProtocolType::Http)
+        .await;
+    assert!(matches!(scanned, Ok(ref devices) if devices.is_empty()));
+}

@@ -100,7 +100,10 @@ void UpdateDialog::fail(const QString &message)
   }
   const bool canRetryDownload =
       !m_ready && m_checker.release().download.isValid() && VersionChecker::isNewer(kVersion, m_checker.release().version);
-  if (canRetryDownload) {
+  if (m_ready) {
+    m_action->setText(tr("Install and restart"));
+    m_action->setEnabled(true);
+  } else if (canRetryDownload) {
     m_action->setText(tr("Retry download"));
     m_action->setEnabled(true);
   } else {

@@ -77,7 +77,7 @@ void ClientProxy1_0::removeHandlers()
 void ClientProxy1_0::addHeartbeatTimer()
 {
   if (m_heartbeatAlarm > 0.0) {
-    removeHeartbeatTimer();
+    removeHeartbeatAlarmTimer();
     m_heartbeatDirty = false;
     m_lastHeartbeatActivity = std::chrono::steady_clock::now();
     m_heartbeatTimer = m_events->newOneShotTimer(m_heartbeatAlarm, this);
@@ -85,6 +85,11 @@ void ClientProxy1_0::addHeartbeatTimer()
 }
 
 void ClientProxy1_0::removeHeartbeatTimer()
+{
+  removeHeartbeatAlarmTimer();
+}
+
+void ClientProxy1_0::removeHeartbeatAlarmTimer()
 {
   m_heartbeatDirty = false;
   if (m_heartbeatTimer != nullptr) {
@@ -217,7 +222,7 @@ void ClientProxy1_0::handleHeartbeatTimer()
         std::chrono::duration<double>(std::chrono::steady_clock::now() - m_lastHeartbeatActivity).count();
     if (elapsed < m_heartbeatAlarm) {
       const double remaining = std::max(0.05, m_heartbeatAlarm - elapsed);
-      removeHeartbeatTimer();
+      removeHeartbeatAlarmTimer();
       m_heartbeatTimer = m_events->newOneShotTimer(remaining, this);
       return;
     }

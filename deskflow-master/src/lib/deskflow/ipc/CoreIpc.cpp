@@ -12,11 +12,19 @@
 
 void ipcSendToClient(const QString &command, const QString &args)
 {
+  auto *server = deskflow::core::ipc::CoreIpcServer::instanceIfInitialized();
+  if (server == nullptr) {
+    return;
+  }
   // Queued because callers may not be on the main thread,
   // and QLocalSocket can only be written to from its owning thread.
-  auto &server = deskflow::core::ipc::CoreIpcServer::instance();
   QMetaObject::invokeMethod(
-      &server, [command, args] { deskflow::core::ipc::CoreIpcServer::instance().broadcastCommand(command, args); },
+      server,
+      [command, args] {
+        if (auto *current = deskflow::core::ipc::CoreIpcServer::instanceIfInitialized()) {
+          current->broadcastCommand(command, args);
+        }
+      },
       Qt::QueuedConnection
   );
 }

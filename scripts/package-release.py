@@ -54,7 +54,7 @@ DeskSend 已整合键鼠共享与局域网文件传输，无需单独安装 Loca
 从旧版手动迁移：先退出旧程序，再将旧目录的整个 settings 目录复制到新目录，
 覆盖新包的默认 settings；运行 DeskSend.exe。不要只复制其中一个 exe。
 
-主机监听 TCP 24800；副机的文件接收组件监听 TCP 53318，需要防火墙放行。
+主机监听 TCP 24800；双向跨屏文件传输时，主机与副机的文件接收组件均会监听 TCP 53318，需要防火墙放行。
 便携版不包含系统服务，不能控制 UAC 提示和 Windows 登录界面。
 
 更新和对应源码：https://github.com/wtyLaziness/desksend-releases/releases

@@ -34,6 +34,10 @@ CoreArgParser::CoreArgParser(const QStringList &args)
 
 void CoreArgParser::parse()
 {
+  if (m_parser.isSet(CoreArgs::configOption)) {
+    Settings::setSettingsFile(m_parser.value(CoreArgs::configOption));
+  }
+
   if (m_dropAgentMode) {
     return;
   }
@@ -51,10 +55,6 @@ void CoreArgParser::parse()
   if ((!m_clientMode && !m_serverMode) || mode.isEmpty()) {
     showHelpText();
     exit(s_exitSuccess);
-  }
-
-  if (m_parser.isSet(CoreArgs::configOption)) {
-    Settings::setSettingsFile(m_parser.value(CoreArgs::configOption));
   }
 }
 

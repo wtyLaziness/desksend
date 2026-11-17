@@ -13,6 +13,7 @@
 #include "base/Log.h"
 #include "common/Constants.h"
 #include "common/ExitCodes.h"
+#include "common/I18N.h"
 #include "deskflow/ClientApp.h"
 #include "deskflow/DropAgentHost.h"
 #include "deskflow/ServerApp.h"
@@ -74,6 +75,7 @@ int main(int argc, char **argv)
   ArchMiscWindows::setInstanceWin32(GetModuleHandle(nullptr));
 #endif
 
+  QApplication::setOrganizationName(kSettingsName);
   QApplication::setApplicationName(QStringLiteral("%1 Core").arg(kAppName));
   QApplication app(argc, argv);
   // 传输状态窗口关闭后，键鼠共享和接收监听仍需继续运行。
@@ -103,6 +105,8 @@ int main(int argc, char **argv)
   }
 
   if (parser.dropAgentMode()) {
+    parser.parse();
+    (void)I18N::currentLanguage();
     return deskflow::runDropAgentMain();
   }
 
@@ -122,6 +126,7 @@ int main(int argc, char **argv)
   }
 
   parser.parse();
+  (void)I18N::currentLanguage();
 
   EventQueue events;
   const auto processName = QFileInfo(argv[0]).fileName();

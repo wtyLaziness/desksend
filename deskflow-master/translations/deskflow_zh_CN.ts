@@ -4,8 +4,8 @@
 <context>
     <name>AboutDialog</name>
     <message>
-        <source>About Deskflow</source>
-        <translation>关于 Deskflow</translation>
+        <source>About DeskSend</source>
+        <translation>关于 DeskSend</translation>
     </message>
     <message>
         <source>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
@@ -1452,7 +1452,14 @@ Enabling this setting will disable the server config GUI.</source>
     </message>
     <message>
         <source>A computer with this name already exists</source>
-        <translation type="unfinished">一台同名的计算机已经存在</translation>
+        <translation>一台同名的计算机已经存在</translation>
+    </message>
+</context>
+<context>
+    <name>DragHoverIndicator</name>
+    <message>
+        <source>Drop to receive %1 file(s)</source>
+        <translation>松开以接收 %1 个文件</translation>
     </message>
 </context>
 <context>

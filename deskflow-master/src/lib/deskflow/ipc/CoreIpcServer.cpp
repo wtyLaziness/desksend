@@ -21,10 +21,22 @@ CoreIpcServer::CoreIpcServer(QObject *parent) : IpcServer(parent, kCoreIpcName, 
   s_instance = this;
 }
 
+CoreIpcServer::~CoreIpcServer()
+{
+  if (s_instance == this) {
+    s_instance = nullptr;
+  }
+}
+
 CoreIpcServer &CoreIpcServer::instance()
 {
   assert(s_instance != nullptr);
   return *s_instance;
+}
+
+CoreIpcServer *CoreIpcServer::instanceIfInitialized()
+{
+  return s_instance;
 }
 
 void CoreIpcServer::processCommand(QLocalSocket *clientSocket, const QString &command, const QStringList &parts)

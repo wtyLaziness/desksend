@@ -39,31 +39,31 @@ DeskSend 在运行时协调桌面界面、键鼠共享核心以及后台 LocalSe
 flowchart LR
   subgraph S["主机 Server"]
     SGUI["DeskSend.exe<br/>(GUI 与状态展示)"]
-    SCORE["deskflow-core.exe<br/>(键鼠共享 + FileDropBridge)"]
-    SCLI["localsend-cli.exe<br/>(headless send)"]
+    SCORE["deskflow-core.exe<br/>(键鼠共享 + FileDropBridge + 落点解析)"]
+    SCLI["localsend-cli.exe<br/>(收发文件：send / receive)"]
     SGUI <--> SCORE
-    SCORE -->|"--pin-stdin / --paths-stdin"| SCLI
+    SCORE <-->|"send / GRANT / REVOKE"| SCLI
   end
 
   subgraph C["副机 Client"]
     CGUI["DeskSend.exe<br/>(GUI 与状态展示)"]
     CCORE["deskflow-core.exe<br/>(键鼠接收 + FileDropBridge + 落点解析)"]
-    CCLI["localsend-cli.exe<br/>(receive --auth-stdin)"]
+    CCLI["localsend-cli.exe<br/>(收发文件：send / receive)"]
     CGUI <--> CCORE
-    CCORE -->|"GRANT / REVOKE"| CCLI
+    CCORE <-->|"send / GRANT / REVOKE"| CCLI
   end
 
   SCORE <-->|"TCP 24800<br/>控制流 / TLS / DESKSEND_CANCEL"| CCORE
-  SCLI -->|"TCP 53318<br/>LocalSend 文件传输流"| CCLI
+  SCLI <-->|"TCP 53318<br/>双向 LocalSend 文件传输流"| CCLI
 ```
 
 | 组件 / 端口 | 职责说明 |
 | --- | --- |
 | `DeskSend.exe` | 桌面主界面、托盘、系统设置与内建更新器。 |
-| `deskflow-core.exe` | 跨屏键鼠核心与 `FileDropBridge`（捕获拖拽、分发授权令牌、解析副机落点并触发文件回退）。 |
+| `deskflow-core.exe` | 跨屏键鼠核心与 `FileDropBridge`（捕获拖拽、分发授权令牌、解析目标落点并触发文件收发）。 |
 | `localsend-cli.exe` | 随包附带的后台 LocalSend 文件发送/接收进程，由核心按需拉起，无需手动运行。 |
 | `TCP 24800` | 主机默认键鼠共享及 DeskSend 控制信令端口（需主机入站放行）。 |
-| `TCP 53318` | 副机默认 `localsend-cli` 接收端口（需副机入站放行）。 |
+| `TCP 53318` | 双向跨屏文件传输时主机与副机的默认 `localsend-cli` 接收端口（需双方入站放行）。 |
 
 > 部分内部二进制名、配置文件路径与常量（如 `deskflow-core.exe`、`settings/Deskflow.conf`、`settings/tls/`、`kOrgDomain`）保留 Deskflow 名称，用于维持便携模式检测与历史配置兼容性，请勿手动改名。
 
@@ -84,7 +84,7 @@ flowchart LR
 1. **主机（Server，连接物理键鼠的电脑）**：
    - 打开 `DeskSend.exe`，选择“使用此计算机的键盘和鼠标”。
    - 进入“配置服务器”，添加副机屏幕并按实际方位放置，屏幕名称需与副机界面显示的计算机名一致。
-   - 点击启动。若开启防火墙，放行入站 **`TCP 24800`**。
+   - 点击启动。若开启防火墙，放行入站 **`TCP 24800`**（如需从副机拖文件回主机，还需放行入站 **`TCP 53318`**）。
 2. **副机（Client）**：
    - 打开 `DeskSend.exe`，选择“使用另一台计算机的鼠标和键盘”。
    - 填入主机的局域网 IPv4 地址（切勿填写 `127.0.0.1`）并启动。放行入站 **`TCP 53318`**。

@@ -54,6 +54,8 @@ impl LsHttpClientV2 {
             // and never redirect.
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(super::DEFAULT_CONNECT_TIMEOUT)
+            .read_timeout(super::DEFAULT_READ_TIMEOUT)
             .build()?;
 
         Ok(Self { client })

@@ -50,6 +50,18 @@ private Q_SLOTS:
     QCOMPARE(coreProcess.processState(), deskflow::core::ProcessState::Stopped);
   }
 
+  void activeTransfersUpdatedViaCoreIpc()
+  {
+    ServerConfig serverConfig;
+    deskflow::gui::CoreProcess coreProcess(serverConfig);
+
+    QVERIFY(!coreProcess.hasActiveFileTransfers());
+    coreProcess.onCoreIpcMessageReceived(QStringLiteral("activeTransfers"), QStringLiteral("1"));
+    QVERIFY(coreProcess.hasActiveFileTransfers());
+    coreProcess.onCoreIpcMessageReceived(QStringLiteral("activeTransfers"), QStringLiteral("0"));
+    QVERIFY(!coreProcess.hasActiveFileTransfers());
+  }
+
 #ifdef Q_OS_WIN
   void winJobObjectKillsChildWhenCoreProcessDestroyed()
   {
