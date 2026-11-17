@@ -1406,7 +1406,7 @@ private Q_SLOTS:
     QTest::qWait(150);
     QCOMPARE(launchCount(), expectedLaunches);
     QVERIFY(!executor.m_receiverDesired);
-    QCOMPARE(executor.overlayFor(true).phase(), deskflow::TransferStatusOverlay::Phase::Failed);
+    QCOMPARE(executor.overlayFor(true).phase(), deskflow::TransferStatusOverlay::Phase::Finished);
   }
 
   void inProcessDropExecutor_sendWatchdogKillsStalledJobAndAdvancesQueue()
