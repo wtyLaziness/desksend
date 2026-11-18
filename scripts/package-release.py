@@ -9,12 +9,16 @@ import zipfile
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--deskflow-zip', required=True, type=Path)
+parser.add_argument('--deskflow-msi', type=Path)
 parser.add_argument('--localsend-exe', required=True, type=Path)
 parser.add_argument('--build-commit', required=True)
 parser.add_argument('--out', required=True, type=Path)
 args = parser.parse_args()
 repo = Path(__file__).resolve().parents[1]
 version = (repo / 'deskflow-master/cmake/DeskSendVersion.cmake').read_text(encoding='utf-8').split('"')[1]
+installer_name = f'DeskSend-{version}-windows-x64.msi'
+if args.deskflow_msi and (args.deskflow_msi.name != installer_name or not args.deskflow_msi.is_file()):
+    parser.error(f'--deskflow-msi 必须指向 {installer_name}')
 build_commit = subprocess.check_output(['git', 'rev-parse', args.build_commit], cwd=repo, text=True).strip()
 source_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
 subprocess.run(['git', 'diff', '--exit-code', build_commit, source_commit, '--', 'deskflow-master', 'localsend-main'], cwd=repo, check=True)
@@ -61,7 +65,7 @@ DeskSend 已整合键鼠共享与局域网文件传输，无需单独安装 Loca
 源文件保留；松手前按 Esc 或拖回源屏可取消，空目录不传输。
 
 主机监听 TCP 24800；双向跨屏文件传输时，主机与副机均需放行入站 TCP 53318。
-便携版不包含系统服务，不能控制 UAC 提示和 Windows 登录界面。
+需要控制副机的 UAC 提示和 Windows 登录界面时，可在副机安装同一发布页的 MSI 并开启后台服务。
 
 使用指南：https://github.com/wtyLaziness/desksend/blob/main/docs/使用指南.md
 更新和对应源码：https://github.com/wtyLaziness/desksend-releases/releases
@@ -86,5 +90,10 @@ with zipfile.ZipFile(source_zip) as archive:
     forbidden = [name for name in archive.namelist() if name.lower().endswith(('.pem', '.key', '.log')) or '/.git/' in name or '/settings/Deskflow.conf' in name]
     if forbidden:
         raise ValueError(f'源码包包含不应公开的文件：{forbidden}')
-(args.out / 'SHA256SUMS.txt').write_text(''.join(f'{hash_file(p)}  {p.name}\n' for p in (binary_zip, source_zip)), encoding='utf-8')
+release_assets = [binary_zip, source_zip]
+if args.deskflow_msi:
+    installer = args.out / installer_name
+    shutil.copy2(args.deskflow_msi, installer)
+    release_assets.append(installer)
+(args.out / 'SHA256SUMS.txt').write_text(''.join(f'{hash_file(p)}  {p.name}\n' for p in release_assets), encoding='utf-8')
 print(json.dumps({'binary': str(binary_zip), 'source': str(source_zip), 'version': version, 'files': len(files)}, ensure_ascii=False))

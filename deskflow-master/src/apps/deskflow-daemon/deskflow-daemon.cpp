@@ -24,6 +24,7 @@
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
+#include <QDir>
 #include <QThread>
 
 using namespace deskflow::core;
@@ -64,6 +65,12 @@ int main(int argc, char **argv)
     daemon.setForeground();
   }
 
+#if defined(Q_OS_WIN)
+  // 服务使用独立配置，避免读取旧 Deskflow 服务保存的启动参数。
+  QDir().mkpath(Settings::UserDir);
+  Settings::setSettingsFile(QDir(Settings::UserDir).filePath(QStringLiteral("DeskSend-daemon.conf")));
+#endif
+
   // Depends on whether foreground option was set.
   daemon.initLogging();
 
@@ -92,7 +99,7 @@ int main(int argc, char **argv)
 #endif
 
     const auto ipcServer = new ipc::DaemonIpcServer(&app, qPrintable(DaemonApp::logFilename())); // NOSONAR - Qt managed
-    ipcServer->listen();
+    ipcServer->listen(false);
     daemon.connectIpcServer(ipcServer);
 
     QThread daemonThread;

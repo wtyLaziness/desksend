@@ -17,6 +17,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 
 typedef VOID(WINAPI *SendSas)(BOOL asUser);
 
@@ -48,7 +49,7 @@ public:
   /**
    * @brief Set the command to run and whether to elevate the process.
    */
-  void setProcessConfig(const std::string_view &command, bool elevate);
+  void setProcessConfig(std::wstring_view command, bool elevate);
 
   /**
    * @brief Stop the main loop and output loop threads.

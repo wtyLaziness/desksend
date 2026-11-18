@@ -724,6 +724,10 @@ Valid names:
         <translation type="unfinished">读取和写入</translation>
     </message>
     <message>
+        <source>Run DeskSend as administrator to start the background service mode.</source>
+        <translation>请以管理员身份运行 DeskSend，再启动后台服务模式。</translation>
+    </message>
+    <message>
         <source>The Core executable could not be started.
 Please check if you have sufficient permissions to run %1.</source>
         <translation type="unfinished">无法启动Core可执行文件。
@@ -1195,7 +1199,7 @@ Enabling this setting will disable the server config GUI.</source>
     </message>
     <message>
         <source>Always run as system (work at login screen and UAC)</source>
-        <translation type="unfinished">始终以系统身份运行 (在登录屏幕和 UAC 下工作)</translation>
+        <translation>始终以系统身份运行（支持登录界面和 UAC）</translation>
     </message>
     <message>
         <source>Language</source>

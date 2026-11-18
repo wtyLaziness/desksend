@@ -22,16 +22,20 @@ DeskSend 整合 Deskflow 键鼠共享与 LocalSend 局域网文件传输。两�
 3. 主机共享实体键鼠并配置副机屏幕；副机填入主机局域网 IP。首次 TLS 连接时核对证书指纹。
 4. 防火墙允许主机入站 **TCP 24800**；使用双向传文件时，**主机和副机均需允许入站 TCP 53318**。
 
-便携包不安装系统服务，不能控制 Windows 登录界面、锁屏或 UAC 安全桌面。副机自己的实体鼠标不能独立触发跨屏切换。嵌套文件夹保留层级，空目录不传输；源文件保留。
+需要从主机操作副机的 UAC 弹窗时，在副机安装 `DeskSend-<版本>-windows-x64.msi`，并开启后台服务和系统身份运行。[UAC 设置步骤](https://github.com/wtyLaziness/desksend/blob/main/docs/使用指南.md#副机的-uac-弹窗无法点击)
+
+副机自己的实体鼠标不能独立触发跨屏切换。嵌套文件夹保留层级，空目录不传输；源文件保留。
 
 ## 更新与迁移
 
 使用“帮助 → 检查 DeskSend 更新…”；英文入口为 `Help → Check for DeskSend Updates...`。等待当前文件传输结束后再安装并重启。
 
+安装版通过下载新版 MSI 更新。
+
 手动升级时，先等传输结束并退出旧程序，将新完整包解压到新目录，再将旧目录的**整个 `settings/` 文件夹**复制过去，覆盖新包默认配置。保管好其中的私钥，不要公开上传。
 
 ## 源码与许可证
 
-本仓库提供公开版本与更新渠道；开发源码位于 [wtyLaziness/desksend](https://github.com/wtyLaziness/desksend)。每个 Release 附带完整运行包、对应构建源码 `DeskSend-<版本>-source.zip` 和 `SHA256SUMS.txt`。构建提交及文件哈希记录在包内 `desksend-build.json` 中。
+本仓库提供公开版本与更新渠道；开发源码位于 [wtyLaziness/desksend](https://github.com/wtyLaziness/desksend)。自 1.0.8 起，Release 提供完整便携 ZIP、MSI 安装包、对应构建源码 `DeskSend-<版本>-source.zip` 和 `SHA256SUMS.txt`。便携包的构建提交及文件哈希记录在 `desksend-build.json` 中。
 
 Deskflow 核心、GUI 及对应修改使用 `GPL-2.0-only WITH LicenseRef-OpenSSL-Exception`；LocalSend 组件及对应修改使用 `Apache-2.0`。保留原作者版权与许可文本，详见[许可证索引](https://github.com/wtyLaziness/desksend/blob/main/LICENSE.md)。

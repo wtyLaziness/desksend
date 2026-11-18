@@ -2,10 +2,12 @@ name: deskflow-win
 on:
   workflow_dispatch:
   push:
-    paths: ["deskflow-master/**", ".github/workflows/deskflow-win.yml"]
+    paths: ["deskflow-master/**", "localsend-main/**", ".github/workflows/deskflow-win.yml"]
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      DOTNET_ROLL_FORWARD: LatestMajor
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
@@ -17,6 +19,19 @@ jobs:
           version: "6.8.*"
           arch: win64_msvc2022_64
           cache: true
+      - name: Install WiX Toolset
+        run: |
+          $wixDir = Join-Path $env:RUNNER_TEMP 'desksend-wix'
+          dotnet tool install wix --version 4.0.6 --tool-path $wixDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($extension in @('Util', 'Firewall', 'UI')) {
+            & "$wixDir/wix.exe" extension add -g "WixToolset.$extension.wixext/4.0.6"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $wixDir
+      - name: Build LocalSend CLI for the installer
+        working-directory: localsend-main
+        run: cargo build --locked --release --package localsend-cli
       - name: Cache vcpkg_installed
         uses: actions/cache@v4
         with:
@@ -27,18 +42,66 @@ jobs:
         run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DBUILD_INSTALLER=ON -DBUILD_TESTS=ON
+          -DDESKSEND_LOCALSEND_CLI="$env:GITHUB_WORKSPACE/localsend-main/target/release/localsend-cli.exe"
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
       - name: Build
         working-directory: deskflow-master
         run: cmake --build build
-      - name: Package
+      - name: Package portable ZIP and MSI
         working-directory: deskflow-master/build
-        run: cpack -G ZIP
+        run: |
+          cpack -G ZIP
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cpack -G WIX
+      - name: Verify MSI installation and service
+        working-directory: deskflow-master/build
+        run: |
+          $msi = @(Get-ChildItem DeskSend-*-windows-x64.msi)
+          if ($msi.Count -ne 1) { throw "Expected one DeskSend x64 MSI" }
+          $msiPath = $msi[0].FullName
+          $install = Start-Process msiexec.exe -ArgumentList "/i `"$msiPath`" /qn /norestart /l*v desksend-install.log" -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            Get-Content desksend-install.log -Tail 120
+            throw "MSI install failed with exit code $($install.ExitCode)"
+          }
+          try {
+            $service = Get-CimInstance Win32_Service -Filter "Name = 'DeskSend'"
+            if ($service.State -ne 'Running' -or $service.StartName -ne 'LocalSystem') {
+              throw 'The DeskSend service is not running as LocalSystem'
+            }
+            $appDir = Split-Path -Parent $service.PathName.Trim('"')
+            foreach ($file in @('DeskSend.exe', 'deskflow-core.exe', 'deskflow-daemon.exe', 'localsend-cli.exe', 'LocalSend-LICENSE.txt')) {
+              if (!(Test-Path -LiteralPath (Join-Path $appDir $file) -PathType Leaf)) { throw "MSI is missing $file" }
+            }
+            if (Test-Path -LiteralPath (Join-Path $appDir 'settings/Deskflow.conf')) { throw 'MSI activates portable mode' }
+            $pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'desksend-daemon', 'InOut')
+            try {
+              $pipe.Connect(5000)
+              $command = [System.Text.Encoding]::UTF8.GetBytes("logPath`n")
+              $pipe.Write($command, 0, $command.Length)
+              $reply = [System.IO.StreamReader]::new($pipe).ReadLineAsync()
+              if (!$reply.Wait(5000) -or $reply.Result -notlike 'logPath=*desksend-daemon.log') {
+                throw 'The DeskSend service IPC did not return its log path'
+              }
+            } finally {
+              $pipe.Dispose()
+            }
+          } finally {
+            $uninstall = Start-Process msiexec.exe -ArgumentList "/x `"$msiPath`" /qn /norestart" -Wait -PassThru
+            if ($uninstall.ExitCode -ne 0 -or (Get-Service DeskSend -ErrorAction SilentlyContinue)) {
+              throw "MSI uninstall did not remove the DeskSend service"
+            }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: deskflow-win-x64
           path: |
             deskflow-master/build/*.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desksend-windows-x64-msi
+          path: deskflow-master/build/DeskSend-*-windows-x64.msi
           if-no-files-found: error
       - name: Collect update channel diagnostic test
         run: |

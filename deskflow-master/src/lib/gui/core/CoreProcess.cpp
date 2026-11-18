@@ -21,6 +21,8 @@
 #endif
 
 #ifdef Q_OS_WIN
+#include "arch/win32/ArchMiscWindows.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -418,10 +420,23 @@ void CoreProcess::start(std::optional<ProcessMode> processModeOption)
     return;
   }
 
-  QMutexLocker locker(&m_processMutex);
-
   const auto currentMode = Settings::value(Settings::Core::ProcessMode).value<ProcessMode>();
   const auto processMode = processModeOption.value_or(currentMode);
+#ifdef Q_OS_WIN
+  if (processMode == ProcessMode::Service) {
+    try {
+      if (!ArchMiscWindows::isProcessElevated()) {
+        Q_EMIT error(Error::ServiceNeedsAdministrator);
+        return;
+      }
+    } catch (const std::exception &e) {
+      qWarning("could not check administrator permissions: %s", e.what());
+      Q_EMIT error(Error::StartFailed);
+      return;
+    }
+  }
+#endif
+  QMutexLocker locker(&m_processMutex);
   const auto coreMode = QVariant::fromValue(m_mode).toString().toLower();
 
   qInfo().noquote() << QString("starting %1 process (%2 mode)").arg(coreMode, processModeToString(processMode));

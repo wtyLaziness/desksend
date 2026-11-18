@@ -28,10 +28,11 @@ IpcServer::~IpcServer()
   m_server->close();
 }
 
-void IpcServer::listen()
+void IpcServer::listen(bool allowUnprivilegedClients)
 {
-  // IPC server normally runs as system, but GUI runs as regular user, so we need to allow world access.
-  m_server->setSocketOptions(QLocalServer::WorldAccessOption);
+  // 服务保留 Windows 默认管道 ACL，普通用户没有写权限。
+  if (allowUnprivilegedClients)
+    m_server->setSocketOptions(QLocalServer::WorldAccessOption);
 
   connect(m_server, &QLocalServer::newConnection, this, &IpcServer::handleNewConnection);
   QLocalServer::removeServer(m_serverName);

@@ -355,13 +355,8 @@ QVariant Settings::defaultValue(const QString &key)
   if (key == Core::Port)
     return 24800;
 
-  if (key == Core::ProcessMode) {
-#ifdef Q_OS_WIN
-    if (!Settings::isPortableMode())
-      return Settings::ProcessMode::Service;
-#endif
+  if (key == Core::ProcessMode)
     return Settings::ProcessMode::Desktop;
-  }
 
   if (key == Daemon::LogFile)
     return QStringLiteral("%1/%2-daemon.log").arg(Settings::settingsPath(), kAppId);

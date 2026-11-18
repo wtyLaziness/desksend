@@ -16,7 +16,7 @@
   </p>
 </div>
 
-DeskSend 将 [Deskflow](https://github.com/deskflow/deskflow) 的键鼠共享与 [LocalSend](https://github.com/localsend/localsend) 的局域网文件传输整合在一个便携包中。两端运行 DeskSend 后，就能使用主机的键盘、鼠标操作副机，并把文件或文件夹拖过屏幕边缘发送，无需单独安装或启动 LocalSend。
+DeskSend 将 [Deskflow](https://github.com/deskflow/deskflow) 的键鼠共享与 [LocalSend](https://github.com/localsend/localsend) 的局域网文件传输整合在一个程序中。两端运行 DeskSend 后，就能使用主机的键盘、鼠标操作副机，并把文件或文件夹拖过屏幕边缘发送，无需单独安装或启动 LocalSend。
 
 ## 可以做什么
 
@@ -34,6 +34,8 @@ DeskSend 将 [Deskflow](https://github.com/deskflow/deskflow) 的键鼠共享与
 ### 1. 下载完整包
 
 从[最新发布页](https://github.com/wtyLaziness/desksend-releases/releases/latest)下载 `DeskSend-<版本>-windows-x64.zip`。两台电脑使用同一版本，完整解压到可写目录后运行 `DeskSend.exe`。
+
+需要操作副机 UAC 弹窗时，在副机使用同一发布页的 `DeskSend-<版本>-windows-x64.msi` 安装版，并开启后台服务及系统身份运行。[UAC 设置步骤](docs/使用指南.md#副机的-uac-弹窗无法点击)
 
 不要在压缩包预览中直接运行，也不要只复制 EXE。请保留同目录中的 `deskflow-core.exe`、`localsend-cli.exe`、Qt DLL、插件和 `translations/`。`DeskSend-<版本>-source.zip` 是源码归档，不是运行包。
 
@@ -68,11 +70,11 @@ DeskSend 将 [Deskflow](https://github.com/deskflow/deskflow) 的键鼠共享与
 
 ## 当前范围
 
-- 提供 **Windows x64 便携版**。便携包不安装系统服务，不能接管 Windows 登录界面、锁屏或 UAC 安全桌面。
+- 提供 **Windows x64 便携版与 MSI 安装版**。副机的 MSI 安装版可启用系统服务，用于操作 Windows 登录界面和 UAC 安全桌面。
 - 双向及多机拖文件继续使用**主机共享的鼠标**；副机自己的实体鼠标不能独立发起跨屏切换。
 - 支持文件与嵌套文件夹；空文件夹和空子目录不会在接收方创建。跨屏发送会保留源文件。
 - 主机停止或重启后，保持运行的副机会等待重连。
-- 上游的其他系统与协议兼容能力不等同于 DeskSend 跨屏文件传输支持。本文对应当前 1.0.7 系列；各版变化见[发布记录](https://github.com/wtyLaziness/desksend-releases/releases)。
+- 各版变化见[发布记录](https://github.com/wtyLaziness/desksend-releases/releases)。
 
 ## 组件与开发
 

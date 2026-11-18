@@ -22,7 +22,7 @@ public:
   explicit IpcServer(QObject *parent, const QString &serverName, const QString &typeName);
   ~IpcServer() override;
 
-  void listen();
+  void listen(bool allowUnprivilegedClients = true);
   void broadcastCommand(const QString &command, const QString &args = "");
 
 Q_SIGNALS:

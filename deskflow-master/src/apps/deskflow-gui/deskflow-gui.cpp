@@ -95,10 +95,9 @@ int main(int argc, char *argv[])
     return s_exitSuccess;
   }
 
-  const auto shmId = QStringLiteral("%1-gui").arg(kAppId);
   // Create a shared memory segment with a unique key
   // This is to prevent a new instance from running if one is already running
-  QSharedMemory sharedMemory(shmId);
+  QSharedMemory sharedMemory(kGuiIpcName);
 
   // Attempt to attach first and detach in order to clean up stale shm chunks
   // This can happen if the previous instance was killed or crashed
@@ -109,7 +108,7 @@ int main(int argc, char *argv[])
   if (!sharedMemory.create(1)) {
     // Ping the running instance to have it show itself
     QLocalSocket socket;
-    socket.connectToServer(shmId, QLocalSocket::ReadOnly);
+    socket.connectToServer(kGuiIpcName, QLocalSocket::ReadOnly);
     if (!socket.waitForConnected()) {
       // If we can't connect to the other instance tell the user its running.
       // This should never happen but just incase we should show something

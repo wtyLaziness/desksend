@@ -70,8 +70,8 @@ void DaemonApp::applyWatchdogCommand() const
     return;
   }
 
-  if (!QFileInfo::exists(m_configFile)) {
-    LOG_ERR("cannot apply watchdog command: config file does not exist: %s", qPrintable(m_configFile));
+  if (!QFileInfo(m_configFile).isFile()) {
+    LOG_ERR("cannot apply watchdog command: config file does not exist or is not a file: %s", qPrintable(m_configFile));
     return;
   }
 
@@ -90,7 +90,7 @@ void DaemonApp::applyWatchdogCommand() const
   }
 
   const auto corePath = QStringLiteral("%1/%2").arg(QCoreApplication::applicationDirPath(), kCoreBinName);
-  const auto command = QStringLiteral("\"%1\" %2 --settings \"%3\"").arg(corePath, modeArg, m_configFile).toStdString();
+  const auto command = QStringLiteral("\"%1\" %2 --settings \"%3\"").arg(corePath, modeArg, m_configFile).toStdWString();
 
   LOG_DEBUG("applying watchdog command (elevate: %s)", elevate ? "yes" : "no");
   m_pWatchdog->setProcessConfig(command, elevate);
@@ -108,7 +108,7 @@ void DaemonApp::clearWatchdogCommand()
   Settings::setValue(Settings::Daemon::ConfigFile);
 
 #if defined(Q_OS_WIN)
-  m_pWatchdog->setProcessConfig("", false);
+  m_pWatchdog->setProcessConfig(L"", false);
 #else
   LOG_ERR("clearing watchdog command not implemented on this platform");
 #endif
@@ -238,7 +238,12 @@ int DaemonApp::mainLoop()
 
 QString DaemonApp::logFilename()
 {
-  return Settings::value(Settings::Daemon::LogFile).toString();
+  const auto logPath = Settings::value(Settings::Daemon::LogFile).toString();
+#if defined(Q_OS_WIN)
+  if (logPath == Settings::defaultValue(Settings::Daemon::LogFile).toString())
+    return QFileInfo(Settings::settingsFile()).absolutePath() + QStringLiteral("/desksend-daemon.log");
+#endif
+  return logPath;
 }
 
 void DaemonApp::setForeground()

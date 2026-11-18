@@ -113,7 +113,11 @@ int main(int argc, char **argv)
   // Before we check any more args we need to check for a duplicate process.
   // Create a shared memory segment with a unique key
   // This is to prevent a new instance from running if one is already running
+#if defined(Q_OS_WIN)
+  QSharedMemory sharedMemory(kCoreIpcName);
+#else
   QSharedMemory sharedMemory(kCoreBinName);
+#endif
 
   // Attempt to attach first and detach in order to clean up stale shm chunks
   // This can happen if the previous instance was killed or crashed

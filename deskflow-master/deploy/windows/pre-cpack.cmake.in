@@ -1,13 +1,12 @@
 # SPDX-FileCopyrightText: (C) 2025 Chris Rizzitello <sithlord48@gmail.com>
 # SPDX-License-Identifier: MIT
 
+set(runtime_libraries "@CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS@")
+foreach(runtime IN LISTS runtime_libraries)
+  file(COPY "${runtime}" DESTINATION "${CPACK_TEMPORARY_INSTALL_DIRECTORY}")
+endforeach()
+
 if(CPACK_GENERATOR MATCHES 7Z|ZIP)
-  string(REPLACE " " "*" _TEMP_LIST "@CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS@")
-  set(${PORTABLE_LIBS} "")
-  foreach(ITEM ${_TEMP_LIST})
-    string(REPLACE "*" " " _ITEM ${ITEM})
-    file(COPY ${_ITEM} DESTINATION ${CPACK_TEMPORARY_INSTALL_DIRECTORY})
-  endforeach()
   file(WRITE ${CPACK_TEMPORARY_INSTALL_DIRECTORY}/settings/Deskflow.conf " ")
   file(REMOVE ${CPACK_TEMPORARY_INSTALL_DIRECTORY}/deskflow-daemon.exe)
   file(WRITE ${CPACK_TEMPORARY_INSTALL_DIRECTORY}/README.txt
@@ -16,4 +15,12 @@ if(CPACK_GENERATOR MATCHES 7Z|ZIP)
   The portable version must have the settings/Deskflow.conf file to save settings, or it will try to use the system settings location.
   The portable version does not include the daemon, so the client will not work at UAC prompts or the login screen.
 ")
+elseif(CPACK_GENERATOR STREQUAL "WIX")
+  foreach(runtime IN ITEMS msvcp140.dll vcruntime140.dll)
+    if(NOT EXISTS "${CPACK_TEMPORARY_INSTALL_DIRECTORY}/${runtime}")
+      message(FATAL_ERROR "The DeskSend MSI is missing the bundled MSVC runtime: ${runtime}")
+    endif()
+  endforeach()
+  file(COPY_FILE "@DESKSEND_LOCALSEND_CLI@" "${CPACK_TEMPORARY_INSTALL_DIRECTORY}/localsend-cli.exe")
+  file(COPY_FILE "@CMAKE_SOURCE_DIR@/../localsend-main/LICENSE" "${CPACK_TEMPORARY_INSTALL_DIRECTORY}/LocalSend-LICENSE.txt")
 endif()

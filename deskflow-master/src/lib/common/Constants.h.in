@@ -13,7 +13,13 @@ const auto kSettingsName = "Deskflow";
 const auto kAppId = "@CMAKE_PROJECT_NAME@";
 const auto kAppDescription = "@CMAKE_PROJECT_DESCRIPTION@";
 const auto kDaemonBinName = "@CMAKE_PROJECT_NAME@-daemon";
+#ifdef _WIN32
+const auto kDaemonIpcName = "desksend-daemon";
+const auto kGuiIpcName = "desksend-gui";
+#else
 const auto kDaemonIpcName = "@CMAKE_PROJECT_NAME@-daemon";
+const auto kGuiIpcName = "@CMAKE_PROJECT_NAME@-gui";
+#endif
 const auto kRevFqdnName = "@CMAKE_PROJECT_REV_FQDN@";
 
 const auto kCopyright = //
@@ -23,7 +29,11 @@ const auto kCopyright = //
     "Copyright (C) 2002-2009 Chris Schoeneman";
 
 const auto kCoreBinName = "@CORE_BINARY@";
+#ifdef _WIN32
+const auto kCoreIpcName = "desksend-core";
+#else
 const auto kCoreIpcName = "@CMAKE_PROJECT_NAME@-core";
+#endif
 
 const auto kServerGridHeight = 3;
 const auto kServerGridWidth = 5;
@@ -36,7 +46,8 @@ const auto kWindowsRuntimeMinor = @REQUIRED_MSVC_RUNTIME_MINOR@;
 // clang-format on
 
 constexpr auto kAppNameW = L"Deskflow";
-constexpr auto kCloseEventName = L"Global\\DeskflowClose";
-constexpr auto kSendSasEventName = L"Global\\DeskflowSendSAS";
+constexpr auto kWindowsServiceName = L"@CMAKE_PROJECT_PROPER_NAME@";
+constexpr auto kCloseEventName = L"Global\\DeskSendClose";
+constexpr auto kSendSasEventName = L"Global\\DeskSendSendSAS";
 
 #endif

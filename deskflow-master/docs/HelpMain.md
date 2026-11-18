@@ -25,6 +25,8 @@ DeskSend 支持在多台 Windows 电脑间共享键鼠、双向拖文件，并�
 
 手动换目录升级时，退出旧程序，将新包完整解压，并复制旧目录的整个 `settings/` 到新目录。不要只复制 EXE，不要改名 `settings/Deskflow.conf`。便携版不安装服务，不能控制登录界面、锁屏或 UAC 安全桌面。
 
+使用 MSI 安装版时，在副机以管理员身份运行 DeskSend，在“设置 → 高级”开启后台服务，并勾选“始终以系统身份运行（支持登录界面和 UAC）”，再连接主机。安装版通过新版 MSI 更新。
+
 ## 更多说明
 
 - [详细使用与排障指南](https://github.com/wtyLaziness/desksend/blob/main/docs/使用指南.md)

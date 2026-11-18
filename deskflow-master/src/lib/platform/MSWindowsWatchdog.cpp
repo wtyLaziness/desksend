@@ -25,21 +25,23 @@
 #include <shlobj.h>
 #include <tchar.h>
 
+#include <QCoreApplication>
+#include <QDir>
 #include <QStringDecoder>
+
+#include <iterator>
 
 //
 // Free functions
 //
 
-HANDLE openProcessForKill(const PROCESSENTRY32 &entry)
+HANDLE openProcessForKill(const PROCESSENTRY32 &entry, const QString &corePath)
 {
   // pid 0 is 'system idle process'
   if (entry.th32ProcessID == 0)
     return nullptr;
 
-  if (_wcsicmp(entry.szExeFile, L"deskflow-client.exe") != 0 && //
-      _wcsicmp(entry.szExeFile, L"deskflow-server.exe") != 0 && //
-      _wcsicmp(entry.szExeFile, L"deskflow-core.exe") != 0) {
+  if (QString::fromWCharArray(entry.szExeFile).compare(kCoreBinName, Qt::CaseInsensitive) != 0) {
     return nullptr;
   }
 
@@ -53,8 +55,11 @@ HANDLE openProcessForKill(const PROCESSENTRY32 &entry)
     return nullptr;
   }
 
-  // only shut down if not current process (daemon is now the same unified binary).
-  if (entry.th32ProcessID == GetCurrentProcessId()) {
+  // 仅清理本安装目录中的旧核心进程。
+  wchar_t imagePath[32768];
+  DWORD size = static_cast<DWORD>(std::size(imagePath));
+  if (!QueryFullProcessImageNameW(handle, 0, imagePath, &size) ||
+      QString::fromWCharArray(imagePath, size).compare(corePath, Qt::CaseInsensitive) != 0) {
     CloseHandle(handle);
     return nullptr;
   }
@@ -320,13 +325,13 @@ void MSWindowsWatchdog::startProcess()
   }
 }
 
-void MSWindowsWatchdog::setProcessConfig(const std::string_view &command, bool elevate)
+void MSWindowsWatchdog::setProcessConfig(std::wstring_view command, bool elevate)
 {
   LOG_VERBOSE("locking process state mutex for watchdog config change");
   std::scoped_lock lock{m_processStateMutex};
 
   LOG_DEBUG("setting watchdog process config");
-  m_command = std::wstring(command.begin(), command.end());
+  m_command.assign(command);
   m_elevateProcess = elevate;
 
   if (m_command.empty()) {
@@ -403,10 +408,10 @@ void MSWindowsWatchdog::shutdownExistingProcesses()
     throw std::runtime_error(windowsErrorToString(GetLastError()));
   }
 
-  // now just iterate until we can find winlogon.exe pid
+  const auto corePath = QDir::toNativeSeparators(QDir(QCoreApplication::applicationDirPath()).filePath(kCoreBinName));
   while (gotEntry) {
 
-    if (HANDLE handle = openProcessForKill(entry); handle != nullptr) {
+    if (HANDLE handle = openProcessForKill(entry, corePath); handle != nullptr) {
       LOG_DEBUG("shutting down process, name=%s, pid=%d", entry.szExeFile, entry.th32ProcessID);
       deskflow::platform::MSWindowsProcess::shutdown(handle, entry.th32ProcessID);
       CloseHandle(handle);

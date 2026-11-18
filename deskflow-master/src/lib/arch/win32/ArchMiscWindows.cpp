@@ -506,8 +506,6 @@ void ArchMiscWindows::guardRuntimeVersion() // NOSONAR - `noreturn` is not avail
 
 bool ArchMiscWindows::isProcessElevated()
 {
-  LOG_DEBUG("checking if process is elevated");
-
   HANDLE hToken = nullptr;
   if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
     throw std::runtime_error(windowsErrorToString(GetLastError()));
@@ -525,7 +523,6 @@ bool ArchMiscWindows::isProcessElevated()
     throw;
   }
 
-  const auto isElevated = elevation.TokenIsElevated;
-  LOG_DEBUG("process is %s", isElevated ? "elevated" : "not elevated");
-  return isElevated;
+  CloseHandle(hToken);
+  return elevation.TokenIsElevated != 0;
 }

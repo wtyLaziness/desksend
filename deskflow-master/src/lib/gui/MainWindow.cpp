@@ -128,8 +128,8 @@ MainWindow::MainWindow()
 
   // Setup the Instance Checking
   // In case of a previous crash remove first
-  QLocalServer::removeServer(m_guiSocketName);
-  m_guiDupeChecker->listen(m_guiSocketName);
+  QLocalServer::removeServer(kGuiIpcName);
+  m_guiDupeChecker->listen(kGuiIpcName);
 
   createMenuBar();
   setupControls();
@@ -394,6 +394,8 @@ void MainWindow::coreProcessError(CoreProcess::Error error)
     QMessageBox::warning(
         this, tr("Address missing"), tr("Please enter the hostname or IP address of the other computer.")
     );
+  } else if (error == CoreProcess::Error::ServiceNeedsAdministrator) {
+    QMessageBox::warning(this, kAppName, tr("Run DeskSend as administrator to start the background service mode."));
   } else if (error == CoreProcess::Error::StartFailed) {
     show();
     auto message = tr("The Core executable could not be started.\n"
