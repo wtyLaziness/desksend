@@ -938,6 +938,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
   if (m_saveOnExit) {
     Settings::setValue(Settings::Gui::WindowGeometry, geometry());
     Settings::setValue(Settings::Gui::AutoStartCore, m_coreProcess.isStarted());
+    if (!m_coreProcess.stopServiceForExit()) {
+      QMessageBox::warning(this, kAppName, tr("Windows could not confirm that the DeskSend background service exited."));
+    }
   }
   qDebug() << "quitting application";
 

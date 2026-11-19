@@ -51,7 +51,7 @@ BOOL MSWindowsProcess::startInForeground()
   si.wShowWindow = SW_MINIMIZE;
 
   m_createProcessResult =
-      CreateProcess(nullptr, LPWSTR(m_command.c_str()), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &m_info);
+      CreateProcess(nullptr, m_command.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &m_info);
   return m_createProcessResult;
 }
 
@@ -62,19 +62,25 @@ BOOL MSWindowsProcess::startAsUser(HANDLE userToken, LPSECURITY_ATTRIBUTES sa)
 
   LPVOID environment;
   if (!CreateEnvironmentBlock(&environment, userToken, FALSE)) {
+    const auto error = GetLastError();
+    CloseHandle(userToken);
     LOG_ERR("could not create environment block");
-    throw std::runtime_error(windowsErrorToString(GetLastError()));
+    throw std::runtime_error(windowsErrorToString(error));
   }
 
   ZeroMemory(&m_info, sizeof(PROCESS_INFORMATION));
   const DWORD creationFlags = NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT;
   m_createProcessResult = CreateProcessAsUser(
-      userToken, nullptr, LPWSTR(m_command.c_str()), sa, nullptr, TRUE, creationFlags, environment, nullptr, &si,
+      userToken, nullptr, m_command.data(), sa, nullptr, TRUE, creationFlags, environment, nullptr, &si,
       &m_info
   );
+  const auto error = m_createProcessResult ? ERROR_SUCCESS : GetLastError();
 
   DestroyEnvironmentBlock(environment);
   CloseHandle(userToken);
+  if (!m_createProcessResult) {
+    SetLastError(error);
+  }
 
   return m_createProcessResult;
 }
@@ -183,7 +189,11 @@ void MSWindowsProcess::shutdown(HANDLE handle, DWORD pid, int timeout)
 
   // Last resort, terminate the process forcefully.
   if (TerminateProcess(handle, s_exitSuccess)) {
-    LOG_WARN("forcefully terminated process %d", pid);
+    if (WaitForSingleObject(handle, 1000) == WAIT_OBJECT_0) {
+      LOG_WARN("forcefully terminated process %d", pid);
+    } else {
+      LOG_WARN("could not confirm that process %d exited after termination", pid);
+    }
   } else {
     LOG_ERR("failed to terminate process %d, error: %s", pid, windowsErrorToString(GetLastError()).c_str());
   }

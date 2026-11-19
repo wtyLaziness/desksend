@@ -6,6 +6,9 @@
 
 #include "arch/Arch.h"
 #include "arch/ArchException.h"
+#if defined(Q_OS_WIN)
+#include "base/Log.h"
+#endif
 
 #include <QElapsedTimer>
 #include <QNetworkProxy>
@@ -475,6 +478,20 @@ private Q_SLOTS:
     ARCH->setKeepAliveOnSocket(connection.socket.get(), false);
   }
 
+#if defined(Q_OS_WIN)
+  void inputPriorityKeepsSocketUsable()
+  {
+    LoopbackConnection connection;
+    QVERIFY2(connection.open(), qPrintable(connection.error));
+    ARCH->prioritizeInputSocket(connection.socket.get());
+
+    const QByteArray expected("input");
+    QCOMPARE(writeAll(connection.socket.get(), expected), expected.size());
+    QTRY_COMPARE_WITH_TIMEOUT(connection.peer->bytesAvailable(), expected.size(), kTimeoutMs);
+    QCOMPARE(connection.peer->readAll(), expected);
+  }
+#endif
+
   void setKeepAliveOnSocket_nullSocket_throwsSupportError()
   {
     QVERIFY_THROWS_EXCEPTION(ArchNetworkSupportException, ARCH->setKeepAliveOnSocket(nullptr, true));
@@ -514,6 +531,9 @@ private Q_SLOTS:
 
 private:
   Arch m_arch;
+#if defined(Q_OS_WIN)
+  Log m_log;
+#endif
 };
 
 QTEST_GUILESS_MAIN(ArchNetworkTests)

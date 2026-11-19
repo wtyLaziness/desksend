@@ -645,6 +645,10 @@ A bound IP is now invalid, you may need to restart the server.</source>
         <translation>退出(&amp;Q)</translation>
     </message>
     <message>
+        <source>Windows could not confirm that the DeskSend background service exited.</source>
+        <translation>Windows 未确认 DeskSend 后台服务已经退出。</translation>
+    </message>
+    <message>
         <source>&amp;Open %1</source>
         <extracomment>%1 will be the replaced with the appname</extracomment>
         <translation>打开 %1(&amp;O)</translation>
@@ -1287,11 +1291,11 @@ Enabling this setting will disable the server config GUI.</source>
     </message>
     <message>
         <source>Exit</source>
-        <translation type="unfinished">出口</translation>
+        <translation>退出</translation>
     </message>
     <message>
         <source>Send to background</source>
-        <translation type="unfinished">发送到后台</translation>
+        <translation>最小化到托盘</translation>
     </message>
     <message>
         <source>When the application starts</source>

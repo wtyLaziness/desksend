@@ -417,6 +417,9 @@ void TCPSocket::discardWrittenData(int bytesWrote)
 
 void TCPSocket::onConnected()
 {
+#if defined(Q_OS_WIN)
+  ARCH->prioritizeInputSocket(m_socket);
+#endif
   m_connected = true;
   m_readable = true;
   m_writable = true;

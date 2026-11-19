@@ -138,11 +138,13 @@ void IpcClient::handleReadyRead()
     data.remove(0, index + 1);
 
     qDebug().noquote() << QStringLiteral("%1 ipc client message: %2").arg(m_typeName, message);
-    const auto parts = message.split('=');
-    if (parts.isEmpty()) {
+    if (message.isEmpty()) {
       qWarning().noquote() << QStringLiteral("%1 ipc client got invalid message: %2").arg(m_typeName, message);
       continue;
     }
+    const auto separator = message.indexOf('=');
+    const auto parts = separator < 0 ? QStringList{message}
+                                    : QStringList{message.left(separator), message.mid(separator + 1)};
 
     if (m_state == State::Connecting) {
       handleHandshakeMessage(parts);

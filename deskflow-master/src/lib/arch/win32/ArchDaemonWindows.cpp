@@ -14,6 +14,37 @@
 #include "base/Log.h"
 #include "common/Constants.h"
 
+#include <QDeadlineTimer>
+#include <QThread>
+
+#include <memory>
+#include <type_traits>
+
+namespace {
+
+using ServiceHandle = std::unique_ptr<std::remove_pointer_t<SC_HANDLE>, decltype(&CloseServiceHandle)>;
+
+ServiceHandle openServiceManager()
+{
+  ServiceHandle manager(OpenSCManager(nullptr, nullptr, SC_MANAGER_CONNECT), CloseServiceHandle);
+  if (!manager) {
+    throw ArchDaemonFailedException(windowsErrorToString(GetLastError()));
+  }
+  return manager;
+}
+
+SERVICE_STATUS_PROCESS queryServiceStatus(SC_HANDLE service)
+{
+  SERVICE_STATUS_PROCESS status{};
+  DWORD size = 0;
+  if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&status), sizeof(status), &size)) {
+    throw ArchDaemonFailedException(windowsErrorToString(GetLastError()));
+  }
+  return status;
+}
+
+} // namespace
+
 //
 // ArchDaemonWindows
 //
@@ -383,48 +414,63 @@ void WINAPI ArchDaemonWindows::serviceHandlerEntry(DWORD ctrl)
 
 void ArchDaemonWindows::start(const QString &name)
 {
-  // open service manager
-  SC_HANDLE mgr = OpenSCManager(nullptr, nullptr, GENERIC_READ);
-  if (mgr == nullptr) {
+  const auto manager = openServiceManager();
+  const ServiceHandle service(OpenService(manager.get(), name.toStdWString().c_str(), SERVICE_START), CloseServiceHandle);
+  if (!service) {
     throw ArchDaemonFailedException(windowsErrorToString(GetLastError()));
   }
 
-  // open the service
-  SC_HANDLE service = OpenService(mgr, name.toStdWString().c_str(), SERVICE_START);
-
-  if (service == nullptr) {
-    CloseServiceHandle(mgr);
-    throw ArchDaemonFailedException(windowsErrorToString(GetLastError()));
-  }
-
-  // start the service
-  if (!StartService(service, 0, nullptr)) {
-    throw ArchDaemonFailedException(windowsErrorToString(GetLastError()));
+  if (!StartService(service.get(), 0, nullptr)) {
+    const auto error = GetLastError();
+    if (error != ERROR_SERVICE_ALREADY_RUNNING) {
+      throw ArchDaemonFailedException(windowsErrorToString(error));
+    }
   }
 }
 
 void ArchDaemonWindows::stop(const QString &name)
 {
-  // open service manager
-  SC_HANDLE mgr = OpenSCManager(nullptr, nullptr, GENERIC_READ);
-  if (mgr == nullptr) {
-    throw ArchDaemonFailedException(windowsErrorToString(GetLastError()));
-  }
-
-  // open the service
-  SC_HANDLE service = OpenService(mgr, name.toStdWString().c_str(), SERVICE_STOP | SERVICE_QUERY_STATUS);
-
-  if (service == nullptr) {
-    CloseServiceHandle(mgr);
-    throw ArchDaemonFailedException(windowsErrorToString(GetLastError()));
-  }
-
-  // ask the service to stop, asynchronously
-  SERVICE_STATUS ss;
-  if (!ControlService(service, SERVICE_CONTROL_STOP, &ss)) {
-    DWORD dwErrCode = GetLastError();
-    if (dwErrCode != ERROR_SERVICE_NOT_ACTIVE) {
-      throw ArchDaemonFailedException(windowsErrorToString(GetLastError()));
+  const auto manager = openServiceManager();
+  const auto serviceName = name.toStdWString();
+  const ServiceHandle query(OpenService(manager.get(), serviceName.c_str(), SERVICE_QUERY_STATUS), CloseServiceHandle);
+  if (!query) {
+    const auto error = GetLastError();
+    if (error == ERROR_SERVICE_DOES_NOT_EXIST) {
+      return;
     }
+    throw ArchDaemonFailedException(windowsErrorToString(error));
+  }
+
+  const QDeadlineTimer deadline(15000);
+  std::unique_ptr<std::remove_pointer_t<HANDLE>, decltype(&CloseHandle)> process(nullptr, CloseHandle);
+  bool stopRequested = false;
+  for (auto status = queryServiceStatus(query.get()); status.dwCurrentState != SERVICE_STOPPED;
+       status = queryServiceStatus(query.get())) {
+    if (deadline.hasExpired()) {
+      throw ArchDaemonFailedException("timed out waiting for the service to stop");
+    }
+    if (!stopRequested && status.dwCurrentState != SERVICE_START_PENDING && status.dwCurrentState != SERVICE_STOP_PENDING) {
+      const ServiceHandle service(OpenService(manager.get(), serviceName.c_str(), SERVICE_STOP), CloseServiceHandle);
+      if (!service) {
+        throw ArchDaemonFailedException(windowsErrorToString(GetLastError()));
+      }
+      if (status.dwProcessId != 0) {
+        process.reset(OpenProcess(SYNCHRONIZE, FALSE, status.dwProcessId));
+      }
+      SERVICE_STATUS ignored{};
+      if (ControlService(service.get(), SERVICE_CONTROL_STOP, &ignored)) {
+        stopRequested = true;
+      } else {
+        const auto error = GetLastError();
+        if (error != ERROR_SERVICE_NOT_ACTIVE && error != ERROR_SERVICE_CANNOT_ACCEPT_CTRL) {
+          throw ArchDaemonFailedException(windowsErrorToString(error));
+        }
+      }
+    }
+    QThread::msleep(50);
+  }
+  // SCM 状态切换为已停止后，服务进程还可能在清理资源。
+  if (process && WaitForSingleObject(process.get(), static_cast<DWORD>(deadline.remainingTime())) != WAIT_OBJECT_0) {
+    throw ArchDaemonFailedException("timed out waiting for the service process to exit");
   }
 }

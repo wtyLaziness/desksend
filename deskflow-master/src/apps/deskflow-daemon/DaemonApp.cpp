@@ -197,7 +197,6 @@ int DaemonApp::mainLoop()
     LOG_ERR("watchdog not initialized");
     return s_exitFailed;
   }
-  ArchDaemonWindows::daemonRunning(true);
 #endif
 
   try {
@@ -209,6 +208,7 @@ int DaemonApp::mainLoop()
 
     LOG_DEBUG("starting watchdog threads");
     m_pWatchdog->startAsync();
+    ArchDaemonWindows::daemonRunning(true);
 #endif
 
     LOG_INFO("daemon is running");

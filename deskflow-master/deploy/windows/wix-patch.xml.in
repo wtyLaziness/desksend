@@ -6,7 +6,7 @@
       DisplayName="@CMAKE_PROJECT_PROPER_NAME@"
       Description="Runs the Core process on secure desktops (UAC prompts, login screen, etc)."
       ErrorControl="normal"
-      Start="auto"
+      Start="demand"
       Type="ownProcess">
       <util:ServiceConfig
         ResetPeriodInDays="1"
@@ -16,7 +16,7 @@
         ThirdFailureActionType="none"
       />
     </ServiceInstall>
-    <ServiceControl Id="ServiceControl" Name="@CMAKE_PROJECT_PROPER_NAME@" Remove="uninstall" Start="install" Stop="both"/>
+    <ServiceControl Id="ServiceControl" Name="@CMAKE_PROJECT_PROPER_NAME@" Remove="uninstall" Stop="both"/>
   </CPackWiXFragment>
 
   <CPackWiXFragment Id="CM_CP_deskflow_core.exe">

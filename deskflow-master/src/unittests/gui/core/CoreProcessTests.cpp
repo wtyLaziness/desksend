@@ -11,6 +11,10 @@
 #include <QtTest>
 
 #ifdef Q_OS_WIN
+#include "arch/win32/ArchDaemonWindows.h"
+
+#include <QUuid>
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -63,6 +67,25 @@ private Q_SLOTS:
   }
 
 #ifdef Q_OS_WIN
+  void stoppingAbsentServiceSucceeds()
+  {
+    const auto name = QStringLiteral("DeskSendTest-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    ArchDaemonWindows::stop(name);
+  }
+
+  void installedServiceStopsOnExit()
+  {
+    if (qEnvironmentVariableIntValue("DESKSEND_TEST_MSI_SERVICE") != 1) {
+      QSKIP("Requires the isolated MSI installation test.");
+    }
+
+    ServerConfig serverConfig;
+    deskflow::gui::CoreProcess coreProcess(serverConfig);
+    QVERIFY(coreProcess.stopServiceForExit());
+    ArchDaemonWindows::start(QString::fromWCharArray(kWindowsServiceName));
+    QVERIFY(coreProcess.stopServiceForExit());
+  }
+
   void winJobObjectKillsChildWhenCoreProcessDestroyed()
   {
     ServerConfig serverConfig;

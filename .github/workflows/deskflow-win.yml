@@ -66,25 +66,36 @@ jobs:
           }
           try {
             $service = Get-CimInstance Win32_Service -Filter "Name = 'DeskSend'"
-            if ($service.State -ne 'Running' -or $service.StartName -ne 'LocalSystem') {
-              throw 'The DeskSend service is not running as LocalSystem'
+            if ($service.State -ne 'Stopped' -or $service.StartMode -ne 'Manual' -or $service.StartName -ne 'LocalSystem') {
+              throw 'MSI must install the DeskSend service as stopped and start it on demand'
             }
             $appDir = Split-Path -Parent $service.PathName.Trim('"')
             foreach ($file in @('DeskSend.exe', 'deskflow-core.exe', 'deskflow-daemon.exe', 'localsend-cli.exe', 'LocalSend-LICENSE.txt')) {
               if (!(Test-Path -LiteralPath (Join-Path $appDir $file) -PathType Leaf)) { throw "MSI is missing $file" }
             }
             if (Test-Path -LiteralPath (Join-Path $appDir 'settings/Deskflow.conf')) { throw 'MSI activates portable mode' }
+            Start-Service DeskSend
+            $service = Get-CimInstance Win32_Service -Filter "Name = 'DeskSend'"
+            $daemon = Get-Process -Id $service.ProcessId
             $pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'desksend-daemon', 'InOut')
             try {
               $pipe.Connect(5000)
-              $command = [System.Text.Encoding]::UTF8.GetBytes("logPath`n")
-              $pipe.Write($command, 0, $command.Length)
+              $prefix = [System.Text.Encoding]::UTF8.GetBytes('log')
+              $suffix = [System.Text.Encoding]::UTF8.GetBytes("Path`n")
+              $pipe.Write($prefix, 0, $prefix.Length)
+              Start-Sleep -Milliseconds 100
+              $pipe.Write($suffix, 0, $suffix.Length)
               $reply = [System.IO.StreamReader]::new($pipe).ReadLineAsync()
               if (!$reply.Wait(5000) -or $reply.Result -notlike 'logPath=*desksend-daemon.log') {
                 throw 'The DeskSend service IPC did not return its log path'
               }
             } finally {
               $pipe.Dispose()
+            }
+            $env:DESKSEND_TEST_MSI_SERVICE = '1'
+            $exitCheck = Start-Process src/unittests/gui/core/CoreProcessTests.exe -ArgumentList 'installedServiceStopsOnExit' -Wait -PassThru
+            if ($exitCheck.ExitCode -ne 0 -or (Get-Service DeskSend).Status -ne 'Stopped' -or !$daemon.WaitForExit(5000)) {
+              throw 'DeskSend exit did not stop the service and its process'
             }
           } finally {
             $uninstall = Start-Process msiexec.exe -ArgumentList "/x `"$msiPath`" /qn /norestart" -Wait -PassThru

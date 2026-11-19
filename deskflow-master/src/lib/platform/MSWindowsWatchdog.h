@@ -13,6 +13,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -130,7 +131,7 @@ private:
   static void shutdownExistingProcesses();
 
 private:
-  bool m_running = true;
+  std::atomic<bool> m_running{true};
   std::unique_ptr<Thread> m_mainThread;
   std::unique_ptr<Thread> m_outputThread;
   std::unique_ptr<Thread> m_sasThread;
@@ -144,7 +145,7 @@ private:
   std::wstring m_activeDesktop = {};
   std::unique_ptr<deskflow::platform::MSWindowsProcess> m_process;
   std::optional<double> m_nextStartTime = std::nullopt;
-  ProcessState m_processState = ProcessState::Idle;
+  std::atomic<ProcessState> m_processState{ProcessState::Idle};
   std::wstring m_command = {};
   SendSas m_sendSasFunc = nullptr;
   std::mutex m_processStateMutex;

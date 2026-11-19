@@ -14,6 +14,8 @@
 
 namespace deskflow::core::ipc {
 
+constexpr auto kMaxCommandBytes = 128 * 1024;
+
 IpcServer::IpcServer(QObject *parent, const QString &serverName, const QString &typeName)
     : QObject(parent),
       m_server{new QLocalServer(this)}, // NOSONAR - Qt memory
@@ -53,6 +55,7 @@ void IpcServer::handleNewConnection()
 
   LOG_DEBUG("%s ipc server got new connection", m_typeName.constData());
   m_clients.insert(clientSocket);
+  clientSocket->setReadBufferSize(kMaxCommandBytes);
 
   connect(clientSocket, &QLocalSocket::readyRead, this, &IpcServer::handleReadyRead);
   connect(clientSocket, &QLocalSocket::disconnected, this, &IpcServer::handleDisconnected);
@@ -64,25 +67,15 @@ void IpcServer::handleReadyRead()
   const auto clientSocket = qobject_cast<QLocalSocket *>(sender());
   LOG_VERBOSE("%s ipc server ready to read data", m_typeName.constData());
 
-  QByteArray data = clientSocket->readAll();
-  if (data.isEmpty()) {
-    LOG_WARN("%s ipc server got empty message", m_typeName.constData());
-    return;
-  }
-
-  // we don't handle incomplete messages yet; each socket read must have delimiters.
-  if (!data.contains('\n')) {
-    LOG_WARN("%s ipc server got incomplete message: %s", m_typeName.constData(), data.constData());
-    return;
-  }
-
-  // each message is delimited by a newline to keep the protocol super simple.
-  while (data.contains('\n')) {
-    const auto index = data.indexOf('\n');
-    QByteArray messageData = data.left(index);
-    data.remove(0, index + 1);
-    QString message = QString::fromUtf8(messageData);
+  // 只取出完整行，留在套接字缓冲区中的半条命令会等下次读取。
+  while (clientSocket->state() == QLocalSocket::ConnectedState && clientSocket->canReadLine()) {
+    const auto messageData = clientSocket->readLine();
+    const auto message = QString::fromUtf8(messageData.constData(), messageData.size() - 1);
     processMessage(clientSocket, message);
+  }
+  if (clientSocket->bytesAvailable() >= kMaxCommandBytes) {
+    LOG_WARN("%s ipc command exceeds the size limit", m_typeName.constData());
+    clientSocket->abort();
   }
 }
 
@@ -110,13 +103,15 @@ void IpcServer::handleErrorOccurred()
 void IpcServer::processMessage(QLocalSocket *clientSocket, const QString &message)
 {
   LOG_VERBOSE("%s ipc server got message: %s", m_typeName.constData(), message.toUtf8().constData());
-  const auto parts = message.split('=');
-  if (parts.isEmpty()) {
+  if (message.isEmpty()) {
     LOG_ERR("%s ipc server got invalid message: %s", m_typeName.constData(), message.toUtf8().constData());
     writeToClientSocket(clientSocket, QStringLiteral("error"));
     return;
   }
 
+  const auto separator = message.indexOf('=');
+  const auto parts = separator < 0 ? QStringList{message}
+                                  : QStringList{message.left(separator), message.mid(separator + 1)};
   if (const auto &command = parts.at(0); command == QStringLiteral("hello")) {
     if (parts.size() < 2) {
       LOG_ERR("%s ipc client hello missing version", m_typeName.constData());

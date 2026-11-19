@@ -15,6 +15,7 @@
 #include "base/Log.h"
 
 #include <malloc.h>
+#include <qos2.h>
 
 static const int s_family[] = {
     PF_UNSPEC,
@@ -255,6 +256,9 @@ void ArchNetworkWinsock::closeSocket(ArchSocket s)
       throwError(err);
     }
     WSACloseEvent_winsock(s->m_event);
+    if (s->m_qosHandle != nullptr) {
+      QOSCloseHandle(s->m_qosHandle);
+    }
     delete s;
   }
 }
@@ -589,6 +593,31 @@ void ArchNetworkWinsock::setBlockingOnSocket(SOCKET s, bool blocking)
   if (ioctl_winsock(s, FIONBIO, &flag) == SOCKET_ERROR) {
     throwError(getsockerror_winsock());
   }
+}
+
+void ArchNetworkWinsock::prioritizeInputSocket(ArchSocket s)
+{
+  if (s->m_qosHandle != nullptr) {
+    return;
+  }
+
+  QOS_VERSION version{1, 0};
+  HANDLE handle = nullptr;
+  if (!QOSCreateHandle(&version, &handle)) {
+    LOG_DEBUG("input network priority unavailable (error %lu)", GetLastError());
+    return;
+  }
+
+  // 只标记键鼠连接的优先级，文件连接自行使用可用带宽。
+  QOS_FLOWID flowId = 0;
+  if (!QOSAddSocketToFlow(handle, s->m_socket, nullptr, QOSTrafficTypeControl, QOS_NON_ADAPTIVE_FLOW, &flowId)) {
+    LOG_DEBUG("could not prioritize input socket (error %lu)", GetLastError());
+    QOSCloseHandle(handle);
+    return;
+  }
+
+  s->m_qosHandle = handle;
+  LOG_DEBUG("Windows network priority enabled for input socket");
 }
 
 bool ArchNetworkWinsock::setNoDelayOnSocket(ArchSocket s, bool noDelay)

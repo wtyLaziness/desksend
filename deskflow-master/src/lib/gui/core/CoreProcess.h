@@ -48,6 +48,7 @@ public:
   void start(std::optional<ProcessMode> processMode = std::nullopt);
   void stop(std::optional<ProcessMode> processMode = std::nullopt);
   void restart();
+  bool stopServiceForExit();
   void cleanup();
   void applyLogLevel();
   void clearSettings();
@@ -138,6 +139,7 @@ private:
   QMutex m_processMutex;
   QString m_secureSocketVersion;
   std::optional<ProcessMode> m_lastProcessMode = std::nullopt;
+  QMetaObject::Connection m_pendingDaemonCommand;
   QTimer m_retryTimer;
   deskflow::gui::ipc::CoreIpcClient *m_coreIpcClient = nullptr;
   deskflow::gui::ipc::DaemonIpcClient *m_daemonIpcClient = nullptr;

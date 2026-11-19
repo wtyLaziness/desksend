@@ -67,6 +67,9 @@ public:
   */
   static UINT getDaemonQuitMessage();
 
+  static void start(const QString &name);
+  static void stop(const QString &name);
+
   // IArchDaemon overrides
   int daemonize(DaemonFunc const &func) override;
   QString commandLine() const override
@@ -92,9 +95,6 @@ private:
 
   void serviceHandler(DWORD ctrl);
   static void WINAPI serviceHandlerEntry(DWORD ctrl);
-
-  void start(const QString &name);
-  void stop(const QString &name);
 
 private:
   class ArchDaemonRunException

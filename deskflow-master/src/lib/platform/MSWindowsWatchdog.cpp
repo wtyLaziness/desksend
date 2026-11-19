@@ -81,6 +81,7 @@ MSWindowsWatchdog::MSWindowsWatchdog(bool foreground, FileLogOutputter &fileLogO
 
 void MSWindowsWatchdog::startAsync()
 {
+  m_running = true;
   m_mainThread = std::make_unique<Thread>(new TMethodJob(this, &MSWindowsWatchdog::mainLoop, nullptr));
   m_outputThread = std::make_unique<Thread>(new TMethodJob(this, &MSWindowsWatchdog::outputLoop, nullptr));
   m_sasThread = std::make_unique<Thread>(new TMethodJob(this, &MSWindowsWatchdog::sasLoop, nullptr));
@@ -92,15 +93,16 @@ void MSWindowsWatchdog::stop()
 
   m_running = false;
 
-  if (!m_mainThread->wait(kThreadWaitSeconds)) {
-    LOG_WARN("could not stop main thread");
+  // 核心的退出超时长于辅助线程的等待时间，服务须等核心清理完成。
+  if (m_mainThread) {
+    m_mainThread->wait();
   }
 
-  if (!m_outputThread->wait(kThreadWaitSeconds)) {
+  if (m_outputThread && !m_outputThread->wait(kThreadWaitSeconds)) {
     LOG_WARN("could not stop output thread");
   }
 
-  if (!m_sasThread->wait(kThreadWaitSeconds)) {
+  if (m_sasThread && !m_sasThread->wait(kThreadWaitSeconds)) {
     LOG_WARN("could not stop sas thread");
   }
 }
@@ -188,7 +190,7 @@ void MSWindowsWatchdog::mainLoop(const void *)
       m_nextStartTime.reset();
     }
 
-    switch (m_processState) {
+    switch (m_processState.load()) {
     case Idle:
       LOG_VERBOSE("watchdog process state idle");
       break;
@@ -217,7 +219,7 @@ void MSWindowsWatchdog::mainLoop(const void *)
     case Running: {
       LOG_VERBOSE("watchdog process in running state");
       if (!isProcessRunning()) {
-        LOG_WARN("detected application not running, pid=%d", m_process->info().dwProcessId);
+        LOG_WARN("detected core process is not running");
         m_processState = StartPending;
       }
     } break;
@@ -230,7 +232,6 @@ void MSWindowsWatchdog::mainLoop(const void *)
       } else {
         LOG_WARN("no process to stop");
       }
-      shutdownExistingProcesses();
       m_processState = Idle;
     } break;
     }
@@ -250,19 +251,13 @@ void MSWindowsWatchdog::mainLoop(const void *)
     m_process->shutdown();
     m_process.reset();
   }
-
-  shutdownExistingProcesses();
+  std::scoped_lock lock{m_processStateMutex};
+  m_processState = m_command.empty() ? Idle : StartPending;
 }
 
 bool MSWindowsWatchdog::isProcessRunning()
 {
-  if (m_process == nullptr) {
-    return false;
-  }
-
-  DWORD exitCode;
-  GetExitCodeProcess(m_process->info().hProcess, &exitCode);
-  return exitCode == STILL_ACTIVE;
+  return m_process && WaitForSingleObject(m_process->info().hProcess, 0) == WAIT_TIMEOUT;
 }
 
 void MSWindowsWatchdog::startProcess()
@@ -300,13 +295,9 @@ void MSWindowsWatchdog::startProcess()
   }
 
   if (!createRet) {
-    DWORD exitCode = 0;
-    if (GetExitCodeProcess(m_process->info().hProcess, &exitCode)) {
-      LOG_ERR("daemon failed to run command, exit code: %d", exitCode);
-    } else {
-      LOG_ERR("daemon failed to run command, unknown exit code");
-      throw std::runtime_error(windowsErrorToString(GetLastError()));
-    }
+    const auto error = GetLastError();
+    m_process.reset();
+    throw std::runtime_error(windowsErrorToString(error));
   } else {
     // Wait for program to fail. This needs to be 1 second, as the process may take some time to fail.
     LOG_DEBUG("watchdog waiting for process start result");

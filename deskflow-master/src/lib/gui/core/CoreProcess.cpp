@@ -21,6 +21,7 @@
 #endif
 
 #ifdef Q_OS_WIN
+#include "arch/win32/ArchDaemonWindows.h"
 #include "arch/win32/ArchMiscWindows.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -269,11 +270,27 @@ void CoreProcess::startProcessFromDaemon()
     qCritical("not starting core process from daemon, unexpected process state");
     return;
   }
+  disconnect(m_pendingDaemonCommand);
+
+#ifdef Q_OS_WIN
+  try {
+    ArchDaemonWindows::start(QString::fromWCharArray(kWindowsServiceName));
+  } catch (const std::exception &e) {
+    qWarning("could not start the DeskSend service: %s", e.what());
+    setProcessState(ProcessState::Stopped);
+    setConnectionState(ConnectionState::Disconnected);
+    Q_EMIT error(Error::StartFailed);
+    return;
+  }
+#endif
 
   const auto configFile = Settings::settingsFile();
   qInfo("sending start to daemon (config file: %s)", qPrintable(configFile));
 
   auto sendStart = [this, configFile] {
+    if (m_processState != ProcessState::Starting) {
+      return;
+    }
     m_daemonIpcClient->sendConfigFile(configFile);
     m_daemonIpcClient->sendStartProcess();
     setProcessState(ProcessState::Started);
@@ -282,10 +299,8 @@ void CoreProcess::startProcessFromDaemon()
   if (m_daemonIpcClient->isConnected()) {
     sendStart();
   } else {
-    connect(
-        m_daemonIpcClient, &ipc::DaemonIpcClient::connected, this, sendStart,
-        static_cast<Qt::ConnectionType>(Qt::SingleShotConnection | Qt::QueuedConnection)
-    );
+    m_pendingDaemonCommand =
+        connect(m_daemonIpcClient, &ipc::DaemonIpcClient::connected, this, sendStart, Qt::SingleShotConnection);
     m_daemonIpcClient->connectToServer();
   }
 }
@@ -351,19 +366,20 @@ void CoreProcess::stopProcessFromDaemon()
     qCritical("not stopping core process from daemon, unexpected process state");
     return;
   }
+  disconnect(m_pendingDaemonCommand);
 
   auto sendStop = [this] {
     m_daemonIpcClient->sendStopProcess();
-    setProcessState(ProcessState::Stopped);
+    if (m_processState == ProcessState::Stopping) {
+      setProcessState(ProcessState::Stopped);
+    }
   };
 
   if (m_daemonIpcClient->isConnected()) {
     sendStop();
   } else {
-    connect(
-        m_daemonIpcClient, &ipc::DaemonIpcClient::connected, this, sendStop,
-        static_cast<Qt::ConnectionType>(Qt::SingleShotConnection | Qt::QueuedConnection)
-    );
+    m_pendingDaemonCommand =
+        connect(m_daemonIpcClient, &ipc::DaemonIpcClient::connected, this, sendStop, Qt::SingleShotConnection);
     m_daemonIpcClient->connectToServer();
   }
 }
@@ -563,6 +579,9 @@ void CoreProcess::stop(std::optional<ProcessMode> processModeOption)
 
   if (m_processState == ProcessState::Starting) {
     qDebug("core process is starting, cancelling");
+    if (processMode == ProcessMode::Service) {
+      disconnect(m_pendingDaemonCommand);
+    }
     setProcessState(ProcessState::Stopped);
   } else if (m_processState != ProcessState::Stopped) {
     setProcessState(ProcessState::Stopping);
@@ -617,6 +636,33 @@ void CoreProcess::restart()
   if (!waitForProcess) {
     start();
   }
+}
+
+bool CoreProcess::stopServiceForExit()
+{
+  m_retryTimer.stop();
+#ifdef Q_OS_WIN
+  if (Settings::isPortableMode()) {
+    return true;
+  }
+
+  disconnect(m_pendingDaemonCommand);
+  if (m_lastProcessMode == ProcessMode::Service) {
+    setProcessState(ProcessState::Stopping);
+  }
+  if (m_daemonIpcClient->isConnected()) {
+    m_daemonIpcClient->sendStopProcess();
+    m_daemonIpcClient->flush(500);
+  }
+  m_daemonIpcClient->disconnectFromServer();
+  try {
+    ArchDaemonWindows::stop(QString::fromWCharArray(kWindowsServiceName));
+  } catch (const std::exception &e) {
+    qWarning("could not stop the DeskSend service: %s", e.what());
+    return false;
+  }
+#endif
+  return true;
 }
 
 void CoreProcess::cleanup()

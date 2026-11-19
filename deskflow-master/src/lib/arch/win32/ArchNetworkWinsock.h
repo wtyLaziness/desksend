@@ -35,6 +35,7 @@ public:
   int m_refCount;
   WSAEVENT m_event;
   bool m_pollWrite;
+  HANDLE m_qosHandle = nullptr;
 };
 
 class ArchNetAddressImpl
@@ -57,6 +58,7 @@ public:
   ~ArchNetworkWinsock() override;
 
   void init() override;
+  void prioritizeInputSocket(ArchSocket s);
 
   // IArchNetwork overrides
   ArchSocket newSocket(AddressFamily, SocketType) override;

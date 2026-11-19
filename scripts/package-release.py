@@ -66,6 +66,7 @@ DeskSend 已整合键鼠共享与局域网文件传输，无需单独安装 Loca
 
 主机监听 TCP 24800；双向跨屏文件传输时，主机与副机均需放行入站 TCP 53318。
 需要控制副机的 UAC 提示和 Windows 登录界面时，可在副机安装同一发布页的 MSI 并开启后台服务。
+标题栏关闭按钮默认收进系统托盘。要关闭键鼠核心并退出 DeskSend，请从托盘菜单选择“退出”。
 
 使用指南：https://github.com/wtyLaziness/desksend/blob/main/docs/使用指南.md
 更新和对应源码：https://github.com/wtyLaziness/desksend-releases/releases

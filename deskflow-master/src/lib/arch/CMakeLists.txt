@@ -44,3 +44,6 @@ add_library(arch STATIC ${PLATFORM_CODE}
 )
 
 target_link_libraries (arch PUBLIC common)
+if(WIN32)
+  target_link_libraries(arch PRIVATE qwave)
+endif()
