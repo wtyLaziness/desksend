@@ -4,6 +4,7 @@
 //! requests are declined.
 
 use super::sending::{self, Payload, SendState};
+use super::receive::SenderTarget;
 use super::target::TargetSelector;
 use super::{AppEvent, Network, discovery, spawn_staged_discovery, start_network, stop_network};
 use crate::sanitize;
@@ -21,15 +22,27 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 pub(super) async fn run(
     mut storage: Repository,
     target: TargetSelector,
     payload: Payload,
     pin: Option<String>,
+    cancel_stdin: bool,
 ) -> anyhow::Result<()> {
+    let cancel = CancellationToken::new();
+    if cancel_stdin {
+        let cancel = cancel.clone();
+        // 使用独立线程读管道，正常发送完成时无需等待父进程关闭标准输入。
+        std::thread::spawn(move || {
+            if std::io::stdin().lock().lines().map_while(Result::ok).any(|line| line == "CANCEL") {
+                cancel.cancel();
+            }
+        });
+    }
+
     let mut ui = Ui::new();
-    let identity = storage.identity.clone();
     let (events_tx, mut events_rx) = mpsc::channel::<AppEvent>(64);
     let Network {
         server,
@@ -39,7 +52,9 @@ pub(super) async fn run(
         discovery,
         mut discovery_rx,
         discovery_stop_tx,
-    } = start_network(&identity).await?;
+    } = start_network(&storage.identity).await?;
+    Arc::make_mut(&mut storage.identity).port = server.port();
+    let identity = storage.identity.clone();
 
     // Probe the destination's address directly when `--to` is an IP.
     let direct_channel = target.direct_channel();
@@ -62,8 +77,18 @@ pub(super) async fn run(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut send: Option<SendState> = None;
+    let mut cancel_requested = false;
     let result = loop {
         let event = tokio::select! {
+            _ = cancel.cancelled(), if !cancel_requested => {
+                let Some(send) = &send else {
+                    println!("SEND_CANCELLED");
+                    break Err(anyhow::anyhow!("Transfer cancelled"));
+                };
+                cancel_requested = true;
+                send.cancel.token.cancel();
+                continue;
+            }
             Some(event) = events_rx.recv() => event,
             Some(event) = server_rx.recv() => AppEvent::Server(event),
             Some(event) = discovery_rx.recv() => AppEvent::Discovery(event),
@@ -106,8 +131,13 @@ pub(super) async fn run(
                 if success && let Some(send) = &send {
                     println!("SEND_PROGRESS:{}:{}", send.total_bytes, send.total_bytes);
                 }
+                let cancelled = cancel_requested || send.as_ref().is_some_and(|state| state.cancel.token.is_cancelled());
+                if !success && cancelled {
+                    println!("SEND_CANCELLED");
+                }
                 break match success {
                     true => Ok(()),
+                    false if cancelled => Err(anyhow::anyhow!("Transfer cancelled")),
                     false => Err(anyhow::anyhow!("Transfer failed")),
                 };
             }
@@ -261,10 +291,15 @@ struct ReceiveProgress {
     files: HashMap<String, Arc<AtomicU64>>,
     pending: usize,
     ended: bool,
+    cancelled: bool,
+    sender: Option<SenderTarget>,
 }
 
 impl ReceiveProgress {
     fn report(&self, session_id: &str) {
+        if self.cancelled {
+            return;
+        }
         let done: u64 = self.files.values().map(|p| p.load(Ordering::Relaxed)).sum();
         println!("RECEIVE_PROGRESS:{}:{}:{}", session_id, done.min(self.total), self.total);
     }
@@ -324,6 +359,7 @@ fn is_ip_allowed(ip_str: &str, allow_spec: Option<&str>, paired_contains: bool) 
 enum AuthCommand {
     Grant(String),
     Revoke(String),
+    Cancel(String),
 }
 
 fn parse_auth_command(line: &str) -> Option<AuthCommand> {
@@ -338,6 +374,10 @@ fn parse_auth_command(line: &str) -> Option<AuthCommand> {
         if !token.is_empty() {
             return Some(AuthCommand::Revoke(token.to_string()));
         }
+    } else if let Some(id) = trimmed.strip_prefix("CANCEL ")
+        && uuid::Uuid::parse_str(id).is_ok()
+    {
+        return Some(AuthCommand::Cancel(id.to_string()));
     }
     None
 }
@@ -404,6 +444,19 @@ pub(super) async fn run_receive(
                     Some(AuthCommand::Revoke(token)) => {
                         server.revoke_v2_token(&token).await;
                     }
+                    Some(AuthCommand::Cancel(session_id)) => {
+                        if active_sessions.contains(&session_id) && server.cancel_v2_session(&session_id).await {
+                            let sender = progress.get(&session_id).and_then(|state| state.sender.clone());
+                            active_sessions.remove(&session_id);
+                            end_receive_session(&mut progress, &file_paths, &session_id, SessionEndReasonV2::Cancelled, true);
+                            if let Some(sender) = sender {
+                                let identity = identity.clone();
+                                tokio::spawn(async move {
+                                    sender.notify_cancel(&identity, &session_id).await;
+                                });
+                            }
+                        }
+                    }
                     None => {
                         auth_rx = None;
                     }
@@ -463,6 +516,12 @@ pub(super) async fn run_receive(
                                 let state = ReceiveProgress {
                                     total: files.values().map(|f| f.size).sum(),
                                     pending: files.len(),
+                                    sender: auth_stdin.then(|| SenderTarget {
+                                        host: ip_str,
+                                        port: info.port,
+                                        protocol: info.protocol,
+                                        fingerprint: fp,
+                                    }),
                                     ..Default::default()
                                 };
                                 state.report(&session_id);
@@ -517,48 +576,40 @@ pub(super) async fn run_receive(
                                 })
                                 .await;
                         });
-                        let _ = target_tx.send(FileUploadTarget::Path {
-                            path,
-                            result_tx,
-                            progress_tx: Some(progress_tx),
-                        });
+                        let target = if auth_stdin {
+                            FileUploadTarget::StagedPath { path, result_tx, progress_tx: Some(progress_tx) }
+                        } else {
+                            FileUploadTarget::Path { path, result_tx, progress_tx: Some(progress_tx) }
+                        };
+                        let _ = target_tx.send(target);
                     }
                     ServerEventV2::SessionEnd { session_id, reason } => {
-                        active_sessions.remove(&session_id);
-                        if let Some(state) = progress.get_mut(&session_id) {
-                            state.ended = true;
-                            state.report(&session_id);
-                            if state.pending == 0 {
-                                progress.remove(&session_id);
-                            }
-                        }
-                        match reason {
-                            SessionEndReasonV2::Finished => {
-                                println!("RECEIVE_SESSION_FINISHED:{}", session_id);
-                            }
-                            SessionEndReasonV2::Cancelled => {
-                                progress.remove(&session_id);
-                                println!("RECEIVE_SESSION_CANCELLED:{}", session_id);
-                            }
+                        if active_sessions.remove(&session_id) {
+                            end_receive_session(&mut progress, &file_paths, &session_id, reason, auth_stdin);
                         }
                     }
                     ServerEventV2::PrepareUploadAborted { session_id } => {
-                        active_sessions.remove(&session_id);
-                        progress.remove(&session_id);
+                        if active_sessions.remove(&session_id) {
+                            end_receive_session(&mut progress, &file_paths, &session_id, SessionEndReasonV2::Cancelled, auth_stdin);
+                        }
                     }
                     ServerEventV2::CancelReceived { .. } | ServerEventV2::ListenerFailed { .. } => {}
                 }
             }
             Some(event) = events_rx.recv() => {
                 if let AppEvent::ReceiveFileResult { session_id, file_id, result } = event {
+                    let mut cancelled = false;
                     if let Some(state) = progress.get_mut(&session_id) {
+                        cancelled = state.cancelled;
                         state.report(&session_id);
                         state.pending = state.pending.saturating_sub(1);
                         if state.ended && state.pending == 0 {
                             progress.remove(&session_id);
                         }
                     }
-                    if let Some(path) = file_paths.remove(&(session_id, file_id)) {
+                    if let Some(path) = file_paths.remove(&(session_id, file_id))
+                        && !cancelled
+                    {
                         match result {
                             Ok(()) => println!("RECEIVED_FILE:{}", path.display()),
                             Err(err) => println!("RECEIVE_FILE_FAILED:{}:{}", path.display(), err),
@@ -572,6 +623,35 @@ pub(super) async fn run_receive(
 
     stop_network(&server, Some(server_stop_tx), &discovery, discovery_stop_tx).await;
     Ok(())
+}
+
+fn end_receive_session(
+    progress: &mut HashMap<String, ReceiveProgress>,
+    file_paths: &HashMap<(String, String), PathBuf>,
+    session_id: &str,
+    reason: SessionEndReasonV2,
+    auth_stdin: bool,
+) {
+    if let Some(state) = progress.get_mut(session_id) {
+        state.ended = true;
+        if reason == SessionEndReasonV2::Cancelled {
+            // 已取消的旧会话可能还有写入任务在收尾，其结果不应计入下一批。
+            state.cancelled = true;
+            state.pending = if auth_stdin {
+                file_paths.keys().filter(|(id, _)| id == session_id).count()
+            } else {
+                0
+            };
+        }
+        state.report(session_id);
+        if state.pending == 0 {
+            progress.remove(session_id);
+        }
+    }
+    match reason {
+        SessionEndReasonV2::Finished => println!("RECEIVE_SESSION_FINISHED:{session_id}"),
+        SessionEndReasonV2::Cancelled => println!("RECEIVE_SESSION_CANCELLED:{session_id}"),
+    }
 }
 
 #[cfg(test)]

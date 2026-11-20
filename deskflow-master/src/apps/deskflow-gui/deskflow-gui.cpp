@@ -86,7 +86,7 @@ int main(int argc, char *argv[])
 
   if (parser.isSet(helpOption)) {
     QTextStream(stdout) << kHeader << QStringLiteral("  %1\n\n").arg(kAppDescription)
-                        << parser.helpText().replace(QApplication::applicationFilePath(), kAppId);
+                        << parser.helpText().replace(QApplication::applicationFilePath(), kAppName);
     return s_exitSuccess;
   }
 

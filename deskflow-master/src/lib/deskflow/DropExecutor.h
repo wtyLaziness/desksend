@@ -140,8 +140,10 @@ public:
   bool hasActiveTransfers() const override;
 
   // Helpers exposed for FileDropBridge & unit tests
-  void handleReceiveSessionStarted(size_t expectedFiles, const std::string &tokenTag = {});
-  void handleReceiveSessionFinished(bool cancelled);
+  void handleReceiveSessionStarted(
+      size_t expectedFiles, const std::string &tokenTag = {}, const std::string &sessionId = {}
+  );
+  void handleReceiveSessionFinished(bool cancelled, const std::string &sessionId = {});
   void handleReceivedFileLine(const std::string &filePath);
   void handleReceiveFileFailedLine();
 
@@ -178,6 +180,8 @@ private:
       const std::string &targetIp, const std::vector<std::string> &files, const std::string &authToken
   );
   void processNextSendJob();
+  void cancelActiveSend(QProcess *process);
+  void cancelActiveReceive(const std::string &sessionId);
   void finalizeActiveSession();
   void notifyActiveTransfersChangedLocked(bool &outShouldNotify, bool &outActive);
   void emitActiveTransfersChanged(bool active);
@@ -198,6 +202,7 @@ private:
 
   std::deque<SendJob> m_sendQueue;
   bool m_sendingInProgress = false;
+  bool m_sendCancelRequested = false;
 
   std::string m_defaultDropFallbackDir;
   std::string m_lastResolvedDropDir;
@@ -205,11 +210,13 @@ private:
   ReceiverAuthCache m_cachedReceiverGrants;
   std::deque<DropTargetEntry> m_pendingDropTargets;
   DropTargetEntry m_activeSessionTarget;
+  std::string m_activeReceiveSessionId;
   std::vector<std::string> m_activeSessionPlacedFiles;
   size_t m_activeSessionExpectedFiles = 0;
   size_t m_activeSessionHandledFiles = 0;
   bool m_activeSessionEnded = false;
   bool m_activeSessionFailed = false;
+  bool m_activeSessionCancelled = false;
   bool m_activeReceiveSession = false;
   bool m_lastReportedActiveTransfers = false;
 

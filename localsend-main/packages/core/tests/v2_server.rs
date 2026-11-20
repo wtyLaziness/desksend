@@ -8,7 +8,7 @@ use localsend::http::dto_v2::{PrepareUploadRequestDtoV2, RegisterDtoV2};
 use localsend::http::server::common::save::FileUploadTarget;
 use localsend::http::server::v2::{PrepareUploadDecisionV2, ServerEventV2, SessionEndReasonV2};
 use localsend::http::server::web::WebConfig;
-use localsend::http::server::{start_with_port, ServerConfigV2};
+use localsend::http::server::{start_with_port, ServerConfigV2, ServerHandle};
 use localsend::http::state::ClientInfo;
 use localsend::model::discovery::ProtocolType;
 use localsend::model::transfer::{FileContent, FileDto, FileMetadata};
@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 struct TestServer {
     port: u16,
+    handle: ServerHandle,
     /// Uploaded file contents, mapped by file ID.
     received: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     /// Ended sessions with their reasons.
@@ -39,7 +40,7 @@ async fn start_test_server(
     accept: bool,
     save_dir: Option<PathBuf>,
 ) -> TestServer {
-    start_test_server_with_verification(pin, accept, save_dir, true).await
+    start_test_server_with_verification(pin, accept, save_dir, true, false).await
 }
 
 /// Like [start_test_server], but allows disabling the checksum verification.
@@ -48,6 +49,7 @@ async fn start_test_server_with_verification(
     accept: bool,
     save_dir: Option<PathBuf>,
     verify_checksums: bool,
+    stage_uploads: bool,
 ) -> TestServer {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let received: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -98,11 +100,20 @@ async fn start_test_server_with_verification(
                             Some(dir) => {
                                 let path = dir.join(&file_id);
                                 let (result_tx, result_rx) = oneshot::channel();
-                                let _ = target_tx.send(FileUploadTarget::Path {
-                                    path: path.clone(),
-                                    result_tx,
-                                    progress_tx: None,
-                                });
+                                let target = if stage_uploads {
+                                    FileUploadTarget::StagedPath {
+                                        path: path.clone(),
+                                        result_tx,
+                                        progress_tx: None,
+                                    }
+                                } else {
+                                    FileUploadTarget::Path {
+                                        path: path.clone(),
+                                        result_tx,
+                                        progress_tx: None,
+                                    }
+                                };
+                                let _ = target_tx.send(target);
                                 tokio::spawn(async move {
                                     if let Ok(Ok(())) = result_rx.await {
                                         let bytes = tokio::fs::read(&path).await.unwrap();
@@ -150,6 +161,7 @@ async fn start_test_server_with_verification(
 
     TestServer {
         port: handle.port(),
+        handle,
         received,
         session_ends,
         _stop_tx: stop_tx,
@@ -508,7 +520,7 @@ async fn test_upload_with_mismatched_sha256() {
 
 #[tokio::test]
 async fn test_upload_mismatched_sha256_with_verification_disabled() {
-    let server = start_test_server_with_verification(None, true, None, false).await;
+    let server = start_test_server_with_verification(None, true, None, false, false).await;
     let client = LsHttpClientV2::try_new_without_cert().unwrap();
 
     let bytes = b"hello".to_vec();
@@ -791,6 +803,84 @@ async fn test_upload_saved_to_path_by_server() {
     );
 
     let _ = tokio::fs::remove_dir_all(&save_dir).await;
+}
+
+#[tokio::test]
+async fn receiver_cancel_removes_only_the_incomplete_staged_file() {
+    let save_dir = std::env::temp_dir().join(format!("localsend-test-{}", uuid::Uuid::new_v4()));
+    tokio::fs::create_dir(&save_dir).await.unwrap();
+    let server =
+        start_test_server_with_verification(None, true, Some(save_dir.clone()), true, true).await;
+    let client = LsHttpClientV2::try_new_without_cert().unwrap();
+    let response = client
+        .prepare_upload(
+            ProtocolType::Http,
+            "127.0.0.1",
+            server.port,
+            None,
+            prepare_upload_request(&[
+                file_dto("complete", "complete.bin", 5),
+                file_dto("partial", "partial.bin", 5),
+            ]),
+            None,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+        .response
+        .unwrap();
+    upload_bytes(
+        &client,
+        server.port,
+        &response.session_id,
+        "complete",
+        &response.files["complete"],
+        b"hello",
+    )
+    .await
+    .unwrap();
+
+    let (chunks, receiver) = mpsc::channel(1);
+    chunks.send(Bytes::from_static(b"h")).await.unwrap();
+    let session_id = response.session_id.clone();
+    let port = server.port;
+    let partial_path = save_dir.join("partial");
+    let upload = tokio::spawn(async move {
+        client
+            .upload(
+                ProtocolType::Http,
+                "127.0.0.1",
+                port,
+                None,
+                &response.session_id,
+                "partial",
+                &response.files["partial"],
+                localsend::reqwest::Body::wrap_stream(
+                    ReceiverStream::new(receiver).map(Ok::<_, std::io::Error>),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !partial_path.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!server.handle.cancel_v2_session("other-session").await);
+    assert!(server.handle.cancel_v2_session(&session_id).await);
+    let result = tokio::time::timeout(Duration::from_secs(5), upload)
+        .await
+        .expect("cancel should end the upload while the request body is still open")
+        .unwrap();
+    assert_status(result, 410);
+    drop(chunks);
+    assert!(!partial_path.exists());
+    assert_eq!(tokio::fs::read(save_dir.join("complete")).await.unwrap(), b"hello");
+    tokio::fs::remove_file(save_dir.join("complete")).await.unwrap();
+    tokio::fs::remove_dir(&save_dir).await.unwrap();
 }
 
 /// A source file the sender cannot read must fail the upload instead of being

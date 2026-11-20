@@ -8,16 +8,76 @@
         <translation>关于 DeskSend</translation>
     </message>
     <message>
-        <source>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:&apos;Ubuntu&apos;; font-size:10pt; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;a href=&quot;https://www.gnu.org/licenses/old-licenses/gpl-2.0.html&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#508ed8;&quot;&gt;License: GNU GPL Version 2&lt;/a&gt;&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
-        <translation>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:&apos;Ubuntu&apos;; font-size:10pt; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;a href=&quot;https://www.gnu.org/licenses/old-licenses/gpl-2.0.html&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#508ed8;&quot;&gt;许可证：GNU GPL 版本 2&lt;/a&gt;&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</translation>
+        <source>%1 (preview)</source>
+        <translation>%1（预览版）</translation>
+    </message>
+    <message>
+        <source>Use one keyboard and mouse to work across multiple computers.</source>
+        <translation>用同一套键盘和鼠标操作多台电脑。</translation>
+    </message>
+    <message>
+        <source>Drag files between screens to send them. Either side can cancel an active transfer.</source>
+        <translation>跨屏拖放即可发送文件，传输期间双方都可取消。</translation>
+    </message>
+    <message>
+        <source>Source code</source>
+        <translation>源代码</translation>
+    </message>
+    <message>
+        <source>User guide</source>
+        <translation>使用指南</translation>
+    </message>
+    <message>
+        <source>Releases and downloads</source>
+        <translation>版本与下载</translation>
+    </message>
+    <message>
+        <source>DeskSend maintenance</source>
+        <translation>项目维护</translation>
+    </message>
+    <message>
+        <source>Maintained by %1.</source>
+        <translation>由 %1 维护。</translation>
+    </message>
+    <message>
+        <source>View project contributors</source>
+        <translation>查看项目贡献者</translation>
+    </message>
+    <message>
+        <source>Open-source components and credits</source>
+        <translation>开源致谢</translation>
+    </message>
+    <message>
+        <source>Keyboard and mouse sharing is based on %1. Local file transfers use %2.</source>
+        <translation>键鼠共享基于 %1，局域网文件传输由 %2 提供。</translation>
+    </message>
+    <message>
+        <source>Some interface icons come from %1.</source>
+        <translation>部分界面图标来自 %1。</translation>
+    </message>
+    <message>
+        <source>The Deskflow components use GPL v2 with the OpenSSL linking exception.</source>
+        <translation>Deskflow 组件采用 GPL v2（含 OpenSSL 链接例外）。</translation>
+    </message>
+    <message>
+        <source>The LocalSend components use Apache License 2.0.</source>
+        <translation>LocalSend 组件采用 Apache 2.0。</translation>
+    </message>
+    <message>
+        <source>View licenses</source>
+        <translation>查看许可证</translation>
+    </message>
+    <message>
+        <source>Deskflow upstream contributors</source>
+        <translation>Deskflow 上游贡献者</translation>
+    </message>
+    <message>
+        <source>Show upstream copyright and contributors</source>
+        <translation>查看上游版权与贡献者</translation>
+    </message>
+    <message>
+        <source>Hide upstream copyright and contributors</source>
+        <translation>收起上游版权与贡献者</translation>
     </message>
     <message>
         <source>Version: </source>
@@ -26,26 +86,6 @@ p, li { white-space: pre-wrap; }
     <message>
         <source>Copy version info</source>
         <translation>复制版本信息</translation>
-    </message>
-    <message>
-        <source>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:&apos;Ubuntu&apos;; font-size:10pt; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;a href=&quot;https://github.com/deskflow/deskflow/graphs/contributors&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#508ed8;&quot;&gt;Code Contributors&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
-        <translation>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:&apos;Ubuntu&apos;; font-size:10pt; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;a href=&quot;https://github.com/deskflow/deskflow/graphs/contributors&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#508ed8;&quot;&gt;代码贡献者&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</translation>
-    </message>
-    <message>
-        <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Icons from &lt;a href=&quot;https://develop.kde.org/frameworks/breeze-icons/&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#007af4;&quot;&gt;KDE Breeze&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
-        <translation>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;图标来源： &lt;a href=&quot;https://develop.kde.org/frameworks/breeze-icons/&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#007af4;&quot;&gt;KDE Breeze&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</translation>
-    </message>
-    <message>
-        <source>Important Developers</source>
-        <translation>主要开发者</translation>
     </message>
     <message>
         <source>&amp;Close</source>
@@ -163,7 +203,7 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <source>Scale</source>
-        <translation type="unfinished">规模</translation>
+        <translation type="unfinished">缩放比例</translation>
     </message>
     <message>
         <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Allow the client to slow the rate it attempts to reconnect to the server when connections attempts are failing. The delay between connection attempts will  start at 1 second intervals and can be a maxium of 5 minutes between connection attempts.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
@@ -337,6 +377,114 @@ p, li { white-space: pre-wrap; }
     </message>
 </context>
 <context>
+    <name>DragHoverIndicator</name>
+    <message>
+        <source>Drop to receive %1 file(s)</source>
+        <translation>松开以接收 %1 个文件</translation>
+    </message>
+    <message>
+        <source>Drop to receive 3 file(s)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Drop to receive 1 file(s)</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>FileDropBridge</name>
+    <message>
+        <source>DeskSend · Receiving</source>
+        <translation>DeskSend · 接收文件</translation>
+    </message>
+    <message>
+        <source>DeskSend · Sending</source>
+        <translation>DeskSend · 发送文件</translation>
+    </message>
+    <message>
+        <source>File transfer progress</source>
+        <translation>文件传输进度</translation>
+    </message>
+    <message>
+        <source>Preparing transfer...</source>
+        <translation>正在准备传输…</translation>
+    </message>
+    <message>
+        <source>Cancel transfer</source>
+        <translation>取消传输</translation>
+    </message>
+    <message>
+        <source>Cancelling transfer...</source>
+        <translation>正在取消传输…</translation>
+    </message>
+    <message>
+        <source>File transfer cancelled</source>
+        <translation>文件传输已取消</translation>
+    </message>
+    <message>
+        <source>%1 s</source>
+        <translation>%1 秒</translation>
+    </message>
+    <message>
+        <source>estimating</source>
+        <translation>估算中</translation>
+    </message>
+    <message>
+        <source>%1 / %2
+%3/s · Elapsed %4 s · Remaining %5</source>
+        <translation>%1 / %2
+%3/s · 已用 %4 秒 · 预计剩余 %5</translation>
+    </message>
+    <message>
+        <source>Check network connection, receiver port, and localsend-cli.exe; see logs for details.</source>
+        <translation>请检查网络、接收端口和 localsend-cli.exe；详细原因见日志。</translation>
+    </message>
+    <message>
+        <source>Send failed: missing transfer authorization token</source>
+        <translation>发送失败：缺少传输授权令牌</translation>
+    </message>
+    <message>
+        <source>Sending to %1</source>
+        <translation>正在发送到 %1</translation>
+    </message>
+    <message>
+        <source>Send failed: unable to launch localsend-cli.exe</source>
+        <translation>发送失败：无法启动 localsend-cli.exe</translation>
+    </message>
+    <message>
+        <source>File transfer completed</source>
+        <translation>文件发送完成</translation>
+    </message>
+    <message>
+        <source>File transfer failed</source>
+        <translation>文件发送失败</translation>
+    </message>
+    <message>
+        <source>Receiver failed to start: unable to launch localsend-cli.exe</source>
+        <translation>接收端启动失败：无法启动 localsend-cli.exe</translation>
+    </message>
+    <message>
+        <source>File receiver stopped unexpectedly, attempting automatic recovery...</source>
+        <translation>文件接收监听意外停止，正在尝试自动恢复…</translation>
+    </message>
+    <message>
+        <source>File receiver stopped; verify that the port is available</source>
+        <translation>文件接收监听已停止，请检查端口是否被占用</translation>
+    </message>
+    <message>
+        <source>Receiving %1 file(s)</source>
+        <translation>正在接收 %1 个文件</translation>
+    </message>
+    <message>
+        <source>File receive failed or transfer was cancelled</source>
+        <translation>文件接收失败或传输已取消</translation>
+    </message>
+    <message>
+        <source>File receive completed</source>
+        <translation>文件接收完成</translation>
+    </message>
+</context>
+<context>
     <name>FingerprintDialog</name>
     <message>
         <source>Local Fingerprints</source>
@@ -420,11 +568,11 @@ Do you want to connect to the server?
     <name>HelpDialog</name>
     <message>
         <source>%1 Help</source>
-        <translation type="unfinished">%1 帮助</translation>
+        <translation>%1 帮助</translation>
     </message>
     <message>
         <source>Close</source>
-        <translation type="unfinished">关闭</translation>
+        <translation>关闭</translation>
     </message>
 </context>
 <context>
@@ -580,15 +728,15 @@ Do you want to connect to the server?
     </message>
     <message>
         <source>View &amp;Help</source>
-        <translation type="unfinished">查看帮助(&amp;H)</translation>
+        <translation>查看帮助(&amp;H)</translation>
     </message>
     <message>
         <source>Invalid Computer Name</source>
-        <translation type="unfinished"></translation>
+        <translation>无效的计算机名称</translation>
     </message>
     <message>
         <source>Computer name already exists</source>
-        <translation type="unfinished"></translation>
+        <translation>计算机名称已存在</translation>
     </message>
     <message>
         <source>No IP Detected</source>
@@ -745,15 +893,15 @@ Additionally, check you are able to %1 the server config file: %2</source>
     </message>
     <message>
         <source>Don&apos;t show this again</source>
-        <translation type="unfinished"></translation>
+        <translation>不再显示此提示</translation>
     </message>
     <message>
         <source>Missing Keyboard Layouts</source>
-        <translation type="unfinished"></translation>
+        <translation>缺少键盘布局</translation>
     </message>
     <message>
         <source>&lt;p&gt;Keyboard layout support requires matching layouts on all computers. The following layouts from the other computer are not installed on this computer:&lt;/p&gt;&lt;p&gt;&lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Please install them to enable support for these layouts.&lt;/p&gt;</source>
-        <translation type="unfinished"></translation>
+        <translation>&lt;p&gt;键盘布局支持需要所有计算机安装相同的布局。另一台计算机的以下布局尚未在此计算机上安装：&lt;/p&gt;&lt;p&gt;&lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;请安装这些布局以启用对应支持。&lt;/p&gt;</translation>
     </message>
     <message>
         <source>Check for DeskSend Updates...</source>
@@ -858,7 +1006,7 @@ Are you sure you want to continue?</source>
     </message>
     <message>
         <source>A new client called &apos;%1&apos; has been accepted. You&apos;ll need to add it to your server&apos;s computer layout.</source>
-        <translation type="unfinished"></translation>
+        <translation>已接受名为“%1”的新客户端。请将其添加到服务器的计算机屏幕布局中。</translation>
     </message>
     <message>
         <source>Ignore</source>
@@ -1283,11 +1431,11 @@ Enabling this setting will disable the server config GUI.</source>
     </message>
     <message>
         <source>&amp;Window</source>
-        <translation type="unfinished">窗户(&amp;W)</translation>
+        <translation>窗口(&amp;W)</translation>
     </message>
     <message>
         <source>When the main window is closed</source>
-        <translation type="unfinished">主窗口关闭时</translation>
+        <translation>主窗口关闭时</translation>
     </message>
     <message>
         <source>Exit</source>
@@ -1299,19 +1447,19 @@ Enabling this setting will disable the server config GUI.</source>
     </message>
     <message>
         <source>When the application starts</source>
-        <translation type="unfinished">应用程序启动时</translation>
+        <translation>应用程序启动时</translation>
     </message>
     <message>
         <source>Show the main window</source>
-        <translation type="unfinished">显示主窗口</translation>
+        <translation>显示主窗口</translation>
     </message>
     <message>
         <source>Run command on enter</source>
-        <translation type="unfinished">按下回车键执行命令</translation>
+        <translation>跨屏进入此计算机时执行命令</translation>
     </message>
     <message>
         <source>Run command on exit</source>
-        <translation type="unfinished">退出时运行命令</translation>
+        <translation>跨屏离开此计算机时执行命令</translation>
     </message>
     <message>
         <source>Using a log level higher than Info may affect performance.</source>
@@ -1422,136 +1570,6 @@ Enabling this setting will disable the server config GUI.</source>
     </message>
 </context>
 <context>
-    <name>i18n</name>
-    <message>
-        <source>LocalizedName</source>
-        <extracomment>Replace with your Language name This is a required string</extracomment>
-        <translation>简体中文</translation>
-    </message>
-</context>
-<context>
-    <name>validators::AliasValidator</name>
-    <message>
-        <source>Computer name cannot contain spaces</source>
-        <translation>计算机名称不能包含空格</translation>
-    </message>
-    <message>
-        <source>Aliases may not be ip addresses</source>
-        <translation>不能用 IP 地址作为别名</translation>
-    </message>
-    <message>
-        <source>Contains invalid characters or is too long</source>
-        <translation>包含无效字符或过长</translation>
-    </message>
-</context>
-<context>
-    <name>validators::ComputerLineNameValidator</name>
-    <message>
-        <source>Computer name cannot be empty</source>
-        <translation type="unfinished">计算机名称不能为空</translation>
-    </message>
-    <message>
-        <source>Computer name cannot contain spaces</source>
-        <translation type="unfinished">计算机名称不能包含空格</translation>
-    </message>
-    <message>
-        <source>Contains invalid characters or is too long</source>
-        <translation type="unfinished">包含无效字符或过长</translation>
-    </message>
-    <message>
-        <source>A computer with this name already exists</source>
-        <translation>一台同名的计算机已经存在</translation>
-    </message>
-</context>
-<context>
-    <name>DragHoverIndicator</name>
-    <message>
-        <source>Drop to receive %1 file(s)</source>
-        <translation>松开以接收 %1 个文件</translation>
-    </message>
-</context>
-<context>
-    <name>FileDropBridge</name>
-    <message>
-        <source>DeskSend · Receiving</source>
-        <translation>DeskSend · 接收文件</translation>
-    </message>
-    <message>
-        <source>DeskSend · Sending</source>
-        <translation>DeskSend · 发送文件</translation>
-    </message>
-    <message>
-        <source>File transfer progress</source>
-        <translation>文件传输进度</translation>
-    </message>
-    <message>
-        <source>Preparing transfer...</source>
-        <translation>正在准备传输…</translation>
-    </message>
-    <message>
-        <source>%1 s</source>
-        <translation>%1 秒</translation>
-    </message>
-    <message>
-        <source>estimating</source>
-        <translation>估算中</translation>
-    </message>
-    <message>
-        <source>%1 / %2
-%3/s · Elapsed %4 s · Remaining %5</source>
-        <translation>%1 / %2
-%3/s · 已用 %4 秒 · 预计剩余 %5</translation>
-    </message>
-    <message>
-        <source>Check network connection, receiver port, and localsend-cli.exe; see logs for details.</source>
-        <translation>请检查网络、接收端口和 localsend-cli.exe；详细原因见日志。</translation>
-    </message>
-    <message>
-        <source>Send failed: missing transfer authorization token</source>
-        <translation>发送失败：缺少传输授权令牌</translation>
-    </message>
-    <message>
-        <source>Sending to %1</source>
-        <translation>正在发送到 %1</translation>
-    </message>
-    <message>
-        <source>Send failed: unable to launch localsend-cli.exe</source>
-        <translation>发送失败：无法启动 localsend-cli.exe</translation>
-    </message>
-    <message>
-        <source>File transfer completed</source>
-        <translation>文件发送完成</translation>
-    </message>
-    <message>
-        <source>File transfer failed</source>
-        <translation>文件发送失败</translation>
-    </message>
-    <message>
-        <source>Receiver failed to start: unable to launch localsend-cli.exe</source>
-        <translation>接收端启动失败：无法启动 localsend-cli.exe</translation>
-    </message>
-    <message>
-        <source>File receiver stopped unexpectedly, attempting automatic recovery...</source>
-        <translation>文件接收监听意外停止，正在尝试自动恢复…</translation>
-    </message>
-    <message>
-        <source>File receiver stopped; verify that the port is available</source>
-        <translation>文件接收监听已停止，请检查端口是否被占用</translation>
-    </message>
-    <message>
-        <source>Receiving %1 file(s)</source>
-        <translation>正在接收 %1 个文件</translation>
-    </message>
-    <message>
-        <source>File receive failed or transfer was cancelled</source>
-        <translation>文件接收失败或传输已取消</translation>
-    </message>
-    <message>
-        <source>File receive completed</source>
-        <translation>文件接收完成</translation>
-    </message>
-</context>
-<context>
     <name>UpdateDialog</name>
     <message>
         <source>DeskSend Update</source>
@@ -1619,7 +1637,7 @@ Enabling this setting will disable the server config GUI.</source>
     </message>
     <message>
         <source>I/O error</source>
-        <translation>I/O 错误</translation>
+        <translation type="vanished">I/O 错误</translation>
     </message>
     <message>
         <source>Update package downloaded and verified (SHA-256). Ready to install.</source>
@@ -1675,6 +1693,48 @@ Enabling this setting will disable the server config GUI.</source>
     <message>
         <source>Unable to check for DeskSend updates: %1</source>
         <translation>无法检查 DeskSend 更新：%1</translation>
+    </message>
+</context>
+<context>
+    <name>i18n</name>
+    <message>
+        <source>LocalizedName</source>
+        <extracomment>Replace with your Language name This is a required string</extracomment>
+        <translation>简体中文</translation>
+    </message>
+</context>
+<context>
+    <name>validators::AliasValidator</name>
+    <message>
+        <source>Computer name cannot contain spaces</source>
+        <translation>计算机名称不能包含空格</translation>
+    </message>
+    <message>
+        <source>Aliases may not be ip addresses</source>
+        <translation>不能用 IP 地址作为别名</translation>
+    </message>
+    <message>
+        <source>Contains invalid characters or is too long</source>
+        <translation>包含无效字符或过长</translation>
+    </message>
+</context>
+<context>
+    <name>validators::ComputerLineNameValidator</name>
+    <message>
+        <source>Computer name cannot be empty</source>
+        <translation type="unfinished">计算机名称不能为空</translation>
+    </message>
+    <message>
+        <source>Computer name cannot contain spaces</source>
+        <translation type="unfinished">计算机名称不能包含空格</translation>
+    </message>
+    <message>
+        <source>Contains invalid characters or is too long</source>
+        <translation type="unfinished">包含无效字符或过长</translation>
+    </message>
+    <message>
+        <source>A computer with this name already exists</source>
+        <translation>一台同名的计算机已经存在</translation>
     </message>
 </context>
 </TS>

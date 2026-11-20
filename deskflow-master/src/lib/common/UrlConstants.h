@@ -18,6 +18,7 @@ const auto kUrlApp = QStringLiteral("https://%1").arg(kOrgDomain);
 const auto kUrlHelp = QStringLiteral("https://github.com/wtyLaziness/desksend/issues");
 const auto kUrlDownload = QStringLiteral("https://github.com/wtyLaziness/desksend-releases/releases/latest");
 const auto kUrlWiki = QStringLiteral("https://github.com/wtyLaziness/desksend");
+const auto kUrlUserGuide = QStringLiteral("https://github.com/wtyLaziness/desksend/blob/main/docs/使用指南.md");
 const auto kUrlUpdateCheck = QStringLiteral("https://api.github.com/repos/wtyLaziness/desksend-releases/releases/latest");
 
 #if defined(Q_OS_LINUX)

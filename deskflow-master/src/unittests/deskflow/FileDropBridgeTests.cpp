@@ -1310,6 +1310,22 @@ private Q_SLOTS:
     QCOMPARE(bounded.back(), std::string("GRANT tok_69"));
   }
 
+  void inProcessDropExecutor_cancelledReceiveIgnoresStaleSessionResults()
+  {
+    deskflow::InProcessDropExecutor executor(false);
+    executor.handleReceiveSessionStarted(2, {}, "first");
+    executor.handleReceiveSessionFinished(true, "first");
+    QVERIFY(!executor.hasActiveTransfers());
+    QCOMPARE(executor.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Finished);
+
+    executor.handleReceiveSessionStarted(1, {}, "second");
+    executor.handleReceiveSessionFinished(true, "first");
+    QVERIFY(executor.hasActiveTransfers());
+    QCOMPARE(executor.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Active);
+    executor.handleReceiveSessionFinished(true, "second");
+    QVERIFY(!executor.hasActiveTransfers());
+  }
+
   void inProcessDropExecutor_replaysCachedGrantsOnReceiverRestart()
   {
     QTemporaryDir tempDir;
@@ -1409,8 +1425,16 @@ private Q_SLOTS:
     QCOMPARE(executor.overlayFor(true).phase(), deskflow::TransferStatusOverlay::Phase::Finished);
   }
 
-  void inProcessDropExecutor_sendWatchdogKillsStalledJobAndAdvancesQueue()
+  void inProcessDropExecutor_interruptedSendAdvancesQueue_data()
   {
+    QTest::addColumn<bool>("cancel");
+    QTest::newRow("watchdog") << false;
+    QTest::newRow("user-cancel") << true;
+  }
+
+  void inProcessDropExecutor_interruptedSendAdvancesQueue()
+  {
+    QFETCH(bool, cancel);
     QTemporaryDir tempDir;
     QVERIFY(tempDir.isValid());
     const QString samplePath = tempDir.filePath(QStringLiteral("sample.txt"));
@@ -1422,13 +1446,13 @@ private Q_SLOTS:
 
     struct ScopedTestEnv
     {
-      ScopedTestEnv(const QString &exe, const QString &dir)
+      ScopedTestEnv(const QString &exe, const QString &dir, bool cancel)
       {
         qputenv("DESKSEND_LOCALSEND_CLI", exe.toUtf8());
         qputenv("DESKSEND_TEST_MOCK_CLI", "1");
-        qputenv("DESKSEND_TEST_MOCK_CLI_MODE", "send_watchdog");
+        qputenv("DESKSEND_TEST_MOCK_CLI_MODE", cancel ? "send_cancel" : "send_watchdog");
         qputenv("DESKSEND_TEST_MOCK_CLI_DIR", dir.toUtf8());
-        qputenv("DESKSEND_SEND_INACTIVITY_TIMEOUT_MS", "150");
+        qputenv("DESKSEND_SEND_INACTIVITY_TIMEOUT_MS", cancel ? "15000" : "1000");
       }
       ~ScopedTestEnv()
       {
@@ -1438,7 +1462,7 @@ private Q_SLOTS:
         qunsetenv("DESKSEND_TEST_MOCK_CLI_DIR");
         qunsetenv("DESKSEND_SEND_INACTIVITY_TIMEOUT_MS");
       }
-    } envGuard(QCoreApplication::applicationFilePath(), tempDir.path());
+    } envGuard(QCoreApplication::applicationFilePath(), tempDir.path(), cancel);
 
     struct SendHost final : public deskflow::IDropExecutorHost
     {
@@ -1469,6 +1493,13 @@ private Q_SLOTS:
     job2.items = {samplePath.toStdString()};
     job2.authToken = "tok2";
     executor.execute(job2);
+
+    if (cancel) {
+      QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(tempDir.filePath(QStringLiteral("send_1.done"))), 3000);
+      executor.cancelActiveSend(executor.m_activeSendProcess);
+      executor.cancelActiveSend(executor.m_activeSendProcess);
+      QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(tempDir.filePath(QStringLiteral("send_cancelled.done"))), 3000);
+    }
 
     QTRY_COMPARE_WITH_TIMEOUT(host.results.size(), size_t{2}, 5000);
     QCOMPARE(host.results[0].first, std::string("10.0.0.10"));
@@ -1538,15 +1569,26 @@ int runMockLocalSendCli()
     return 0;
   }
 
-  if (mode == QLatin1String("send_watchdog")) {
+  if (mode == QLatin1String("send_watchdog") || mode == QLatin1String("send_cancel")) {
     const QString marker = dir.filePath(QStringLiteral("send_1.done"));
     const bool isFirst = !QFileInfo::exists(marker);
     if (isFirst) {
+      std::string line;
+      while (std::getline(std::cin, line) && !line.empty()) {}
       QFile doneFile(marker);
       if (doneFile.open(QIODevice::WriteOnly)) {
         doneFile.close();
       }
-      std::this_thread::sleep_for(std::chrono::seconds(5));
+      if (mode == QLatin1String("send_cancel")) {
+        if (std::getline(std::cin, line) && line == "CANCEL") {
+          QFile cancelledFile(dir.filePath(QStringLiteral("send_cancelled.done")));
+          if (cancelledFile.open(QIODevice::WriteOnly)) {
+            cancelledFile.close();
+          }
+        }
+      } else {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+      }
       return 1;
     }
     std::cout << "SEND_PROGRESS:5:5\n" << std::flush;

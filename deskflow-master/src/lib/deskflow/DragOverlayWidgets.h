@@ -12,6 +12,7 @@
 #include <QString>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace deskflow {
@@ -64,15 +65,17 @@ public:
   void beginPreparing(uint32_t fileCount);
   void cancelPreparing();
   void resetToIdle();
-  void begin(const QString &description);
+  void begin(const QString &description, std::function<void()> cancel = {});
   void progress(uint64_t done, uint64_t total);
   void finish(bool success, const QString &message);
+  void finishCancelled();
 
   Phase phase() const;
   uint32_t preparingFileCount() const;
 
 private:
   void resetOverlayPhase(bool onlyIfPreparing);
+  void finish(bool success, const QString &message, bool cancelled);
 
   struct Impl;
   std::shared_ptr<Impl> m_impl;

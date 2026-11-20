@@ -19,6 +19,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMetaObject>
+#include <QPointer>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
@@ -1643,6 +1644,7 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
       m_cachedReceiverGrants.clear();
       m_pendingDropTargets.clear();
       m_activeSessionTarget = DropTargetEntry{};
+      m_activeReceiveSessionId.clear();
       m_lastResolvedDropDir.clear();
       m_activeReceiveSession = false;
       notifyActiveTransfersChangedLocked(shouldNotify, notifyActive);
@@ -1842,7 +1844,15 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
       if (line.startsWith(QStringLiteral("RECEIVE_PROGRESS:"))) {
         const auto fields = line.split(':');
         if (fields.size() == 4) {
-          m_receiverOverlay.progress(fields[2].toULongLong(), fields[3].toULongLong());
+          const std::string sessionId = fields[1].toStdString();
+          bool current;
+          {
+            std::scoped_lock lock(m_mutex);
+            current = m_activeReceiveSessionId == sessionId;
+          }
+          if (current) {
+            m_receiverOverlay.progress(fields[2].toULongLong(), fields[3].toULongLong());
+          }
         }
       } else if (line.startsWith(filePrefix)) {
         handleReceivedFileLine(line.mid(filePrefix.size()).toStdString());
@@ -1861,11 +1871,11 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
         if (lastColon > 0) {
           expectedCount = static_cast<size_t>(header.mid(lastColon + 1).toUInt());
         }
-        handleReceiveSessionStarted(expectedCount, tokenTag);
+        handleReceiveSessionStarted(expectedCount, tokenTag, header.section(':', 1, 1).toStdString());
       } else if (line.startsWith(QStringLiteral("RECEIVE_SESSION_FINISHED:"))) {
-        handleReceiveSessionFinished(false);
+        handleReceiveSessionFinished(false, line.section(':', 1, 1).toStdString());
       } else if (line.startsWith(QStringLiteral("RECEIVE_SESSION_CANCELLED:"))) {
-        handleReceiveSessionFinished(true);
+        handleReceiveSessionFinished(true, line.section(':', 1, 1).toStdString());
       }
     }
   });
@@ -1907,11 +1917,13 @@ void InProcessDropExecutor::stopReceiver()
     m_cachedReceiverGrants.clear();
     m_pendingDropTargets.clear();
     m_activeSessionTarget = DropTargetEntry{};
+    m_activeReceiveSessionId.clear();
     m_activeSessionPlacedFiles.clear();
     m_activeSessionExpectedFiles = 0;
     m_activeSessionHandledFiles = 0;
     m_activeSessionEnded = false;
     m_activeSessionFailed = false;
+    m_activeSessionCancelled = false;
     m_activeReceiveSession = false;
     m_lastResolvedDropDir.clear();
     notifyActiveTransfersChangedLocked(shouldNotify, notifyActive);
@@ -2108,7 +2120,7 @@ void InProcessDropExecutor::processNextSendJob()
     args << QStringLiteral("--port") << QStringLiteral("0");
   }
   args << QStringLiteral("send") << QStringLiteral("--to") << destination << QStringLiteral("--pin-stdin")
-       << QStringLiteral("--paths-stdin");
+       << QStringLiteral("--paths-stdin") << QStringLiteral("--cancel-stdin");
 
   QByteArray stdinPayload = QByteArray::fromStdString(job.authToken + "\n");
   for (const auto &f : job.files) {
@@ -2120,15 +2132,18 @@ void InProcessDropExecutor::processNextSendJob()
       stdinPayload.append('\n');
     }
   }
+  stdinPayload.append('\n');
 
   auto *proc = new QProcess();
   auto *inactivityTimer = new QTimer(proc);
   inactivityTimer->setSingleShot(true);
   const int inactivityMs = sendInactivityTimeoutMs();
   auto timedOut = std::make_shared<bool>(false);
+  auto cancellationReported = std::make_shared<bool>(false);
   {
     std::scoped_lock lock(m_mutex);
     m_activeSendProcess = proc;
+    m_sendCancelRequested = false;
   }
   proc->setProcessChannelMode(QProcess::MergedChannels);
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -2136,8 +2151,15 @@ void InProcessDropExecutor::processNextSendJob()
   QDir().mkpath(senderCfgDir);
   env.insert(QStringLiteral("XDG_CONFIG_HOME"), senderCfgDir);
   proc->setProcessEnvironment(env);
-  m_senderOverlay.begin(QCoreApplication::translate("FileDropBridge", "Sending to %1").arg(destination));
   const auto alive = m_alive;
+  m_senderOverlay.begin(
+      QCoreApplication::translate("FileDropBridge", "Sending to %1").arg(destination),
+      [this, alive, process = QPointer<QProcess>(proc)] {
+        if (alive->load() && process) {
+          cancelActiveSend(process);
+        }
+      }
+  );
   QObject::connect(inactivityTimer, &QTimer::timeout, proc, [alive, proc, timedOut, destination, inactivityMs]() {
     if (!alive->load()) {
       return;
@@ -2151,7 +2173,7 @@ void InProcessDropExecutor::processNextSendJob()
       proc->kill();
     }
   });
-  QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [this, alive, proc, inactivityTimer, inactivityMs]() {
+  QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [this, alive, proc, inactivityTimer, inactivityMs, cancellationReported]() {
     if (!alive->load()) {
       return;
     }
@@ -2163,21 +2185,26 @@ void InProcessDropExecutor::processNextSendJob()
         if (fields.size() == 3) {
           m_senderOverlay.progress(fields[1].toULongLong(), fields[2].toULongLong());
         }
+      } else if (line == QStringLiteral("SEND_CANCELLED")) {
+        *cancellationReported = true;
       } else {
         LOG_INFO("FileDropBridge [tx]: %s", line.toStdString().c_str());
       }
     }
   });
 
-  QObject::connect(proc, &QProcess::started, proc, [proc, stdinPayload, inactivityTimer, inactivityMs]() {
+  QObject::connect(proc, &QProcess::started, proc, [this, alive, proc, stdinPayload, inactivityTimer, inactivityMs]() {
 #if defined(_WIN32)
     assignPidToKillOnCloseJob(proc->processId());
 #endif
     inactivityTimer->start(inactivityMs);
-    if (proc->write(stdinPayload) == stdinPayload.size()) {
-      proc->waitForBytesWritten(2000);
+    proc->write(stdinPayload);
+    if (alive->load()) {
+      std::scoped_lock lock(m_mutex);
+      if (m_activeSendProcess == proc && m_sendCancelRequested) {
+        proc->write("CANCEL\n");
+      }
     }
-    proc->closeWriteChannel();
   });
 
   const std::string jobTargetIp = job.targetIp;
@@ -2196,6 +2223,7 @@ void InProcessDropExecutor::processNextSendJob()
             if (m_activeSendProcess == proc) {
               m_activeSendProcess = nullptr;
             }
+            m_sendCancelRequested = false;
           }
           LOG_WARN("FileDropBridge: failed to start localsend-cli for %s", destination.toStdString().c_str());
           m_senderOverlay.finish(
@@ -2212,32 +2240,38 @@ void InProcessDropExecutor::processNextSendJob()
 
   QObject::connect(
       proc, &QProcess::finished, proc,
-      [this, alive, proc, inactivityTimer, timedOut, destination, jobTargetIp](int exitCode, QProcess::ExitStatus status) {
+      [this, alive, proc, inactivityTimer, timedOut, cancellationReported, destination, jobTargetIp](
+          int exitCode, QProcess::ExitStatus status
+      ) {
         inactivityTimer->stop();
         proc->deleteLater();
         if (!alive->load()) {
           return;
         }
+        bool cancelRequested;
         {
           std::scoped_lock lock(m_mutex);
           if (m_activeSendProcess == proc) {
             m_activeSendProcess = nullptr;
           }
+          cancelRequested = m_sendCancelRequested;
+          m_sendCancelRequested = false;
         }
         const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
-        const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
         const bool success = !(*timedOut) && exitCode == 0 && status == QProcess::NormalExit;
-        m_senderOverlay.finish(
-            success, success ? QCoreApplication::translate("FileDropBridge", "File transfer completed")
-                             : QCoreApplication::translate("FileDropBridge", "File transfer failed")
-        );
         if (success) {
+          m_senderOverlay.finish(true, QCoreApplication::translate("FileDropBridge", "File transfer completed"));
           LOG_INFO("FileDropBridge: LocalSend transfer to %s succeeded", destination.toStdString().c_str());
+        } else if (cancelRequested || *cancellationReported || std::ranges::any_of(out.split('\n'), [](const QString &line) {
+                     return line.trimmed() == QStringLiteral("SEND_CANCELLED");
+                   })) {
+          m_senderOverlay.finishCancelled();
+          LOG_INFO("FileDropBridge: LocalSend transfer to %s cancelled", destination.toStdString().c_str());
         } else {
+          m_senderOverlay.finish(false, QCoreApplication::translate("FileDropBridge", "File transfer failed"));
           LOG_WARN(
-              "FileDropBridge: LocalSend transfer to %s failed (timedOut=%d exit=%d) out=\"%s\" err=\"%s\"",
-              destination.toStdString().c_str(), *timedOut ? 1 : 0, exitCode, out.toStdString().c_str(),
-              err.toStdString().c_str()
+              "FileDropBridge: LocalSend transfer to %s failed (timedOut=%d exit=%d) out=\"%s\"",
+              destination.toStdString().c_str(), *timedOut ? 1 : 0, exitCode, out.toStdString().c_str()
           );
         }
         if (auto *host = m_host.load()) {
@@ -2252,7 +2286,39 @@ void InProcessDropExecutor::processNextSendJob()
   proc->start(cliPath, args);
 }
 
-void InProcessDropExecutor::handleReceiveSessionStarted(size_t expectedFiles, const std::string &tokenTag)
+void InProcessDropExecutor::cancelActiveSend(QProcess *process)
+{
+  {
+    std::scoped_lock lock(m_mutex);
+    if (m_activeSendProcess != process || m_sendCancelRequested || process->state() == QProcess::NotRunning) {
+      return;
+    }
+    m_sendCancelRequested = true;
+  }
+
+  // 先让 CLI 通知接收端取消，仅在 CLI 无法及时退出时结束该发送进程。
+  if (process->state() == QProcess::Running) {
+    process->write("CANCEL\n");
+  }
+  QTimer::singleShot(8000, process, [process]() {
+    if (process->state() != QProcess::NotRunning) {
+      process->kill();
+    }
+  });
+}
+
+void InProcessDropExecutor::cancelActiveReceive(const std::string &sessionId)
+{
+  std::scoped_lock lock(m_mutex);
+  if (!sessionId.empty() && m_activeReceiveSessionId == sessionId && m_receiverProcess &&
+      m_receiverProcess->state() == QProcess::Running) {
+    m_receiverProcess->write(QByteArray::fromStdString("CANCEL " + sessionId + "\n"));
+  }
+}
+
+void InProcessDropExecutor::handleReceiveSessionStarted(
+    size_t expectedFiles, const std::string &tokenTag, const std::string &sessionId
+)
 {
   finalizeActiveSession();
   bool shouldNotify = false;
@@ -2269,6 +2335,8 @@ void InProcessDropExecutor::handleReceiveSessionStarted(size_t expectedFiles, co
     m_activeSessionHandledFiles = 0;
     m_activeSessionEnded = false;
     m_activeSessionFailed = false;
+    m_activeSessionCancelled = false;
+    m_activeReceiveSessionId = sessionId;
     m_activeReceiveSession = true;
     notifyActiveTransfersChangedLocked(shouldNotify, notifyActive);
     if (!tokenTag.empty()) {
@@ -2300,18 +2368,31 @@ void InProcessDropExecutor::handleReceiveSessionStarted(size_t expectedFiles, co
   if (shouldNotify) {
     emitActiveTransfersChanged(notifyActive);
   }
+  std::function<void()> cancel;
+  if (!sessionId.empty()) {
+    cancel = [this, alive = m_alive, sessionId]() {
+      if (alive->load()) {
+        cancelActiveReceive(sessionId);
+      }
+    };
+  }
   m_receiverOverlay.begin(
-      QCoreApplication::translate("FileDropBridge", "Receiving %1 file(s)").arg(static_cast<qulonglong>(expectedFiles))
+      QCoreApplication::translate("FileDropBridge", "Receiving %1 file(s)").arg(static_cast<qulonglong>(expectedFiles)),
+      std::move(cancel)
   );
 }
 
-void InProcessDropExecutor::handleReceiveSessionFinished(bool cancelled)
+void InProcessDropExecutor::handleReceiveSessionFinished(bool cancelled, const std::string &sessionId)
 {
   bool readyToFinalize = false;
   {
     std::scoped_lock lock(m_mutex);
+    if (!sessionId.empty() && sessionId != m_activeReceiveSessionId) {
+      return;
+    }
     m_activeSessionEnded = true;
     m_activeSessionFailed = m_activeSessionFailed || cancelled;
+    m_activeSessionCancelled = cancelled && !sessionId.empty();
     if (cancelled || m_activeSessionExpectedFiles == 0 ||
         m_activeSessionHandledFiles >= m_activeSessionExpectedFiles) {
       readyToFinalize = true;
@@ -2344,6 +2425,7 @@ void InProcessDropExecutor::finalizeActiveSession()
   bool shouldCopyToClipboard = false;
   bool sessionEnded = false;
   bool sessionFailed = false;
+  bool sessionCancelled = false;
   std::string stagingDirStr;
   bool shouldNotify = false;
   bool notifyActive = false;
@@ -2355,15 +2437,18 @@ void InProcessDropExecutor::finalizeActiveSession()
     shouldCopyToClipboard = m_activeSessionTarget.copyToClipboard;
     sessionEnded = m_activeSessionEnded;
     sessionFailed = m_activeSessionFailed;
+    sessionCancelled = m_activeSessionCancelled;
     if (shouldCopyToClipboard) {
       filesForClipboard = std::move(m_activeSessionPlacedFiles);
     }
     m_activeSessionPlacedFiles.clear();
     m_activeSessionTarget = DropTargetEntry{};
+    m_activeReceiveSessionId.clear();
     m_activeSessionExpectedFiles = 0;
     m_activeSessionHandledFiles = 0;
     m_activeSessionEnded = false;
     m_activeSessionFailed = false;
+    m_activeSessionCancelled = false;
     m_activeReceiveSession = false;
     notifyActiveTransfersChangedLocked(shouldNotify, notifyActive);
     stagingDirStr = m_stagingDir;
@@ -2372,7 +2457,9 @@ void InProcessDropExecutor::finalizeActiveSession()
     emitActiveTransfersChanged(notifyActive);
   }
 
-  if (sessionEnded) {
+  if (sessionCancelled) {
+    m_receiverOverlay.finishCancelled();
+  } else if (sessionEnded) {
     m_receiverOverlay.finish(
         !sessionFailed, sessionFailed
                             ? QCoreApplication::translate("FileDropBridge", "File receive failed or transfer was cancelled")

@@ -14,6 +14,7 @@
 #include <QMetaObject>
 #include <QPointer>
 #include <QProgressBar>
+#include <QPushButton>
 #include <QScreen>
 #include <QShowEvent>
 #include <QThread>
@@ -185,6 +186,18 @@ public:
     layout->addWidget(m_title);
     layout->addWidget(m_bar);
     layout->addWidget(m_details);
+    m_cancelButton = new QPushButton(QCoreApplication::translate("FileDropBridge", "Cancel transfer"), this);
+    m_cancelButton->setFocusPolicy(Qt::NoFocus);
+    m_cancelButton->hide();
+    layout->addWidget(m_cancelButton, 0, Qt::AlignRight);
+    QObject::connect(m_cancelButton, &QPushButton::clicked, this, [this]() {
+      auto cancel = std::move(m_cancel);
+      if (cancel) {
+        m_cancelButton->setEnabled(false);
+        m_details->setText(QCoreApplication::translate("FileDropBridge", "Cancelling transfer..."));
+        cancel();
+      }
+    });
     m_hide.setSingleShot(true);
     QObject::connect(&m_hide, &QTimer::timeout, this, [this, onHideTimeout]() {
       hide();
@@ -197,7 +210,7 @@ public:
   void beginPreparing(uint32_t fileCount)
   {
     m_hide.stop();
-    m_preparing = true;
+    m_cancel = {};
     m_done = 0;
     m_total = 0;
     m_title->setText(
@@ -205,41 +218,43 @@ public:
     );
     m_bar->setRange(0, 0);
     m_details->setText(QCoreApplication::translate("FileDropBridge", "Preparing transfer..."));
+    m_cancelButton->hide();
     positionAndShow();
     // 防止在本地连接建立前远端断开导致准备提示永久残留。
     m_hide.start(15000);
   }
 
-  void cancelPreparing()
+  void reset()
   {
-    if (!m_preparing) {
-      return;
-    }
-    m_preparing = false;
+    m_cancel = {};
     m_hide.stop();
     hide();
   }
 
-  void begin(const QString &description)
+  void begin(const QString &description, std::function<void()> cancel)
   {
     m_hide.stop();
-    m_preparing = false;
     m_elapsed.start();
     m_done = 0;
     m_total = 0;
     m_title->setText(description);
     m_bar->setRange(0, 0);
     m_details->setText(QCoreApplication::translate("FileDropBridge", "Preparing transfer..."));
+    m_cancel = std::move(cancel);
+    m_cancelButton->setEnabled(true);
+    m_cancelButton->setVisible(static_cast<bool>(m_cancel));
     positionAndShow();
   }
 
   void progress(quint64 done, quint64 total)
   {
-    m_preparing = false;
     m_done = qMin(done, total);
     m_total = total;
     m_bar->setRange(0, 100);
     m_bar->setValue(total ? static_cast<int>(100.0 * m_done / total) : 0);
+    if (!m_cancelButton->isEnabled()) {
+      return;
+    }
     const double seconds = qMax<qint64>(1, m_elapsed.elapsed()) / 1000.0;
     const double speed = m_done / seconds;
     const QString eta = speed > 0
@@ -259,9 +274,11 @@ public:
     );
   }
 
-  void finish(bool success, const QString &message)
+  void finish(bool success, const QString &message, bool cancelled)
   {
-    m_preparing = false;
+    m_cancel = {};
+    m_cancelButton->setEnabled(true);
+    m_cancelButton->hide();
     if (success) {
       progress(m_total, m_total);
       m_bar->setValue(100);
@@ -269,7 +286,9 @@ public:
       m_bar->setRange(0, 100);
     }
     m_title->setText(message);
-    if (!success) {
+    if (cancelled) {
+      m_details->clear();
+    } else if (!success) {
       m_details->setText(
           QCoreApplication::translate(
               "FileDropBridge", "Check network connection, receiver port, and localsend-cli.exe; see logs for details."
@@ -277,7 +296,7 @@ public:
       );
     }
     show();
-    m_hide.start(success ? 8000 : 20000);
+    m_hide.start(success || cancelled ? 8000 : 20000);
   }
 
 private:
@@ -292,10 +311,11 @@ private:
   }
 
   bool m_receiving;
-  bool m_preparing = false;
   QLabel *m_title = nullptr;
   QLabel *m_details = nullptr;
   QProgressBar *m_bar = nullptr;
+  QPushButton *m_cancelButton = nullptr;
+  std::function<void()> m_cancel;
   QElapsedTimer m_elapsed;
   QTimer m_hide;
   quint64 m_done = 0;
@@ -486,6 +506,9 @@ void TransferStatusOverlay::beginPreparing(uint32_t fileCount)
 {
   {
     std::scoped_lock lock(m_impl->mutex);
+    if (m_impl->phase == Phase::Active) {
+      return;
+    }
     m_impl->phase = Phase::Preparing;
     m_impl->preparingFileCount = fileCount;
   }
@@ -516,7 +539,10 @@ void TransferStatusOverlay::resetOverlayPhase(bool onlyIfPreparing)
   std::weak_ptr<Impl> weak = m_impl;
   runOnGuiThread([weak]() {
     if (auto impl = weak.lock(); impl && impl->widget) {
-      impl->widget->cancelPreparing();
+      std::scoped_lock lock(impl->mutex);
+      if (impl->phase == Phase::Idle) {
+        impl->widget->reset();
+      }
     }
   });
 }
@@ -531,7 +557,7 @@ void TransferStatusOverlay::resetToIdle()
   resetOverlayPhase(false);
 }
 
-void TransferStatusOverlay::begin(const QString &description)
+void TransferStatusOverlay::begin(const QString &description, std::function<void()> cancel)
 {
   {
     std::scoped_lock lock(m_impl->mutex);
@@ -542,9 +568,9 @@ void TransferStatusOverlay::begin(const QString &description)
     return;
   }
   std::weak_ptr<Impl> weak = m_impl;
-  runOnGuiThread([weak, description]() {
+  runOnGuiThread([weak, description, cancel = std::move(cancel)]() mutable {
     if (auto impl = weak.lock()) {
-      impl->ensureWidgetLocked(weak)->begin(description);
+      impl->ensureWidgetLocked(weak)->begin(description, std::move(cancel));
     }
   });
 }
@@ -564,6 +590,16 @@ void TransferStatusOverlay::progress(uint64_t done, uint64_t total)
 
 void TransferStatusOverlay::finish(bool success, const QString &message)
 {
+  finish(success, message, false);
+}
+
+void TransferStatusOverlay::finishCancelled()
+{
+  finish(false, QCoreApplication::translate("FileDropBridge", "File transfer cancelled"), true);
+}
+
+void TransferStatusOverlay::finish(bool success, const QString &message, bool cancelled)
+{
   {
     std::scoped_lock lock(m_impl->mutex);
     m_impl->phase = Phase::Finished;
@@ -573,9 +609,9 @@ void TransferStatusOverlay::finish(bool success, const QString &message)
     return;
   }
   std::weak_ptr<Impl> weak = m_impl;
-  runOnGuiThread([weak, success, message]() {
+  runOnGuiThread([weak, success, message, cancelled]() {
     if (auto impl = weak.lock()) {
-      impl->ensureWidgetLocked(weak)->finish(success, message);
+      impl->ensureWidgetLocked(weak)->finish(success, message, cancelled);
     }
   });
 }

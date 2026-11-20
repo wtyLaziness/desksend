@@ -5,7 +5,10 @@ use hyper::body::Incoming;
 use hyper::Request;
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 /// Channel capacity for file upload chunks (provides backpressure).
 const UPLOAD_CHANNEL_CAPACITY: usize = 16;
@@ -51,6 +54,16 @@ pub enum FileUploadTarget {
 
         /// Optional channel on which the server reports the number of bytes
         /// written so far. Events are dropped when the channel is full.
+        progress_tx: Option<mpsc::Sender<u64>>,
+    },
+
+    /// Create an exclusive staging file and remove it if the upload does not complete.
+    StagedPath {
+        /// New staging path. An existing file at this path is never overwritten.
+        path: PathBuf,
+        /// Receives the final save result.
+        result_tx: oneshot::Sender<Result<(), String>>,
+        /// Receives best-effort byte counts.
         progress_tx: Option<mpsc::Sender<u64>>,
     },
 
@@ -109,6 +122,7 @@ pub(crate) async fn save_req_to_target(
     file_size: u64,
     expected_sha256: Option<&str>,
     timestamps: FileTimestamps,
+    cancel: CancellationToken,
 ) -> SaveResult {
     use sha2::{Digest, Sha256};
 
@@ -116,6 +130,8 @@ pub(crate) async fn save_req_to_target(
     // For [FileUploadTarget::Path] and [FileUploadTarget::Fd], the application's
     // result channel is answered by this function once the complete outcome
     // (including the checksum verification) is known.
+    let mut staged_file = None;
+    let stage_upload = matches!(&target, FileUploadTarget::StagedPath { .. });
     let (binary_tx, result_rx, app_result_tx) = match target {
         FileUploadTarget::Stream {
             binary_tx,
@@ -125,16 +141,32 @@ pub(crate) async fn save_req_to_target(
             path,
             result_tx,
             progress_tx,
+        }
+        | FileUploadTarget::StagedPath {
+            path,
+            result_tx,
+            progress_tx,
         } => {
+            if stage_upload {
+                staged_file = Some(Arc::new(StagedFile::new(path.clone())));
+            }
+            let opened = staged_file.clone();
             let (binary_tx, result_rx) = spawn_file_writer(
                 async move {
-                    tokio::fs::File::create(&path)
-                        .await
-                        .map_err(|e| format!("Failed to create {}: {e}", path.display()))
+                    let file = match &opened {
+                        Some(_) => tokio::fs::File::create_new(&path).await,
+                        None => tokio::fs::File::create(&path).await,
+                    }
+                    .map_err(|e| format!("Failed to create {}: {e}", path.display()))?;
+                    if let Some(staged) = opened {
+                        staged.remove.store(true, Ordering::Relaxed);
+                    }
+                    Ok(file)
                 },
                 file_size,
                 progress_tx,
                 timestamps,
+                staged_file.clone(),
             );
             (binary_tx, result_rx, Some(result_tx))
         }
@@ -156,6 +188,7 @@ pub(crate) async fn save_req_to_target(
                 file_size,
                 progress_tx,
                 timestamps,
+                None,
             );
             (binary_tx, result_rx, Some(result_tx))
         }
@@ -165,7 +198,16 @@ pub(crate) async fn save_req_to_target(
     let mut hasher = expected_sha256.map(|_| Sha256::new());
     let mut body = req.into_body();
     let mut stream_error = false;
-    while let Some(frame) = body.frame().await {
+    loop {
+        let frame = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                stream_error = true;
+                break;
+            }
+            frame = body.frame() => frame,
+        };
+        let Some(frame) = frame else { break };
         match frame {
             Ok(frame) => {
                 let Ok(data) = frame.into_data() else {
@@ -177,7 +219,12 @@ pub(crate) async fn save_req_to_target(
                 if let Some(hasher) = &mut hasher {
                     hasher.update(&data);
                 }
-                if binary_tx.send(data).await.is_err() {
+                let sent = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => false,
+                    result = binary_tx.send(data) => result.is_ok(),
+                };
+                if !sent {
                     // The receiver is gone (dropped by the application or
                     // closed by the file writer after an error).
                     stream_error = true;
@@ -236,6 +283,12 @@ pub(crate) async fn save_req_to_target(
         (SaveResult::Success, None)
     };
 
+    if result == SaveResult::Success {
+        if let Some(staged) = &staged_file {
+            staged.remove.store(false, Ordering::Relaxed);
+        }
+    }
+    drop(staged_file);
     if let Some(app_result_tx) = app_result_tx {
         let _ = app_result_tx.send(match error {
             None => Ok(()),
@@ -246,6 +299,34 @@ pub(crate) async fn save_req_to_target(
     result
 }
 
+// 写入任务和请求各持有一份，确保只有文件句柄都关闭后才清理本次创建的文件。
+struct StagedFile {
+    path: PathBuf,
+    remove: AtomicBool,
+}
+
+impl StagedFile {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            remove: AtomicBool::new(false),
+        }
+    }
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        if !self.remove.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Err(error) = std::fs::remove_file(&self.path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!("Could not remove incomplete upload {}: {error}", self.path.display());
+            }
+        }
+    }
+}
+
 /// Spawns a task that writes incoming chunks to a file provided by `open`.
 ///
 /// Returns the sender for the binary chunks and a receiver for the final result.
@@ -254,6 +335,7 @@ fn spawn_file_writer(
     expected_size: u64,
     progress_tx: Option<mpsc::Sender<u64>>,
     timestamps: FileTimestamps,
+    staged_file: Option<Arc<StagedFile>>,
 ) -> (mpsc::Sender<Bytes>, oneshot::Receiver<Result<(), String>>) {
     let (binary_tx, mut binary_rx) = mpsc::channel::<Bytes>(UPLOAD_CHANNEL_CAPACITY);
     let (internal_tx, internal_rx) = oneshot::channel::<Result<(), String>>();
@@ -264,6 +346,7 @@ fn spawn_file_writer(
                 .await;
         // Unblock the request handler if it is still sending chunks.
         binary_rx.close();
+        drop(staged_file);
         let _ = internal_tx.send(result);
     });
 

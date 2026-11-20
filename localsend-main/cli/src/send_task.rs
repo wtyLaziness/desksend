@@ -149,6 +149,11 @@ async fn send_inner(
             return false;
         }
         Err(ClientError::StatusCode(err)) => {
+            if err.status == 410 {
+                cancel.token.cancel();
+                log(format!("{alias}: Cancelled by receiver")).await;
+                return false;
+            }
             let reason = match err.status {
                 401 => "PIN required (not supported by the CLI)".to_string(),
                 403 => "Declined".to_string(),
@@ -238,24 +243,34 @@ async fn send_inner(
             })
         };
 
-        match client
-            .upload(
-                protocol.clone(),
-                &http.host,
-                http.port,
-                None,
-                &response.session_id,
-                file_id,
-                token,
-                body,
-                cancel.token.clone(),
-            )
-            .await
-        {
+        // 保留正在上传的请求，先发取消通知，避免接收端把主动中断当作传输失败。
+        let upload = client.upload(
+            protocol.clone(),
+            &http.host,
+            http.port,
+            None,
+            &response.session_id,
+            file_id,
+            token,
+            body,
+            CancellationToken::new(),
+        );
+        tokio::pin!(upload);
+        let result = tokio::select! {
+            biased;
+            result = &mut upload => result,
+            _ = cancel.token.cancelled() => Err(ClientError::Cancelled),
+        };
+        match result {
             Ok(()) => {
                 sent_files += 1;
                 sent_bytes += file.size;
                 progress.store(sent_bytes, Ordering::Relaxed);
+            }
+            Err(ClientError::StatusCode(err)) if err.status == 410 => {
+                cancel.token.cancel();
+                log(format!("{alias}: Cancelled by receiver ({sent_files} file(s) sent)")).await;
+                return false;
             }
             Err(ClientError::Cancelled) => {
                 if cancel.by_peer.load(Ordering::Relaxed) {

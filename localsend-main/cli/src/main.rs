@@ -32,6 +32,10 @@ pub enum Command {
         #[arg(long, conflicts_with_all = ["text", "paths"])]
         paths_stdin: bool,
 
+        /// End the stdin path list with a blank line, then accept a CANCEL command
+        #[arg(long, requires_all = ["to", "paths_stdin"])]
+        cancel_stdin: bool,
+
         /// Files or directories to send (directories are collected recursively)
         #[arg(value_name = "PATH", required_unless_present_any = ["text", "paths_stdin"], num_args = 1..)]
         paths: Vec<PathBuf>,
@@ -154,6 +158,7 @@ mod tests {
             text,
             pin_stdin,
             paths_stdin,
+            cancel_stdin,
             paths,
         }) = args.command
         else {
@@ -163,6 +168,7 @@ mod tests {
         assert_eq!(text.as_deref(), Some("hello"));
         assert!(!pin_stdin);
         assert!(!paths_stdin);
+        assert!(!cancel_stdin);
         assert!(paths.is_empty());
     }
 
@@ -182,6 +188,7 @@ mod tests {
             to,
             pin_stdin,
             paths_stdin,
+            cancel_stdin,
             paths,
             ..
         }) = args.command
@@ -191,6 +198,7 @@ mod tests {
         assert_eq!(to.as_deref(), Some("127.0.0.1:53318"));
         assert!(pin_stdin);
         assert!(paths_stdin);
+        assert!(!cancel_stdin);
         assert!(paths.is_empty());
     }
 

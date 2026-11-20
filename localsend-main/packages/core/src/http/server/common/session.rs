@@ -32,6 +32,7 @@ pub(crate) struct UploadSessionV2 {
 
     /// The IP address of the sender. Uploads are only accepted from this address.
     pub(crate) sender_ip: PeerIp,
+    pub(crate) cancel: CancellationToken,
 
     /// The accepted files, mapped by file ID.
     pub(crate) files: HashMap<String, SessionFileV2>,

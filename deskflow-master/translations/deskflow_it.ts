@@ -5,7 +5,7 @@
     <name>AboutDialog</name>
     <message>
         <source>About Deskflow</source>
-        <translation>Informazioni su Deskflow</translation>
+        <translation type="vanished">Informazioni su Deskflow</translation>
     </message>
     <message>
         <source>Version: </source>
@@ -17,11 +17,11 @@
     </message>
     <message>
         <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Icons from &lt;a href=&quot;https://develop.kde.org/frameworks/breeze-icons/&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#007af4;&quot;&gt;KDE Breeze&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
-        <translation>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Icone da &lt;a href=&quot;https://develop.kde.org/frameworks/breeze-icons/&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#007af4;&quot;&gt;KDE Breeze&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</translation>
+        <translation type="vanished">&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Icone da &lt;a href=&quot;https://develop.kde.org/frameworks/breeze-icons/&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#007af4;&quot;&gt;KDE Breeze&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</translation>
     </message>
     <message>
         <source>Important Developers</source>
-        <translation>Sviluppatori importanti</translation>
+        <translation type="vanished">Sviluppatori importanti</translation>
     </message>
     <message>
         <source>&amp;Close</source>
@@ -33,7 +33,7 @@
 p, li { white-space: pre-wrap; }
 &lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:&apos;Ubuntu&apos;; font-size:10pt; font-weight:400; font-style:normal;&quot;&gt;
 &lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;a href=&quot;https://www.gnu.org/licenses/old-licenses/gpl-2.0.html&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#508ed8;&quot;&gt;License: GNU GPL Version 2&lt;/a&gt;&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
-        <translation>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;  
+        <translation type="vanished">&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;  
 &lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;  
 p, li { white-space: pre-wrap; }  
 &lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:&apos;Ubuntu&apos;; font-size:10pt; font-weight:400; font-style:normal;&quot;&gt;  
@@ -45,11 +45,87 @@ p, li { white-space: pre-wrap; }
 p, li { white-space: pre-wrap; }
 &lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:&apos;Ubuntu&apos;; font-size:10pt; font-weight:400; font-style:normal;&quot;&gt;
 &lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;a href=&quot;https://github.com/deskflow/deskflow/graphs/contributors&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#508ed8;&quot;&gt;Code Contributors&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
-        <translation>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;  
+        <translation type="vanished">&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;  
 &lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;  
 p, li { white-space: pre-wrap; }  
 &lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:&apos;Ubuntu&apos;; font-size:10pt; font-weight:400; font-style:normal;&quot;&gt;  
 &lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;a href=&quot;https://github.com/deskflow/deskflow/graphs/contributors&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#508ed8;&quot;&gt;Collaboratori al codice&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</translation>
+    </message>
+    <message>
+        <source>About DeskSend</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>DeskSend maintenance</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Open-source components and credits</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Show upstream copyright and contributors</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>%1 (preview)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Use one keyboard and mouse to work across multiple computers.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Drag files between screens to send them. Either side can cancel an active transfer.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Source code</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>User guide</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Releases and downloads</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Maintained by %1.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>View project contributors</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Keyboard and mouse sharing is based on %1. Local file transfers use %2.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Some interface icons come from %1.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>The Deskflow components use GPL v2 with the OpenSSL linking exception.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>The LocalSend components use Apache License 2.0.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>View licenses</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Deskflow upstream contributors</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Hide upstream copyright and contributors</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>
@@ -334,6 +410,113 @@ p, li { white-space: pre-wrap; }
     <message>
         <source>&lt;center&gt;Computer: &lt;b&gt;%1&lt;/b&gt;&lt;/center&gt;&lt;br&gt;Double click to edit settings&lt;br&gt;Drag computer to the trashcan to remove it</source>
         <translation type="unfinished">&lt;center&gt;Computer: &lt;b&gt;%1&lt;/b&gt;&lt;/center&gt;&lt;br&gt;Fai doppio clic per modificare le impostazioni&lt;br&gt;Trascina il computer nel cestino per rimuoverlo</translation>
+    </message>
+</context>
+<context>
+    <name>DragHoverIndicator</name>
+    <message>
+        <source>Drop to receive %1 file(s)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Drop to receive 3 file(s)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Drop to receive 1 file(s)</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>FileDropBridge</name>
+    <message>
+        <source>DeskSend · Receiving</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>DeskSend · Sending</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>File transfer progress</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Cancel transfer</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Cancelling transfer...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Receiving %1 file(s)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Preparing transfer...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>%1 s</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>estimating</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>%1 / %2
+%3/s · Elapsed %4 s · Remaining %5</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Check network connection, receiver port, and localsend-cli.exe; see logs for details.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>File transfer cancelled</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Receiver failed to start: unable to launch localsend-cli.exe</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>File receiver stopped unexpectedly, attempting automatic recovery...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>File receiver stopped; verify that the port is available</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Send failed: missing transfer authorization token</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Sending to %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Send failed: unable to launch localsend-cli.exe</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>File transfer completed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>File transfer failed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>File receive failed or transfer was cancelled</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>File receive completed</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>
@@ -745,6 +928,28 @@ Inoltre, verifica di poter %1 il file di configurazione del server: %2</translat
     </message>
     <message>
         <source>&lt;p&gt;Keyboard layout support requires matching layouts on all computers. The following layouts from the other computer are not installed on this computer:&lt;/p&gt;&lt;p&gt;&lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Please install them to enable support for these layouts.&lt;/p&gt;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Run DeskSend as administrator to start the background service mode.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>File transfers are currently in progress. Installing the update will stop active transfers.
+Continue?</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Check for DeskSend Updates...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Windows could not confirm that the DeskSend background service exited.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>File transfers are currently in progress. Stopping or quitting now will interrupt them.
+Are you sure you want to continue?</source>
         <translation type="unfinished"></translation>
     </message>
 </context>
@@ -1394,6 +1599,128 @@ L&apos;abilitazione di questa impostazione disabiliterà l&apos;interfaccia graf
     <message>
         <source>Encryption Disabled</source>
         <translation>Crittografia disabilitata</translation>
+    </message>
+</context>
+<context>
+    <name>UpdateDialog</name>
+    <message>
+        <source>DeskSend Update</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Checking for official DeskSend releases...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Updates include keyboard/mouse sharing and file transfer components. Connections will pause briefly during installation; settings, certificates, and pairings are preserved.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Download update</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Close</source>
+        <translation type="unfinished">Vicino</translation>
+    </message>
+    <message>
+        <source>DeskSend %1 is available (full package %2 MiB).</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>You are running the latest official DeskSend release.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Install and restart</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Retry download</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Unable to create temporary update directory.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Unable to write update package: %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Downloading update...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Unexpected update package size or disk write failure.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Downloaded %1 / %2 MiB</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Download failed: %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Update package SHA-256 verification failed. Please retry.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Failed to save update package: %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Update package downloaded and verified (SHA-256). Ready to install.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Built-in updates apply to the portable package. Please download the full archive from the DeskSend releases page.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>The application directory is not writable. Please extract the full package to a writable folder.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Unable to prepare updater script.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Unable to start updater; you can continue using the current version.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>This update package is only available for Windows x64.</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>VersionChecker</name>
+    <message>
+        <source>Invalid release metadata; no stable release found.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Invalid update package URL, size, or SHA-256 digest.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>This release does not provide a complete Windows x64 update package.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>GitHub API rate limit reached; please try again after %1.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>GitHub API rate limit reached; please try again later.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Unable to check for DeskSend updates: %1</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>

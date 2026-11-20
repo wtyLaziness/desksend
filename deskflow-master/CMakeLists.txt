@@ -24,6 +24,7 @@ endif()
 #Project level options
 option(BUILD_INSTALLER "Build installer" ON)
 option(ENABLE_COVERAGE "Enable test coverage" OFF)
+option(DESKSEND_PREVIEW_BUILD "Identify this DeskSend build as a preview in the About dialog" OFF)
 if(UNIX)
   if(APPLE)
     option(BUILD_OSX_BUNDLE "Build mac os bundle" ON)

@@ -4,6 +4,7 @@
 use super::App;
 use super::web_link::WebMode;
 use crate::sanitize;
+use crate::storage::Identity;
 use crate::ui::Category;
 use crate::util::{self, SpeedMeter};
 use localsend::http::client::v2::LsHttpClientV2;
@@ -25,6 +26,26 @@ pub(super) struct SenderTarget {
     pub(super) port: u16,
     pub(super) protocol: ProtocolType,
     pub(super) fingerprint: String,
+}
+
+impl SenderTarget {
+    pub(super) async fn notify_cancel(&self, identity: &Identity, session_id: &str) {
+        let expected_fingerprint = match self.protocol {
+            ProtocolType::Https => Some(self.fingerprint.clone()),
+            ProtocolType::Http => None,
+        };
+        let Ok(client) = LsHttpClientV2::try_new(
+            &identity.key_pem,
+            &identity.cert_pem,
+            expected_fingerprint,
+            Some(Duration::from_secs(5)),
+        ) else {
+            return;
+        };
+        let _ = client
+            .cancel(self.protocol.clone(), &self.host, self.port, session_id)
+            .await;
+    }
 }
 
 /// An incoming transfer request waiting for the user's Y/N/P decision.
@@ -400,27 +421,7 @@ impl App {
         tokio::spawn(async move {
             server.cancel_v2_session(&session_id).await;
 
-            // Best effort: without it the sender only notices through its
-            // failing upload requests.
-            let expected_fingerprint = match sender.protocol {
-                ProtocolType::Https => Some(sender.fingerprint.clone()),
-                ProtocolType::Http => None,
-            };
-            let Ok(client) = LsHttpClientV2::try_new(
-                &identity.key_pem,
-                &identity.cert_pem,
-                expected_fingerprint,
-                Some(Duration::from_secs(5)),
-            ) else {
-                return;
-            };
-            let protocol = match sender.protocol {
-                ProtocolType::Http => ProtocolType::Http,
-                ProtocolType::Https => ProtocolType::Https,
-            };
-            let _ = client
-                .cancel(protocol, &sender.host, sender.port, &session_id)
-                .await;
+            sender.notify_cancel(&identity, &session_id).await;
         });
         self.ui.log(
             Category::Receive,

@@ -84,12 +84,13 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         let storage = storage::Repository::load(&args)?;
         return headless::run_receive(storage, auto_accept_from.clone(), *auth_stdin).await;
     }
-    let (payload, target, pin) = match &args.command {
+    let (payload, target, pin, cancel_stdin) = match &args.command {
         Some(Command::Send {
             to,
             text,
             pin_stdin,
             paths_stdin,
+            cancel_stdin,
             paths,
         }) => {
             let mut stdin = (*pin_stdin || *paths_stdin).then(|| std::io::stdin().lock());
@@ -109,6 +110,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                     for line in stdin.take().unwrap().lines() {
                         let line = line?;
                         let trimmed = line.trim_end_matches(&['\r', '\n'][..]);
+                        if *cancel_stdin && trimmed.is_empty() {
+                            break;
+                        }
                         if !trimmed.is_empty() {
                             stdin_paths.push(PathBuf::from(trimmed));
                         }
@@ -122,10 +126,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 payload,
                 to.as_deref().map(TargetSelector::parse).transpose()?,
                 pin,
+                *cancel_stdin,
             )
         }
         Some(Command::Receive { .. }) => unreachable!(),
-        None => (Payload::Files(Vec::new()), None, None),
+        None => (Payload::Files(Vec::new()), None, None, false),
     };
     if let Payload::Files(paths) = &payload {
         for path in paths {
@@ -138,7 +143,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     }
     let storage = storage::Repository::load(&args)?;
     match (target, payload) {
-        (Some(target), payload) => headless::run(storage, target, payload, pin).await,
+        (Some(target), payload) => headless::run(storage, target, payload, pin, cancel_stdin).await,
         (None, Payload::Files(preselected)) => run_interactive(storage, preselected).await,
         // clap only accepts `--text` together with `--to`.
         (None, Payload::Text(_)) => unreachable!("--text requires --to"),

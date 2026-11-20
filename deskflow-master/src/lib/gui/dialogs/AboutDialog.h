@@ -25,7 +25,7 @@ private:
   std::unique_ptr<Ui::AboutDialog> ui;
   void copyVersionText() const;
 
-  inline static const auto s_awesomeDevs = QStringList{
+  inline static const auto s_deskflowContributors = QStringList{
       // Chris is the ultimate creator, and the one who started it all in 2001.
       QStringLiteral("Chris Schoeneman"),
 

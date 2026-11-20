@@ -315,10 +315,13 @@ pub(crate) async fn prepare_upload(
             decision.map_err(|_| AppError::Status(StatusCode::INTERNAL_SERVER_ERROR))?
         }
         _ = cancelled.cancelled() => {
-            return Err(AppError::Message(
-                StatusCode::FORBIDDEN,
-                "Cancelled by sender".to_string(),
-            ));
+            let slot = v2.session.lock().await;
+            let status = if matches!(slot.as_ref(), Some(SessionStateV2::Pending(session)) if session.session_id == session_id) {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::GONE
+            };
+            return Err(AppError::Status(status));
         }
     };
 
@@ -363,9 +366,13 @@ pub(crate) async fn prepare_upload(
 
     {
         let mut slot = v2.session.lock().await;
+        if cancelled.is_cancelled() {
+            return Err(AppError::Status(StatusCode::GONE));
+        }
         *slot = Some(SessionStateV2::Active(UploadSessionV2 {
             session_id: session_id.clone(),
             sender_ip: client_info.ip,
+            cancel: cancelled,
             files,
         }));
     }
@@ -403,7 +410,7 @@ pub(crate) async fn upload(
     };
 
     // Validate the request and mark the file as in progress.
-    let file_dto = {
+    let (file_dto, cancel) = {
         let mut slot = v2.session.lock().await;
         let Some(SessionStateV2::Active(session)) = slot.as_mut() else {
             return Err(invalid_token_error());
@@ -419,7 +426,7 @@ pub(crate) async fn upload(
         }
         file.status = FileStatusV2::InProgress;
         file.attempts = file.attempts.saturating_add(1);
-        file.dto.clone()
+        (file.dto.clone(), session.cancel.clone())
     };
 
     // Marks the file as failed if this request is aborted mid-transfer.
@@ -461,10 +468,14 @@ pub(crate) async fn upload(
         file_size,
         expected_sha256.as_deref(),
         timestamps,
+        cancel.clone(),
     )
     .await;
 
     upload_guard.finish(result).await;
+    if cancel.is_cancelled() && result != SaveResult::Success {
+        return Err(AppError::Status(StatusCode::GONE));
+    }
 
     match result {
         SaveResult::Success => Ok(Response::new(empty_body())),
@@ -519,6 +530,7 @@ pub(crate) async fn cancel(
                 Some(SessionStateV2::Active(session))
                     if session.session_id == *session_id && session.sender_ip == client_info.ip =>
                 {
+                    session.cancel.cancel();
                     *slot = None;
                     true
                 }
@@ -593,7 +605,7 @@ impl PendingSessionGuard {
     /// Frees the pending slot immediately.
     async fn clear(&mut self) {
         self.armed = false;
-        clear_pending_session(&self.v2).await;
+        clear_pending_session(&self.v2, &self.session_id).await;
     }
 }
 
@@ -605,7 +617,7 @@ impl Drop for PendingSessionGuard {
         let v2 = self.v2.clone();
         let session_id = std::mem::take(&mut self.session_id);
         tokio::spawn(async move {
-            clear_pending_session(&v2).await;
+            clear_pending_session(&v2, &session_id).await;
             // The application may still be waiting for a decision; tell it
             // that answering is pointless now.
             let _ = v2
@@ -616,9 +628,9 @@ impl Drop for PendingSessionGuard {
     }
 }
 
-async fn clear_pending_session(v2: &V2State) {
+async fn clear_pending_session(v2: &V2State, session_id: &str) {
     let mut slot = v2.session.lock().await;
-    if matches!(*slot, Some(SessionStateV2::Pending(_))) {
+    if matches!(slot.as_ref(), Some(SessionStateV2::Pending(session)) if session.session_id == session_id) {
         *slot = None;
     }
 }

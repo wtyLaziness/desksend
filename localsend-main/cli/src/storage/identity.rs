@@ -14,6 +14,7 @@ use std::path::Path;
 /// fingerprint identifies the device. The certificate is persisted as
 /// `identity.pem` so the fingerprint — and thereby pairings, on both
 /// sides — survives restarts.
+#[derive(Clone)]
 pub struct Identity {
     pub alias: String,
     pub port: u16,

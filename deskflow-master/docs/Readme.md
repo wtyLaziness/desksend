@@ -1,6 +1,6 @@
 # DeskSend
 
-DeskSend 将 Deskflow 键鼠共享与 LocalSend 局域网文件传输整合在 Windows x64 便携包中。使用主机的一套键鼠控制多台电脑，也能双向拖动文件和文件夹，并查看接收提示、传输进度和结果。
+DeskSend 将 Deskflow 键鼠共享与 LocalSend 局域网文件传输整合在一起（提供 Windows x64 便携版与 MSI 安装版）。使用主机的一套键鼠控制多台电脑，也能双向拖动文件和文件夹，并查看接收提示、传输进度和结果。
 
 日常入口为 `DeskSend.exe`。随包的 `deskflow-core.exe` 和 `localsend-cli.exe` 在后台工作，无需单独启动 LocalSend。
 

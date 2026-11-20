@@ -209,7 +209,13 @@ impl ServerHandle {
         };
         let mut slot = v2.session.lock().await;
         match slot.as_ref() {
+            Some(SessionStateV2::Pending(session)) if session.session_id == session_id => {
+                session.cancel.cancel();
+                *slot = None;
+                true
+            }
             Some(SessionStateV2::Active(session)) if session.session_id == session_id => {
+                session.cancel.cancel();
                 *slot = None;
                 true
             }
