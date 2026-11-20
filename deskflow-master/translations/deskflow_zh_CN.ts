@@ -187,11 +187,11 @@
     </message>
     <message>
         <source>Scroll Modifiers</source>
-        <translation type="unfinished">滚动修饰符</translation>
+        <translation>滚轮调节</translation>
     </message>
     <message>
         <source>Invert</source>
-        <translation type="unfinished">倒置</translation>
+        <translation>反转方向</translation>
     </message>
     <message>
         <source>Horizontal Scroll</source>
@@ -629,7 +629,7 @@ Do you want to connect to the server?
     </message>
     <message>
         <source>Verbose</source>
-        <translation type="unfinished">冗长的</translation>
+        <translation>详细</translation>
     </message>
 </context>
 <context>
@@ -748,7 +748,7 @@ Do you want to connect to the server?
     </message>
     <message>
         <source>Using IP: </source>
-        <translation type="unfinished">使用IP地址： </translation>
+        <translation>使用 IP： </translation>
     </message>
     <message>
         <source>&lt;p&gt;If connecting via the hostname fails, try %1&lt;/p&gt;</source>
@@ -765,8 +765,8 @@ Do you want to connect to the server?
     <message>
         <source>
 A bound IP is now invalid, you may need to restart the server.</source>
-        <translation type="unfinished">
-绑定的IP地址现在无效，您可能需要重启服务器。</translation>
+        <translation>
+绑定的 IP 地址当前无效，您可能需要重启服务器。</translation>
     </message>
     <message>
         <source>&amp;File</source>
@@ -882,8 +882,8 @@ Valid names:
     <message>
         <source>The Core executable could not be started.
 Please check if you have sufficient permissions to run %1.</source>
-        <translation type="unfinished">无法启动Core可执行文件。
-请检查您是否有足够的权限来运行%1。</translation>
+        <translation>无法启动核心可执行文件。
+请检查您是否有足够的权限来运行 %1。</translation>
     </message>
     <message>
         <source>
@@ -1116,7 +1116,7 @@ Are you sure you want to continue?</source>
     </message>
     <message>
         <source>Find...</source>
-        <translation type="unfinished">寻找...</translation>
+        <translation>查找...</translation>
     </message>
 </context>
 <context>
@@ -1226,8 +1226,8 @@ Are you sure you want to continue?</source>
         <translation>毫秒</translation>
     </message>
     <message>
-        <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Enables compatibility with programs that use either the Synergy or Barrier protocols:&lt;/p&gt;&lt;ul style=&quot;margin-top: 0px; margin-bottom: 0px; margin-left: 0px; margin-right: 0px; -qt-list-indent: 1;&quot;&gt;&lt;li style=&quot; margin-top:12px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Synergy 3 uses the Synergy protocol.&lt;/li&gt;&lt;li style=&quot; margin-top:0px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Barrier, Input-Leap and Synergy 1 uses the Barrier protocol.&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;A Deskflow client will automatically use either the Synergy or Barrier protocol depending on the server protocol.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
-        <translation>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;启用与使用 Synergy 或 Barrier 协议的程序的兼容性：&lt;/p&gt;&lt;ul style=&quot;margin-top: 0px; margin-bottom: 0px; margin-left: 0px; margin-right: 0px; -qt-list-indent: 1;&quot;&gt;&lt;li style=&quot; margin-top:12px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Synergy 3 使用 Synergy 协议。&lt;/li&gt;&lt;li style=&quot; margin-top:0px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Barrier, Input-Leap 和 Synergy 1 使用 Barrier 协议。&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;Deskflow 客户端将根据服务器协议自动使用 Synergy 或 Barrier 协议。&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</translation>
+        <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Enables compatibility with programs that use either the Synergy or Barrier protocols:&lt;/p&gt;&lt;ul style=&quot;margin-top: 0px; margin-bottom: 0px; margin-left: 0px; margin-right: 0px; -qt-list-indent: 1;&quot;&gt;&lt;li style=&quot; margin-top:12px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Synergy 3 uses the Synergy protocol.&lt;/li&gt;&lt;li style=&quot; margin-top:0px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Barrier, Input-Leap and Synergy 1 uses the Barrier protocol.&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;A DeskSend client will automatically use either the Synergy or Barrier protocol depending on the server protocol.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
+        <translation>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;启用与使用 Synergy 或 Barrier 协议的程序的兼容性：&lt;/p&gt;&lt;ul style=&quot;margin-top: 0px; margin-bottom: 0px; margin-left: 0px; margin-right: 0px; -qt-list-indent: 1;&quot;&gt;&lt;li style=&quot; margin-top:12px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Synergy 3 使用 Synergy 协议。&lt;/li&gt;&lt;li style=&quot; margin-top:0px; margin-bottom:12px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Barrier, Input-Leap 和 Synergy 1 使用 Barrier 协议。&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;DeskSend 客户端将根据服务器协议自动使用 Synergy 或 Barrier 协议。&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</translation>
     </message>
     <message>
         <source>Network protocol</source>
@@ -1407,7 +1407,7 @@ Enabling this setting will disable the server config GUI.</source>
     </message>
     <message>
         <source>Automatic</source>
-        <translation type="unfinished">自动的</translation>
+        <translation>自动</translation>
     </message>
     <message>
         <source>Include version in the window title</source>

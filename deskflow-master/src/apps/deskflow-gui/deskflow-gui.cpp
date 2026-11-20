@@ -19,6 +19,7 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDir>
 #include <QLocalSocket>
 #include <QMessageBox>
 #include <QSharedMemory>
@@ -85,8 +86,13 @@ int main(int argc, char *argv[])
   }
 
   if (parser.isSet(helpOption)) {
-    QTextStream(stdout) << kHeader << QStringLiteral("  %1\n\n").arg(kAppDescription)
-                        << parser.helpText().replace(QApplication::applicationFilePath(), kAppName);
+    auto helpText = parser.helpText();
+    if (const auto args = QCoreApplication::arguments(); !args.isEmpty()) {
+      helpText.replace(args.constFirst(), kAppName);
+    }
+    helpText.replace(QDir::toNativeSeparators(QApplication::applicationFilePath()), kAppName);
+    helpText.replace(QApplication::applicationFilePath(), kAppName);
+    QTextStream(stdout) << kHeader << QStringLiteral("  %1\n\n").arg(kAppDescription) << helpText;
     return s_exitSuccess;
   }
 
