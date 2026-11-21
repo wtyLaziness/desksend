@@ -17,7 +17,7 @@ VS_VERSION_INFO VERSIONINFO
  FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
  FILEFLAGS       0 // No flags
  FILEOS          VOS__WINDOWS32
- FILETYPE        VFT_DLL
+ FILETYPE        VFT_APP
  FILESUBTYPE     VFT2_UNKNOWN
 BEGIN
     BLOCK "StringFileInfo"
@@ -31,7 +31,7 @@ BEGIN
             VALUE "LegalCopyright",   "@CMAKE_PROJECT_COPYRIGHT@\0"
             VALUE "LegalTrademarks1", "All Rights Reserved\0"
             VALUE "LegalTrademarks2", "\0"
-            VALUE "OriginalFilename", "@target@.exe\0"
+            VALUE "OriginalFilename", "@EXE_ORIGINAL_FILENAME@\0"
             VALUE "ProductName",      NAME_STR
             VALUE "ProductVersion",   VER_VERSION_STR
         END

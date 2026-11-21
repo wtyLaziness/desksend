@@ -9,6 +9,6 @@ DeskSend 保留各组成部分的许可证和原作者版权声明。具体文�
 
 部分构建和维护脚本使用 MIT 等许可，详见文件头部的 SPDX 声明；第三方子组件按各自许可提供。Deskflow 的其他许可文件保留在 [`deskflow-master/LICENSES`](deskflow-master/LICENSES/) 中，LocalSend 子组件也保留其原有许可文件。
 
-每个公开发布版本提供对应构建源码 ZIP 和许可证文本。包内 `Deskflow-LICENSE.txt`、`LocalSend-LICENSE.txt` 及 `LICENSES` 目录保留相关文本。
+每个公开发布版本提供对应构建源码 ZIP 和许可证文本。便携包内的 `Deskflow-LICENSE.txt`、`LocalSend-LICENSE.txt` 及 `LICENSES` 目录保留相关文本。MSI 安装目录内对应的许可文件为 `LICENSE`、`LICENSE_EXCEPTION` 和 `LocalSend-LICENSE.txt`。MSI 安装向导的许可协议页汇总了这三份完整许可文本。
 
 早期说明曾将 LocalSend 标成 MIT，该标注有误；本仓库的 `localsend-main/LICENSE` 和已发布包内的 `LocalSend-LICENSE.txt` 实际为 Apache License 2.0。
