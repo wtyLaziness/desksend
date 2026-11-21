@@ -316,6 +316,8 @@ void MSWindowsComputer::leave()
 
   if (m_isPrimary) {
     LOG_VERBOSE("centering cursor on leave: %+d, %+d", m_xCenter, m_yCenter);
+    // 先切入中继模式再居中并打标，减少切屏瞬间边缘移动与 SetCursorPos 之间的竞态丢包。
+    m_hook.setMode(kHOOK_RELAY_EVENTS);
     warpCursor(m_xCenter, m_yCenter);
 
     // disable special key sequences on win95 family
@@ -327,8 +329,6 @@ void MSWindowsComputer::leave()
     // remember the modifier state.  this is the modifier state
     // reflected in the internal keyboard state.
     m_keyState->saveModifiers();
-
-    m_hook.setMode(kHOOK_RELAY_EVENTS);
 
     m_primaryKeyDownList.clear();
     for (KeyButton i = 0; i < IKeyState::s_numButtons; ++i) {

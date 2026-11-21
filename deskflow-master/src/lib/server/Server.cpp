@@ -643,6 +643,7 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
   // since that's a waste of time we skip that and just warp the
   // mouse.
   if (m_active != dst) {
+    const bool leavingPrimary = (m_active == m_primaryClient);
     deskflow::FileDropBridge::instance().prepareScreenSwitch(fromKey, toKey);
 
     // leave active computer
@@ -650,17 +651,6 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
       // cannot leave computer
       LOG_WARN("can't leave computer");
       return;
-    }
-
-    // update the primary client's clipboards if we're leaving the
-    // primary computer.
-    if (m_active == m_primaryClient && m_enableClipboard) {
-      for (ClipboardID id = 0; id < kClipboardEnd; ++id) {
-        const ClipboardInfo &clipboard = m_clipboards[id];
-        if (clipboard.m_clipboardOwner == getName(m_primaryClient)) {
-          onClipboardChanged(m_primaryClient, id, clipboard.m_clipboardSeqNum);
-        }
-      }
     }
 
 #if defined(__APPLE__)
@@ -681,16 +671,24 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
     // increment enter sequence number
     ++m_seqNum;
 
-    // enter new computer
+    // 先发送 enter 消息让副屏光标立即就位，再处理桥接通知与剪贴板同步。
     m_active->enter(x, y, m_seqNum, m_primaryClient->getToggleMask(), forScreensaver);
 
     deskflow::FileDropBridge::instance().onScreenSwitch(fromKey, toKey, x, y);
 
     if (m_enableClipboard) {
+      if (leavingPrimary) {
+        for (ClipboardID id = 0; id < kClipboardEnd; ++id) {
+          const ClipboardInfo &clipboard = m_clipboards[id];
+          if (clipboard.m_clipboardOwner == getName(m_primaryClient)) {
+            onClipboardChanged(m_primaryClient, id, clipboard.m_clipboardSeqNum);
+          }
+        }
+      }
+
       // send the clipboard data to new active computer
       for (ClipboardID id = 0; id < kClipboardEnd; ++id) {
-        // Hackity hackity hack
-        if (m_clipboards[id].m_clipboard.marshall().size() > (m_maximumClipboardSize * 1024)) {
+        if (m_clipboards[id].m_clipboardOverLimit || m_clipboards[id].m_clipboardData.size() > (m_maximumClipboardSize * 1024)) {
           continue;
         }
         m_active->setClipboard(id, &m_clipboards[id].m_clipboard);
@@ -929,13 +927,45 @@ BaseClientProxy *Server::mapToNeighbor(BaseClientProxy *src, Direction srcSide, 
   return dst;
 }
 
-void Server::avoidJumpZone(const BaseClientProxy *dst, Direction dir, int32_t &x, int32_t &y) const
+void Server::clampEntryInsideJumpZone(
+    const ServerConfig &config, const std::string &dstName, Direction dir, int32_t dx, int32_t dy, int32_t dw,
+    int32_t dh, float t, int32_t z, int32_t &x, int32_t &y
+)
 {
-  // we only need to avoid jump zones on the primary computer
-  if (dst != m_primaryClient) {
+  if (z <= 0) {
     return;
   }
 
+  // move in far enough to avoid the jump zone (or 1px jitter bounce on bidirectional secondary).
+  switch (dir) {
+    using enum Direction;
+  case Left:
+    if (dw > 2 * z && !config.getNeighbor(dstName, Right, t, nullptr).empty() && x > dx + dw - 1 - z)
+      x = dx + dw - 1 - z;
+    break;
+
+  case Right:
+    if (dw > 2 * z && !config.getNeighbor(dstName, Left, t, nullptr).empty() && x < dx + z)
+      x = dx + z;
+    break;
+
+  case Top:
+    if (dh > 2 * z && !config.getNeighbor(dstName, Bottom, t, nullptr).empty() && y > dy + dh - 1 - z)
+      y = dy + dh - 1 - z;
+    break;
+
+  case Bottom:
+    if (dh > 2 * z && !config.getNeighbor(dstName, Top, t, nullptr).empty() && y < dy + z)
+      y = dy + z;
+    break;
+
+  case NoDirection:
+    assert(0 && "bad direction");
+  }
+}
+
+void Server::avoidJumpZone(const BaseClientProxy *dst, Direction dir, int32_t &x, int32_t &y) const
+{
   const std::string dstName(getName(dst));
   int32_t dx;
   int32_t dy;
@@ -943,36 +973,9 @@ void Server::avoidJumpZone(const BaseClientProxy *dst, Direction dir, int32_t &x
   int32_t dh;
   dst->getShape(dx, dy, dw, dh);
   float t = mapToFraction(dst, dir, x, y);
-  int32_t z = getJumpZoneSize(dst);
-
-  // move in far enough to avoid the jump zone.  if entering a side
-  // that doesn't have a neighbor (i.e. an asymmetrical side) then we
-  // don't need to move inwards because that side can't provoke a jump.
-  switch (dir) {
-    using enum Direction;
-  case Left:
-    if (!m_config->getNeighbor(dstName, Right, t, nullptr).empty() && x > dx + dw - 1 - z)
-      x = dx + dw - 1 - z;
-    break;
-
-  case Right:
-    if (!m_config->getNeighbor(dstName, Left, t, nullptr).empty() && x < dx + z)
-      x = dx + z;
-    break;
-
-  case Top:
-    if (!m_config->getNeighbor(dstName, Bottom, t, nullptr).empty() && y > dy + dh - 1 - z)
-      y = dy + dh - 1 - z;
-    break;
-
-  case Bottom:
-    if (!m_config->getNeighbor(dstName, Top, t, nullptr).empty() && y < dy + z)
-      y = dy + z;
-    break;
-
-  case NoDirection:
-    assert(0 && "bad direction");
-  }
+  // 副屏按 1px 向内错开，防止刚跨过边缘时因微弱负向抖动立刻弹回主屏。
+  const int32_t z = (dst == m_primaryClient) ? getJumpZoneSize(dst) : 1;
+  clampEntryInsideJumpZone(*m_config, dstName, dir, dx, dy, dw, dh, t, z, x, y);
 }
 
 bool Server::isSwitchOkay(
@@ -1394,6 +1397,7 @@ void Server::handleClipboardGrabbed(const Event &event, BaseClientProxy *grabber
     clipboard.m_clipboard.close();
   }
   clipboard.m_clipboardData = clipboard.m_clipboard.marshall();
+  clipboard.m_clipboardOverLimit = false;
 
   // tell all other computers to take ownership of clipboard.  tell the
   // grabber that it's clipboard isn't dirty.
@@ -1658,9 +1662,11 @@ void Server::onClipboardChanged(const BaseClientProxy *sender, ClipboardID id, u
 
   std::string data = clipboard.m_clipboard.marshall();
   if (data.size() > m_maximumClipboardSize * 1024) {
+    clipboard.m_clipboardOverLimit = true;
     LOG_WARN("not sending clipboard data, exceeds limit: %i KB", m_maximumClipboardSize);
     return;
   }
+  clipboard.m_clipboardOverLimit = false;
 
   // ignore if data hasn't changed
   if (data == clipboard.m_clipboardData) {

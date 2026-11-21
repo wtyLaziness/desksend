@@ -608,13 +608,21 @@ void ArchNetworkWinsock::prioritizeInputSocket(ArchSocket s)
     return;
   }
 
-  // 只标记键鼠连接的优先级，文件连接自行使用可用带宽。
+  // 使用更兼容 Wi-Fi WMM (AC_VO) 的 Voice 流请求键鼠高优先级，不支持时回退 Control 流。
   QOS_FLOWID flowId = 0;
-  if (!QOSAddSocketToFlow(handle, s->m_socket, nullptr, QOSTrafficTypeControl, QOS_NON_ADAPTIVE_FLOW, &flowId)) {
-    LOG_DEBUG("could not prioritize input socket (error %lu)", GetLastError());
-    QOSCloseHandle(handle);
-    return;
+  QOS_TRAFFIC_TYPE trafficType = QOSTrafficTypeVoice;
+  if (!QOSAddSocketToFlow(handle, s->m_socket, nullptr, trafficType, QOS_NON_ADAPTIVE_FLOW, &flowId)) {
+    trafficType = QOSTrafficTypeControl;
+    if (!QOSAddSocketToFlow(handle, s->m_socket, nullptr, trafficType, QOS_NON_ADAPTIVE_FLOW, &flowId)) {
+      LOG_DEBUG("could not prioritize input socket (error %lu)", GetLastError());
+      QOSCloseHandle(handle);
+      return;
+    }
   }
+
+  // 在服务/提权环境下尽力显式标记 DSCP，非提权桌面进程拒绝时忽略而不回退流。
+  DWORD dscpValue = (trafficType == QOSTrafficTypeVoice) ? 46 : 56;
+  QOSSetFlow(handle, flowId, QOSSetOutgoingDSCPValue, sizeof(dscpValue), &dscpValue, 0, nullptr);
 
   s->m_qosHandle = handle;
   LOG_DEBUG("Windows network priority enabled for input socket");

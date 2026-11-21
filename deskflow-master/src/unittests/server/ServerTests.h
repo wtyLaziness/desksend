@@ -13,5 +13,6 @@ private Q_SLOTS:
   void SwitchToComputerInfo_alloc_computer();
   void KeyboardBroadcastInfo_alloc_stateAndComputers();
   void bottomEdgeSwitchWaitClearsInsideBottomZone();
+  void avoidJumpZone_nudgesSecondaryEntryInsideBidirectionalEdge();
   void computeClientDragSegments_excludesDisconnectedNeighborsAndCorners();
 };

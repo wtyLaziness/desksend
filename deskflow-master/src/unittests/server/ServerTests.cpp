@@ -47,6 +47,34 @@ void ServerTests::bottomEdgeSwitchWaitClearsInsideBottomZone()
   QVERIFY(Server::shouldClearSwitchWaitForDirection(Top, 960, 1, 0, 0, 1920, 1080, 1));
 }
 
+void ServerTests::avoidJumpZone_nudgesSecondaryEntryInsideBidirectionalEdge()
+{
+  using enum Direction;
+
+  deskflow::server::Config config(nullptr);
+  QVERIFY(config.addComputer("primary"));
+  QVERIFY(config.addComputer("secondary"));
+  QVERIFY(config.addComputer("oneway"));
+
+  QVERIFY(config.connect("primary", Right, 0.0f, 1.0f, "secondary", 0.0f, 1.0f));
+  QVERIFY(config.connect("secondary", Left, 0.0f, 1.0f, "primary", 0.0f, 1.0f));
+  QVERIFY(config.connect("primary", Left, 0.0f, 1.0f, "oneway", 0.0f, 1.0f));
+
+  // Entering bidirectional secondary from the left edge nudges 1px inward to prevent 1px jitter bounce.
+  int32_t x = 0;
+  int32_t y = 540;
+  Server::clampEntryInsideJumpZone(config, "secondary", Right, 0, 0, 1920, 1080, 0.5f, 1, x, y);
+  QCOMPARE(x, 1);
+  QCOMPARE(y, 540);
+
+  // Asymmetric one-way screen has no return neighbor on Right, so entry coordinate stays at the boundary.
+  x = 1919;
+  y = 540;
+  Server::clampEntryInsideJumpZone(config, "oneway", Left, 0, 0, 1920, 1080, 0.5f, 1, x, y);
+  QCOMPARE(x, 1919);
+  QCOMPARE(y, 540);
+}
+
 void ServerTests::computeClientDragSegments_excludesDisconnectedNeighborsAndCorners()
 {
   using deskflow::DragEdgeSegment;

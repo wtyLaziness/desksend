@@ -204,6 +204,10 @@ public:
   static bool shouldClearSwitchWaitForDirection(
       Direction dir, int32_t x, int32_t y, int32_t ax, int32_t ay, int32_t aw, int32_t ah, int32_t zoneSize
   );
+  static void clampEntryInsideJumpZone(
+      const ServerConfig &config, const std::string &dstName, Direction dir, int32_t dx, int32_t dy, int32_t dw,
+      int32_t dh, float t, int32_t z, int32_t &x, int32_t &y
+  );
   static std::vector<deskflow::DragEdgeSegment> computeDragEdgeSegments(
       const ServerConfig &config, const std::string &computerName,
       const std::unordered_set<std::string> &connectedClients, int32_t screenWidth, int32_t screenHeight,
@@ -384,6 +388,7 @@ private:
     std::string m_clipboardData;
     std::string m_clipboardOwner;
     uint32_t m_clipboardSeqNum = 0;
+    bool m_clipboardOverLimit = false;
   };
   // Order suggested by clang
 

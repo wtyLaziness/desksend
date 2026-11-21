@@ -806,10 +806,18 @@ void FileDropBridge::performScreenSwitch(
   }
 
   if (fromScreen == nullptr) {
-    if (auto *exec = executor()) {
-      DropAgentCommand hideCmd;
-      hideCmd.type = DropAgentCommandType::HideSentinels;
-      exec->execute(hideCmd);
+    bool shouldHideSentinels = false;
+    {
+      std::scoped_lock lock(m_mutex);
+      shouldHideSentinels = (m_visibleSentinelEdgeMask != 0);
+      m_visibleSentinelEdgeMask = 0;
+    }
+    if (shouldHideSentinels) {
+      if (auto *exec = executor()) {
+        DropAgentCommand hideCmd;
+        hideCmd.type = DropAgentCommandType::HideSentinels;
+        exec->execute(hideCmd);
+      }
     }
   }
 

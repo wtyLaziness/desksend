@@ -324,15 +324,20 @@ void assignProcessHandleToKillOnCloseJob(HANDLE hProc)
   }
 }
 
-void assignPidToKillOnCloseJob(qint64 pid)
+void configureLocalSendChildProcess(qint64 pid)
 {
   if (pid <= 0) {
     return;
   }
-  HANDLE hProc = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));
-  if (hProc) {
-    assignProcessHandleToKillOnCloseJob(hProc);
-    CloseHandle(hProc);
+  const DWORD processId = static_cast<DWORD>(pid);
+  if (HANDLE hJobProc = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, processId)) {
+    assignProcessHandleToKillOnCloseJob(hJobProc);
+    CloseHandle(hJobProc);
+  }
+  // 降低传输子进程 CPU 调度优先级，避免磁盘与加密吞吐抢占键鼠转发线程，但不限制传输带宽。
+  if (HANDLE hPrioProc = OpenProcess(PROCESS_SET_INFORMATION, FALSE, processId)) {
+    SetPriorityClass(hPrioProc, BELOW_NORMAL_PRIORITY_CLASS);
+    CloseHandle(hPrioProc);
   }
 }
 
@@ -1720,7 +1725,7 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
       pending.swap(m_pendingReceiverAuthLines);
     }
 #if defined(_WIN32)
-    assignPidToKillOnCloseJob(proc->processId());
+    configureLocalSendChildProcess(proc->processId());
 #endif
     for (const auto &cmd : pending) {
       const QByteArray line = QByteArray::fromStdString(cmd + "\n");
@@ -2195,7 +2200,7 @@ void InProcessDropExecutor::processNextSendJob()
 
   QObject::connect(proc, &QProcess::started, proc, [this, alive, proc, stdinPayload, inactivityTimer, inactivityMs]() {
 #if defined(_WIN32)
-    assignPidToKillOnCloseJob(proc->processId());
+    configureLocalSendChildProcess(proc->processId());
 #endif
     inactivityTimer->start(inactivityMs);
     proc->write(stdinPayload);
