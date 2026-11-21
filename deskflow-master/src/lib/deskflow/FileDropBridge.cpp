@@ -1685,33 +1685,33 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
     notifyTransferTargetsChanged(targets);
     return;
   }
-  std::string requestId;
-  std::string token;
-  std::string targetIp;
-  if (parseDirectSendGrantMessage(info, requestId, token, targetIp)) {
+  std::string directRequestId;
+  std::string directToken;
+  std::string directTargetIp;
+  if (parseDirectSendGrantMessage(info, directRequestId, directToken, directTargetIp)) {
     DropAgentCommand cmd;
     {
       std::scoped_lock lock(m_mutex);
       const auto pending = std::find_if(m_clientDirectPending.begin(), m_clientDirectPending.end(), [&](const auto &entry) {
-        return entry.requestId == requestId;
+        return entry.requestId == directRequestId;
       });
       if (pending == m_clientDirectPending.end()) {
         return;
       }
       cmd.items = std::move(pending->files);
       m_clientDirectPending.erase(pending);
-      cmd.text = targetIp == kServerPeerTargetMarker ? m_clientServerHost : targetIp;
+      cmd.text = directTargetIp == kServerPeerTargetMarker ? m_clientServerHost : directTargetIp;
     }
     if (auto *exec = executor(); exec && !cmd.text.empty() && hasTransferableFiles(cmd.items)) {
       cmd.type = DropAgentCommandType::SendFiles;
-      cmd.authToken = std::move(token);
+      cmd.authToken = std::move(directToken);
       exec->execute(cmd);
     }
     return;
   }
-  if (parseDirectSendCancelMessage(info, requestId)) {
+  if (parseDirectSendCancelMessage(info, directRequestId)) {
     std::scoped_lock lock(m_mutex);
-    std::erase_if(m_clientDirectPending, [&](const auto &entry) { return entry.requestId == requestId; });
+    std::erase_if(m_clientDirectPending, [&](const auto &entry) { return entry.requestId == directRequestId; });
     return;
   }
 

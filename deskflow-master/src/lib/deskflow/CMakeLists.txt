@@ -6,13 +6,6 @@
 
 set(lib_name app)
 
-if(APPLE)
-  enable_language(OBJCXX)
-  set(CMAKE_OBJCXX_STANDARD ${CMAKE_CXX_STANDARD})
-  set(CMAKE_OBJCXX_EXTENSIONS OFF)
-  set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
-endif()
-
 # arch
 if(WIN32)
   set(PLATFORM_CODE
