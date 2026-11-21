@@ -256,6 +256,24 @@ install(
   RENAME LICENSE_EXCEPTION
 )
 
+if(NOT WIN32)
+  set(DESKSEND_LOCALSEND_CLI "" CACHE FILEPATH "Path to the built localsend-cli binary for DeskSend packaging")
+  if(NOT "${DESKSEND_LOCALSEND_CLI}" STREQUAL "")
+    file(TO_CMAKE_PATH "${DESKSEND_LOCALSEND_CLI}" DESKSEND_LOCALSEND_CLI)
+    if(NOT EXISTS "${DESKSEND_LOCALSEND_CLI}" OR IS_DIRECTORY "${DESKSEND_LOCALSEND_CLI}")
+      message(FATAL_ERROR "DESKSEND_LOCALSEND_CLI must point to the built localsend-cli executable")
+    endif()
+    install(PROGRAMS "${DESKSEND_LOCALSEND_CLI}" DESTINATION "${CMAKE_INSTALL_BINDIR}" RENAME localsend-cli)
+    if(EXISTS "${PROJECT_SOURCE_DIR}/../localsend-main/LICENSE")
+      install(
+        FILES "${PROJECT_SOURCE_DIR}/../localsend-main/LICENSE"
+        DESTINATION "${CMAKE_INSTALL_LICENSE_DIR}"
+        RENAME LocalSend-LICENSE.txt
+      )
+    endif()
+  endif()
+endif()
+
 if(BUILD_INSTALLER)
     add_subdirectory(deploy)
 endif()

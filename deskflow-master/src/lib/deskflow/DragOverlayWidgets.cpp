@@ -6,6 +6,8 @@
 
 #include "deskflow/DragOverlayWidgets.h"
 
+#include "deskflow/PlatformDropSupport.h"
+
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QGuiApplication>
@@ -152,7 +154,11 @@ protected:
   void showEvent(QShowEvent *event) override
   {
     QWidget::showEvent(event);
+#if defined(_WIN32)
     applyWin32ClickThroughStyle(this);
+#else
+    platform_drop::configurePlatformOverlayWidget(this, true);
+#endif
   }
 
 private:
@@ -298,6 +304,15 @@ public:
     show();
     m_hide.start(success || cancelled ? 8000 : 20000);
   }
+
+#if !defined(_WIN32)
+protected:
+  void showEvent(QShowEvent *event) override
+  {
+    QWidget::showEvent(event);
+    platform_drop::configurePlatformOverlayWidget(this, false);
+  }
+#endif
 
 private:
   void positionAndShow()

@@ -37,12 +37,16 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDesktopServices>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QFileDialog>
+#include <QInputDialog>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QNetworkAccessManager>
 #include <QNetworkInterface>
 #include <QPushButton>
@@ -81,10 +85,12 @@ MainWindow::MainWindow()
       m_actionStartCore{new QAction(this)},
       m_actionRestartCore{new QAction(this)},
       m_actionStopCore{new QAction(this)},
+      m_actionSendFiles{new QAction(this)},
       m_actionShowHelp{new QAction(this)},
       m_networkMonitor{new NetworkMonitor(this)}
 {
   ui->setupUi(this);
+  setAcceptDrops(true);
 
   setWindowIcon(QIcon(":/branding/desksend.png"));
 
@@ -121,6 +127,10 @@ MainWindow::MainWindow()
 
   m_actionStopCore->setIcon(QIcon::fromTheme(QIcon::ThemeIcon::ProcessStop));
   m_actionStopCore->setMenuRole(QAction::NoRole);
+
+  m_actionSendFiles->setIcon(QIcon::fromTheme(QStringLiteral("mail-send")));
+  m_actionSendFiles->setMenuRole(QAction::NoRole);
+  m_actionSendFiles->setEnabled(false);
 
   m_actionShowHelp->setIcon(QIcon::fromTheme(QStringLiteral("question")));
   m_actionShowHelp->setMenuRole(QAction::NoRole);
@@ -279,6 +289,8 @@ void MainWindow::connectSlots()
   if (!deskflow::platform::isMac())
     connect(m_trayIcon, &QSystemTrayIcon::activated, this, &MainWindow::trayIconActivated);
 
+  connect(m_actionSendFiles, &QAction::triggered, this, &MainWindow::sendFilesDialog);
+  connect(&m_coreProcess, &CoreProcess::transferPeersChanged, this, &MainWindow::updateSendFilesAction);
   connect(&m_coreProcess, &CoreProcess::connectedClientsChanged, this, &MainWindow::serverClientsChanged);
   connect(&m_coreProcess, &CoreProcess::unrecognisedClient, this, &MainWindow::handleUnrecognisedClient);
   connect(&m_coreProcess, &CoreProcess::connectionRefused, this, &MainWindow::handleConnectionRefused);
@@ -701,6 +713,8 @@ void MainWindow::createMenuBar()
   m_menuFile->addAction(m_actionRestartCore);
   m_menuFile->addAction(m_actionStopCore);
   m_menuFile->addSeparator();
+  m_menuFile->addAction(m_actionSendFiles);
+  m_menuFile->addSeparator();
   m_menuFile->addAction(m_actionQuit);
 
   m_menuEdit->addAction(m_actionSettings);
@@ -991,6 +1005,89 @@ void MainWindow::updateStatus()
     ui->btnEditName->setVisible(process == Stopped);
   }
   m_statusBar->setStatus(connection, process, isServer);
+  updateSendFilesAction();
+}
+
+bool MainWindow::canSendFiles() const
+{
+  return m_coreProcess.connectionState() == ConnectionState::Connected && !m_coreProcess.transferPeers().isEmpty();
+}
+
+void MainWindow::updateSendFilesAction()
+{
+  m_actionSendFiles->setEnabled(canSendFiles());
+}
+
+void MainWindow::sendFilesDialog()
+{
+  const auto paths = QFileDialog::getOpenFileNames(this, tr("Select files to send"));
+  if (!paths.isEmpty()) {
+    sendFilesToPeer(paths);
+  }
+}
+
+void MainWindow::sendFilesToPeer(const QStringList &paths)
+{
+  if (!canSendFiles()) {
+    QMessageBox::information(this, kAppName, tr("Connect to another computer before sending files."));
+    return;
+  }
+
+  const auto peers = m_coreProcess.transferPeers();
+  if (peers.size() == 1) {
+    m_coreProcess.sendFiles(peers.first(), paths);
+    return;
+  }
+
+  QStringList labels;
+  for (const auto &peer : peers) {
+    labels.append(peer == QLatin1String("__SERVER__") ? tr("Host computer") : peer);
+  }
+  bool ok = false;
+  const auto choice = QInputDialog::getItem(
+      this, tr("Send Files"), tr("Choose destination computer:"), labels, 0, false, &ok
+  );
+  const auto index = labels.indexOf(choice);
+  if (ok && index >= 0) {
+    m_coreProcess.sendFiles(peers.at(index), paths);
+  }
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent *event)
+{
+  const auto *mime = event->mimeData();
+  if (!canSendFiles() || !mime || !mime->hasUrls()) {
+    return;
+  }
+  const auto urls = mime->urls();
+  for (const auto &url : urls) {
+    if (url.isLocalFile() && !url.toLocalFile().isEmpty()) {
+      event->acceptProposedAction();
+      return;
+    }
+  }
+}
+
+void MainWindow::dropEvent(QDropEvent *event)
+{
+  const auto *mime = event->mimeData();
+  if (!canSendFiles() || !mime || !mime->hasUrls()) {
+    return;
+  }
+  QStringList paths;
+  const auto urls = mime->urls();
+  for (const auto &url : urls) {
+    if (url.isLocalFile()) {
+      const auto path = url.toLocalFile();
+      if (!path.isEmpty()) {
+        paths.append(path);
+      }
+    }
+  }
+  if (!paths.isEmpty()) {
+    event->acceptProposedAction();
+    sendFilesToPeer(paths);
+  }
 }
 
 void MainWindow::coreProcessStateChanged(ProcessState state)
@@ -1131,6 +1228,7 @@ void MainWindow::updateText()
   m_actionStartCore->setText(tr("&Start"));
   m_actionRestartCore->setText(tr("Rest&art"));
   m_actionStopCore->setText(tr("S&top"));
+  m_actionSendFiles->setText(tr("Send Files..."));
   //: %1 will be the replaced with the appname
   m_actionAbout->setText(tr("About %1...").arg(kAppName));
 

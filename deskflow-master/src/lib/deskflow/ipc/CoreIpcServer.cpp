@@ -9,6 +9,12 @@
 #include "base/Log.h"
 #include "common/Constants.h"
 
+#include "deskflow/FileDropBridge.h"
+
+#include <QByteArray>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLocalSocket>
 
 namespace deskflow::core::ipc {
@@ -41,12 +47,41 @@ CoreIpcServer *CoreIpcServer::instanceIfInitialized()
 
 void CoreIpcServer::processCommand(QLocalSocket *clientSocket, const QString &command, const QStringList &parts)
 {
-  Q_UNUSED(parts)
   if (command == QStringLiteral("stop")) {
     LOG_DEBUG("core ipc server got stop message");
     writeToClientSocket(clientSocket, QStringLiteral("ok"));
     broadcastCommand(QStringLiteral("bye"));
     Q_EMIT stopProcessRequested();
+    return;
+  }
+  if (command == QStringLiteral("getTransferPeers")) {
+    const auto targets = FileDropBridge::instance().availableTransferTargets();
+    const auto encoded = QString::fromStdString(FileDropBridge::encodeTransferTargetsForIpc(targets));
+    writeToClientSocket(clientSocket, QStringLiteral("transferPeers=%1").arg(encoded));
+    return;
+  }
+  if (command == QStringLiteral("sendFiles")) {
+    if (parts.size() >= 2) {
+      const auto json = QJsonDocument::fromJson(QByteArray::fromBase64(parts.at(1).toUtf8()));
+      if (json.isObject()) {
+        const auto object = json.object();
+        const auto target = object.value(QStringLiteral("target")).toString().toStdString();
+        const auto jsonPaths = object.value(QStringLiteral("paths")).toArray();
+        std::vector<std::string> paths;
+        paths.reserve(static_cast<size_t>(jsonPaths.size()));
+        for (const auto &value : jsonPaths) {
+          const auto path = value.toString();
+          if (!path.isEmpty()) {
+            paths.push_back(path.toStdString());
+          }
+        }
+        if (!paths.empty() && FileDropBridge::instance().requestDirectFileSend(target, paths)) {
+          writeToClientSocket(clientSocket, QStringLiteral("ok"));
+          return;
+        }
+      }
+    }
+    writeToClientSocket(clientSocket, QStringLiteral("error=sendFilesFailed"));
     return;
   }
   LOG_WARN("core ipc server got unknown command: %s", command.toUtf8().constData());

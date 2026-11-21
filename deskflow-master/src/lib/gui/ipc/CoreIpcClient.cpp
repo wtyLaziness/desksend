@@ -8,6 +8,9 @@
 
 #include "common/Constants.h"
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QString>
 
 namespace deskflow::gui::ipc {
@@ -20,6 +23,33 @@ CoreIpcClient::CoreIpcClient(QObject *parent) : IpcClient(parent, kCoreIpcName, 
 void CoreIpcClient::sendStop()
 {
   sendMessage(QStringLiteral("stop"));
+}
+
+void CoreIpcClient::requestTransferPeers()
+{
+  if (isConnected()) {
+    sendMessage(QStringLiteral("getTransferPeers"));
+  }
+}
+
+bool CoreIpcClient::sendFiles(const QString &targetPeer, const QStringList &paths)
+{
+  QStringList cleanedPaths;
+  for (const auto &path : paths) {
+    if (!path.isEmpty()) {
+      cleanedPaths.append(path);
+    }
+  }
+  if (cleanedPaths.isEmpty() || !isConnected()) {
+    return false;
+  }
+  const QJsonObject payload{
+      {QStringLiteral("target"), targetPeer},
+      {QStringLiteral("paths"), QJsonArray::fromStringList(cleanedPaths)},
+  };
+  const auto encoded = QJsonDocument(payload).toJson(QJsonDocument::Compact).toBase64();
+  sendMessage(QStringLiteral("sendFiles=%1").arg(QString::fromLatin1(encoded)));
+  return true;
 }
 
 void CoreIpcClient::processCommand(const QString &command, const QStringList &parts)

@@ -465,8 +465,143 @@ bool parseSendCancelMessage(std::string_view info, std::string &outToken)
   return false;
 }
 
+namespace {
+
+constexpr std::string_view kTargetsPrefix = "DESKSEND_TRANSFER_TARGETS:";
+constexpr std::string_view kDirectRequestPrefix = "DESKSEND_DIRECT_SEND_REQ:";
+constexpr std::string_view kDirectGrantPrefix = "DESKSEND_DIRECT_SEND_GRANT:";
+constexpr std::string_view kDirectCancelPrefix = "DESKSEND_DIRECT_SEND_CANCEL:";
+
+bool validDirectField(std::string_view value)
+{
+  return value.find_first_of(std::string_view("\r\n\0", 3)) == std::string_view::npos;
+}
+
+bool validDirectId(std::string_view value)
+{
+  return !value.empty() && validDirectField(value) && value.find(':') == std::string_view::npos;
+}
+
+} // namespace
+
+std::string serializeTransferTargetsMessage(const std::vector<std::string> &targets)
+{
+  std::string message(kTargetsPrefix);
+  for (const auto &target : targets) {
+    if (!validDirectField(target) || target.find(',') != std::string::npos) {
+      return {};
+    }
+    if (!target.empty()) {
+      if (message.size() > kTargetsPrefix.size()) {
+        message += ',';
+      }
+      message += target;
+    }
+  }
+  return message;
+}
+
+bool parseTransferTargetsMessage(std::string_view info, std::vector<std::string> &outTargets)
+{
+  if (!startsWith(info, kTargetsPrefix) || !validDirectField(info)) {
+    return false;
+  }
+  auto body = info.substr(kTargetsPrefix.size());
+  std::vector<std::string> targets;
+  while (!body.empty()) {
+    const auto comma = body.find(',');
+    const auto name = body.substr(0, comma);
+    if (name.empty() || comma == body.size() - 1) {
+      return false;
+    }
+    targets.emplace_back(name);
+    if (comma == std::string_view::npos) {
+      break;
+    }
+    body.remove_prefix(comma + 1);
+  }
+  outTargets = std::move(targets);
+  return true;
+}
+
+std::string serializeDirectSendRequestMessage(std::string_view requestId, std::string_view targetPeer)
+{
+  if (!validDirectId(requestId) || !validDirectField(targetPeer)) {
+    return {};
+  }
+  return std::string(kDirectRequestPrefix).append(requestId).append(":").append(targetPeer);
+}
+
+bool parseDirectSendRequestMessage(std::string_view info, std::string &outRequestId, std::string &outTargetPeer)
+{
+  if (!startsWith(info, kDirectRequestPrefix) || !validDirectField(info)) {
+    return false;
+  }
+  const auto body = info.substr(kDirectRequestPrefix.size());
+  const auto colon = body.find(':');
+  if (colon == 0 || colon == std::string_view::npos) {
+    return false;
+  }
+  outRequestId.assign(body.substr(0, colon));
+  outTargetPeer.assign(body.substr(colon + 1));
+  return true;
+}
+
+std::string serializeDirectSendGrantMessage(std::string_view requestId, std::string_view token, std::string_view targetIp)
+{
+  if (!validDirectId(requestId) || !validDirectId(token) || targetIp.empty() || !validDirectField(targetIp)) {
+    return {};
+  }
+  return std::string(kDirectGrantPrefix).append(requestId).append(":").append(token).append(":").append(targetIp);
+}
+
+bool parseDirectSendGrantMessage(
+    std::string_view info, std::string &outRequestId, std::string &outToken, std::string &outTargetIp
+)
+{
+  if (!startsWith(info, kDirectGrantPrefix) || !validDirectField(info)) {
+    return false;
+  }
+  const auto body = info.substr(kDirectGrantPrefix.size());
+  const auto first = body.find(':');
+  if (first == 0 || first == std::string_view::npos) {
+    return false;
+  }
+  const auto second = body.find(':', first + 1);
+  if (second == std::string_view::npos || second == first + 1 || second == body.size() - 1) {
+    return false;
+  }
+  outRequestId.assign(body.substr(0, first));
+  outToken.assign(body.substr(first + 1, second - first - 1));
+  outTargetIp.assign(body.substr(second + 1));
+  return true;
+}
+
+std::string serializeDirectSendCancelMessage(std::string_view requestId)
+{
+  return validDirectId(requestId) ? std::string(kDirectCancelPrefix).append(requestId) : std::string{};
+}
+
+bool parseDirectSendCancelMessage(std::string_view info, std::string &outRequestId)
+{
+  if (!startsWith(info, kDirectCancelPrefix) || !validDirectId(info.substr(kDirectCancelPrefix.size()))) {
+    return false;
+  }
+  outRequestId.assign(info.substr(kDirectCancelPrefix.size()));
+  return true;
+}
+
 std::string redactDragLogPayload(std::string_view info)
 {
+  if (startsWith(info, kDirectGrantPrefix)) {
+    std::string requestId;
+    std::string token;
+    std::string targetIp;
+    if (parseDirectSendGrantMessage(info, requestId, token, targetIp)) {
+      return serializeDirectSendGrantMessage(requestId, "<redacted>", targetIp);
+    }
+    return std::string(kDirectGrantPrefix) + "<redacted>";
+  }
   if (startsWith(info, "DESKSEND_START")) {
     return "DESKSEND_START:<redacted>";
   }

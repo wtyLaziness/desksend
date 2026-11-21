@@ -1,7 +1,7 @@
 <div align="center">
   <img src="deskflow-master/src/apps/res/branding/desksend.png" width="104" alt="DeskSend 图标">
   <h1>DeskSend</h1>
-  <p><strong>多台 Windows 电脑共用一套键鼠，文件也能随鼠标跨屏拖过去。</strong></p>
+  <p><strong>共用一套键鼠，在 Windows、macOS 和 Linux 电脑之间传文件。</strong></p>
   <p>
     <a href="https://github.com/wtyLaziness/desksend-releases/releases/latest"><img src="https://img.shields.io/github/v/release/wtyLaziness/desksend-releases?label=DeskSend" alt="最新正式版本"></a>
     <a href="https://github.com/wtyLaziness/desksend/actions/workflows/deskflow-win.yml"><img src="https://github.com/wtyLaziness/desksend/actions/workflows/deskflow-win.yml/badge.svg" alt="Windows GUI 与核心构建"></a>
@@ -27,7 +27,7 @@ DeskSend 将 [Deskflow](https://github.com/deskflow/deskflow) 的键鼠共享与
 | 双向拖文件 | 支持主机 → 副机、副机 → 主机；均使用主机共享的鼠标拖动，源文件保留。 |
 | 多机投递 | 多台副机连接同一主机后，可从副机 A 拖着文件穿过主机屏幕，到副机 B 松手；文件由源电脑直传到最终接收电脑。 |
 | 拖拽与传输反馈 | 进入目标屏幕后，光标旁显示松手接收提示；松手后显示准备接收、传输进度和结果，传输期间可在任一端进度窗点击「取消传输」。 |
-| 按落点保存 | 接收方桌面或资源管理器文件夹可作为落点；其他窗口回退到默认接收目录，并提供文件剪贴板供 `Ctrl+V` 粘贴。 |
+| 按落点保存 | 支持按系统识别桌面或文件管理器落点，其他情况使用默认接收目录和文件剪贴板。 |
 | 保留配置更新 | 内置更新器下载并校验完整包，备份待覆盖程序，保留 `settings/` 中的配置、证书和配对。 |
 
 ## 快速开始
@@ -55,13 +55,28 @@ DeskSend 将 [Deskflow](https://github.com/deskflow/deskflow) 的键鼠共享与
 | `TCP 24800` | 主机 | 默认键鼠共享与拖拽控制信令 |
 | `TCP 53318` | 所有参与文件接收的主机和副机 | 文件传输；使用双向拖拽时两端均需放行 |
 
-### 3. 拖动文件
+### 3. 发送文件
 
-使用**主机共享的鼠标**，在任一已连接电脑的桌面或资源管理器中拖起文件、文件夹，跨入目标屏幕，在桌面或目标文件夹内松手。副机向主机拖回时也使用同一套共享键鼠。
+Windows、macOS 和 Linux 之间可互传文件。
+
+- **跨屏边缘拖拽**支持 Windows、macOS 和 Linux X11 会话。macOS 需在“系统设置 → 隐私与安全性 → 辅助功能”中授权 DeskSend。
+- **直传**支持以上三个系统，包括 Linux Wayland。连接后，选择“文件 → 发送文件...”或把本地文件拖入 DeskSend 主窗口。只有一个目标时直接发送，有多个目标时选择接收电脑。支持主机与副机双向发送，也支持连接同一主机的副机之间互传。
+
+使用**主机共享的鼠标**，在支持跨屏拖拽的已连接电脑上拖起文件、文件夹，跨入目标屏幕，在桌面或目标文件夹内松手。副机向主机拖回时也使用同一套共享键鼠。
 
 松手前按 `Esc`，或将文件拖回源电脑，可取消本次跨屏拖拽。传输开始后，鼠标可以移回源电脑继续操作；也可在发送端或接收端的进度窗点击「取消传输」，已收完的文件会保留，未收完的文件会清理。多机投递时，在到达最终目标前保持按住左键，中间屏幕不会接收文件。
 
-文件落点、端口检查及异常排查见[使用指南](docs/使用指南.md)。
+| 接收系统 | 跨屏拖拽落点 | 默认目录与剪贴板回退 |
+| --- | --- | --- |
+| Windows | 资源管理器文件夹或桌面 | 其他窗口和直传默认保存到“下载”，并写入 `CF_HDROP` 文件剪贴板 |
+| macOS | Finder 文件夹窗口或桌面 | 其他窗口和直传默认保存到“下载”，并写入系统文件 URL 剪贴板 |
+| Linux | X11 会话中识别到的桌面 | 其他窗口、Wayland 或直传默认保存到“下载”，并写入 Qt 文件 URL 和 `x-special/gnome-copied-files` 剪贴板 |
+
+系统未提供“下载”目录路径时，默认接收目录回退到桌面。
+
+三端的接收方都需允许可信局域网入站 TCP 53318。Windows MSI 安装版会添加防火墙规则，便携版需检查程序放行设置。macOS 可在应用防火墙中允许接收程序的入站连接，Linux 可在 UFW 或 firewalld 中按局域网范围放行该端口。
+
+端口检查及异常排查见[使用指南](docs/使用指南.md)。
 
 ## 更新与迁移
 
@@ -86,7 +101,7 @@ DeskSend 将 [Deskflow](https://github.com/deskflow/deskflow) 的键鼠共享与
 | [`deskflow-master/`](deskflow-master/) | DeskSend GUI、键鼠核心、跨屏拖拽和更新器；版本由 [`DeskSendVersion.cmake`](deskflow-master/cmake/DeskSendVersion.cmake) 定义。 |
 | [`localsend-main/`](localsend-main/) | Rust 文件传输 CLI 和核心协议工作区。 |
 | [`scripts/package-release.py`](scripts/package-release.py) | 组装完整 Windows 包、对应源码和 `SHA256SUMS.txt`。 |
-| [`.github/workflows/`](.github/workflows/) | Windows GUI/核心与 Rust CLI 的构建、测试及产物。 |
+| [`.github/workflows/`](.github/workflows/) | Windows、macOS 和 Linux 的构建、测试及产物。 |
 | [`docs/`](docs/) | 使用、构建、发布与更新说明。 |
 
 `DeskSend.exe` 是日常入口；`deskflow-core.exe` 负责键鼠和拖拽控制，`localsend-cli.exe` 在后台传文件。文件字节通过独立的局域网 HTTPS 通道直传，键鼠通道支持 TLS 与证书指纹信任。文件接收按已连接电脑及每次拖拽的临时授权控制。

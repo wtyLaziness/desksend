@@ -30,9 +30,12 @@
 #include <windows.h>
 #endif
 
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QMetaEnum>
 #include <QMutexLocker>
 #include <QRegularExpression>
@@ -533,8 +536,11 @@ void CoreProcess::start(std::optional<ProcessMode> processModeOption)
               m_coreIpcClient, &ipc::CoreIpcClient::commandReceived, this, &CoreProcess::onCoreIpcMessageReceived,
               Qt::QueuedConnection
           );
-          connect(m_coreIpcClient, &ipc::CoreIpcClient::connected, this, [] {
+          connect(m_coreIpcClient, &ipc::CoreIpcClient::connected, this, [this, client = m_coreIpcClient] {
             qDebug("connected to core ipc server");
+            if (m_coreIpcClient == client) {
+              client->requestTransferPeers();
+            }
           });
           connect(m_coreIpcClient, &ipc::CoreIpcClient::connectionFailed, this, [] {
             qWarning("failed to establish core ipc connection");
@@ -542,8 +548,10 @@ void CoreProcess::start(std::optional<ProcessMode> processModeOption)
           connect(m_coreIpcClient, &ipc::CoreIpcClient::serverShutdown, this, [this, client = m_coreIpcClient] {
             qDebug("core ipc server shut down cleanly");
             client->deleteLater();
-            if (m_coreIpcClient == client)
+            if (m_coreIpcClient == client) {
               m_coreIpcClient = nullptr;
+              setTransferPeers({});
+            }
           });
 
           m_coreIpcClient->connectToServer();
@@ -785,14 +793,32 @@ QPair<bool, QString> CoreProcess::persistServerConfig() const
   return {Settings::isServerConfigFileReadable(), configFile.fileName()};
 }
 
+bool CoreProcess::sendFiles(const QString &targetPeer, const QStringList &paths)
+{
+  if (!m_coreIpcClient || m_connectionState != ConnectionState::Connected || paths.isEmpty()) {
+    return false;
+  }
+  return m_coreIpcClient->sendFiles(targetPeer, paths);
+}
+
+void CoreProcess::setTransferPeers(const QStringList &peers)
+{
+  if (m_transferPeers != peers) {
+    m_transferPeers = peers;
+    Q_EMIT transferPeersChanged(m_transferPeers);
+  }
+}
+
 void CoreProcess::setConnectionState(ConnectionState state)
 {
-  if (m_connectionState == state) {
-    return;
-  }
-
+  const bool changed = m_connectionState != state;
   m_connectionState = state;
-  Q_EMIT connectionStateChanged(state);
+  if (state != ConnectionState::Connected) {
+    setTransferPeers({});
+  }
+  if (changed) {
+    Q_EMIT connectionStateChanged(state);
+  }
 }
 
 void CoreProcess::setProcessState(ProcessState state)
@@ -820,6 +846,19 @@ void CoreProcess::onCoreIpcMessageReceived(const QString &command, const QString
       return;
     }
     setConnectionState(state);
+  } else if (command == QStringLiteral("transferPeers")) {
+    const auto json = QJsonDocument::fromJson(QByteArray::fromBase64(args.toUtf8()));
+    if (json.isArray()) {
+      QStringList peers;
+      const auto array = json.array();
+      for (const auto &value : array) {
+        const auto peer = value.toString();
+        if (!peer.isEmpty()) {
+          peers.append(peer);
+        }
+      }
+      setTransferPeers(peers);
+    }
   } else if (command == "connectedClients") {
     const auto clients = args.isEmpty() ? QStringList() : args.split(",");
     Q_EMIT connectedClientsChanged(clients);

@@ -304,6 +304,7 @@ void Server::updateDragTopologyAndPeers()
     std::string peerIp;
   };
   std::vector<RemoteEndpoint> remotes;
+  std::vector<BaseClientProxy *> remoteProxies;
   std::vector<std::string> allPeerIps;
 
   for (const auto &[name, proxy] : m_clients) {
@@ -318,9 +319,11 @@ void Server::updateDragTopologyAndPeers()
       allPeerIps.push_back(ip);
     }
     remotes.push_back({name, proxy, std::move(ip)});
+    remoteProxies.push_back(proxy);
   }
 
   deskflow::FileDropBridge::instance().setServerPeerHosts(allPeerIps);
+  deskflow::FileDropBridge::instance().setServerClientProxies(remoteProxies);
 
   if (isLockedToComputerServer()) {
     deskflow::FileDropBridge::instance().setPrimaryEdgeSegments({});
@@ -348,7 +351,11 @@ void Server::updateDragTopologyAndPeers()
     }
 
     std::vector<std::string> otherPeers;
+    std::vector<std::string> targets{std::string(deskflow::kServerPeerTargetMarker)};
     for (const auto &other : remotes) {
+      if (other.proxy != ep.proxy && !other.name.empty()) {
+        targets.push_back(other.name);
+      }
       if (other.proxy != ep.proxy && !other.peerIp.empty() &&
           std::find(otherPeers.begin(), otherPeers.end(), other.peerIp) == otherPeers.end()) {
         otherPeers.push_back(other.peerIp);
@@ -356,6 +363,10 @@ void Server::updateDragTopologyAndPeers()
     }
     const std::string peersMsg = deskflow::serializeDragPeersMessage(otherPeers);
     ep.proxy->sendDragInfo(0, peersMsg.data(), peersMsg.size());
+    const auto targetsMsg = deskflow::serializeTransferTargetsMessage(targets);
+    if (!targetsMsg.empty()) {
+      ep.proxy->sendDragInfo(0, targetsMsg.data(), targetsMsg.size());
+    }
   }
 }
 

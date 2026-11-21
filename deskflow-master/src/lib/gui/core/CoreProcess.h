@@ -15,6 +15,7 @@
 #include <QMutex>
 #include <QObject>
 #include <QProcess>
+#include <QStringList>
 #include <QTimer>
 
 class CoreProcessTests;
@@ -53,6 +54,7 @@ public:
   void applyLogLevel();
   void clearSettings();
   void retryDaemon();
+  bool sendFiles(const QString &targetPeer, const QStringList &paths);
 
   // getters
   Settings::CoreMode mode() const
@@ -80,6 +82,11 @@ public:
     return m_hasActiveFileTransfers;
   }
 
+  QStringList transferPeers() const
+  {
+    return m_transferPeers;
+  }
+
   // setters
   void setAddress(const QString &address)
   {
@@ -98,6 +105,7 @@ Q_SIGNALS:
   void secureSocket(bool enabled);
   void daemonIpcClientConnectionFailed();
   void connectedClientsChanged(const QStringList &clients);
+  void transferPeersChanged(const QStringList &peers);
   void securityLevelChanged(QString securityLevel);
   void unrecognisedClient(const QString &clientName);
   void connectionRefused(deskflow::core::ConnectionRefusal reason);
@@ -119,6 +127,7 @@ private:
   void stopProcessFromDaemon();
   QPair<bool, QString> persistServerConfig() const;
   void setConnectionState(ConnectionState state);
+  void setTransferPeers(const QStringList &peers);
   void setProcessState(ProcessState state);
   bool checkSecureSocket(const QString &line);
   void handleLogLines(const QString &text);
@@ -133,6 +142,7 @@ private:
   const ServerConfig &m_serverConfig;
   QString m_address;
   bool m_hasActiveFileTransfers = false;
+  QStringList m_transferPeers;
   ProcessState m_processState = ProcessState::Stopped;
   ConnectionState m_connectionState = ConnectionState::Disconnected;
   Settings::CoreMode m_mode = Settings::CoreMode::None;

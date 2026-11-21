@@ -1,0 +1,160 @@
+name: deskflow-macos
+
+"on":
+  workflow_dispatch:
+  push:
+    paths:
+      - "deskflow-master/**"
+      - "localsend-main/**"
+      - ".github/workflows/deskflow-macos.yml"
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        working-directory: localsend-main
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "localsend-main -> target"
+          cache-on-failure: true
+      - name: Test and build localsend-cli
+        working-directory: localsend-main
+        run: |
+          cargo test --locked --release --package localsend --package localsend-cli
+          cargo build --locked --release --package localsend-cli
+      - name: Test headless file transfer over loopback
+        working-directory: localsend-main
+        timeout-minutes: 8
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import tempfile
+          import time
+
+          cli = "./target/release/localsend-cli"
+
+          def wait_for(receiver, log, predicate, timeout):
+              deadline = time.monotonic() + timeout
+              while time.monotonic() < deadline:
+                  output = log.read_text(encoding="utf-8", errors="replace")
+                  if predicate(output):
+                      return
+                  if receiver.poll() is not None:
+                      raise RuntimeError(f"Receiver exited with {receiver.returncode}")
+                  time.sleep(0.1)
+              raise TimeoutError(f"Receiver condition not met within {timeout}s")
+
+          def transfer(root, files, rx_port, tx_port, authenticated=False):
+              root.mkdir()
+              dest = root / "received"
+              dest.mkdir()
+              rx_log = root / "receiver.log"
+              tx_log = root / "sender.log"
+              rx_env = dict(os.environ, XDG_CONFIG_HOME=str(root / "rx-config"))
+              tx_env = dict(os.environ, XDG_CONFIG_HOME=str(root / "tx-config"))
+              rx_args = [cli, "--port", str(rx_port), "--destination", str(dest),
+                         "receive", "--auto-accept-from", "127.0.0.1"]
+              tx_args = [cli, "--port", str(tx_port), "send", "--to", f"127.0.0.1:{rx_port}"]
+              sender_input = None
+              token = "e2e-secret-token-1234"
+              if authenticated:
+                  rx_args.append("--auth-stdin")
+                  tx_args.extend(["--pin-stdin", "--paths-stdin"])
+                  sender_input = "\n".join([token, *map(str, files)]) + "\n"
+              else:
+                  tx_args.extend(map(str, files))
+
+              total = sum(path.stat().st_size for path in files)
+              with rx_log.open("w", encoding="utf-8") as output:
+                  receiver = subprocess.Popen(
+                      rx_args, env=rx_env, text=True, stdout=output,
+                      stderr=subprocess.STDOUT,
+                      stdin=subprocess.PIPE if authenticated else subprocess.DEVNULL,
+                  )
+                  try:
+                      wait_for(receiver, rx_log, lambda log: "LOCALSEND_RECEIVER_READY" in log, 30)
+                      if authenticated:
+                          receiver.stdin.write(f"GRANT {token}\n")
+                          receiver.stdin.flush()
+                      with tx_log.open("w", encoding="utf-8") as sender_output:
+                          subprocess.run(
+                              tx_args, env=tx_env, input=sender_input, text=True,
+                              stdout=sender_output, stderr=subprocess.STDOUT,
+                              timeout=120, check=True,
+                          )
+                      if f"SEND_PROGRESS:{total}:{total}" not in tx_log.read_text(encoding="utf-8"):
+                          raise AssertionError("Missing final send byte progress")
+                      wait_for(
+                          receiver, rx_log,
+                          lambda log: re.search(rf"RECEIVE_PROGRESS:[^:\n]+:{total}:{total}(?:\n|$)", log),
+                          15,
+                      )
+                      for path in files:
+                          expected = path.read_bytes()
+                          actual = (dest / path.name).read_bytes()
+                          if hashlib.sha256(expected).digest() != hashlib.sha256(actual).digest() or expected != actual:
+                              raise AssertionError(f"Received content mismatch for {path.name}")
+                  finally:
+                      if receiver.poll() is None:
+                          receiver.terminate()
+                      try:
+                          receiver.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          receiver.kill()
+                          receiver.wait(timeout=5)
+                      if receiver.stdin is not None:
+                          receiver.stdin.close()
+                      for log in (rx_log, tx_log):
+                          if log.exists():
+                              print(f"--- {log.name} ---", flush=True)
+                              print(log.read_text(encoding="utf-8", errors="replace"), flush=True)
+
+          with tempfile.TemporaryDirectory(prefix="localsend-e2e-") as tmp:
+              root = Path(tmp)
+              files = [root / "first.txt", root / "second.txt", root / "large.bin"]
+              files[0].write_text("hello from desksend", encoding="utf-8")
+              files[1].write_text("second file 12345", encoding="utf-8")
+              files[2].write_bytes(bytes(range(256)) * (32 * 1024 * 1024 // 256))
+              transfer(root / "plain", files, 53318, 53319)
+              transfer(root / "authenticated", files[:2], 53320, 53321, authenticated=True)
+          PY
+      - name: Install macOS build dependencies
+        run: brew install ninja openssl@3
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.*"
+          cache: true
+      - name: Configure CMake
+        working-directory: deskflow-master
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON \
+            -DBUILD_INSTALLER=ON \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
+            -DDESKSEND_LOCALSEND_CLI="$GITHUB_WORKSPACE/localsend-main/target/release/localsend-cli"
+      - name: Build DeskSend
+        run: cmake --build deskflow-master/build
+      - name: Run unit tests
+        run: QT_QPA_PLATFORM=offscreen ctest --test-dir deskflow-master/build --output-on-failure
+      - name: Install and verify staged files
+        run: |
+          cmake --install deskflow-master/build --prefix "$GITHUB_WORKSPACE/stage"
+          bundle="$GITHUB_WORKSPACE/stage/DeskSend.app/Contents"
+          for executable in DeskSend deskflow-core localsend-cli; do
+            test -f "$bundle/MacOS/$executable"
+            test -x "$bundle/MacOS/$executable"
+          done
+          test -f "$bundle/Resources/LocalSend-LICENSE.txt"
+      - name: Archive staged installation
+        run: tar -czf DeskSend-macos-arm64.tar.gz -C "$GITHUB_WORKSPACE/stage" DeskSend.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskSend-macos-arm64
+          path: DeskSend-macos-arm64.tar.gz
+          if-no-files-found: error

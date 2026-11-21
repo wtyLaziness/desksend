@@ -6,6 +6,13 @@
 
 set(lib_name app)
 
+if(APPLE)
+  enable_language(OBJCXX)
+  set(CMAKE_OBJCXX_STANDARD ${CMAKE_CXX_STANDARD})
+  set(CMAKE_OBJCXX_EXTENSIONS OFF)
+  set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+endif()
+
 # arch
 if(WIN32)
   set(PLATFORM_CODE
@@ -81,6 +88,8 @@ add_library(${lib_name} STATIC ${PLATFORM_CODE}
   PacketStreamFilter.h
   PlatformComputer.cpp
   PlatformComputer.h
+  PlatformDropSupport.h
+  PlatformDropSupportCommon.cpp
   ProtocolTypes.cpp
   ProtocolTypes.h
   ProtocolUtil.cpp
@@ -100,6 +109,26 @@ add_library(${lib_name} STATIC ${PLATFORM_CODE}
   ipc/CoreIpcServer.cpp
   ipc/CoreIpcServer.h
 )
+
+if(APPLE)
+  target_sources(${lib_name} PRIVATE PlatformDropSupportMac.mm)
+  find_library(desksend_cocoa Cocoa REQUIRED)
+  find_library(desksend_application_services ApplicationServices REQUIRED)
+  find_library(desksend_core_graphics CoreGraphics REQUIRED)
+  find_library(desksend_core_foundation CoreFoundation REQUIRED)
+  target_link_libraries(${lib_name} PRIVATE
+    ${desksend_cocoa} ${desksend_application_services} ${desksend_core_graphics} ${desksend_core_foundation}
+  )
+elseif(UNIX)
+  target_sources(${lib_name} PRIVATE PlatformDropSupportLinux.cpp)
+  if(BUILD_X11_SUPPORT)
+    target_compile_definitions(${lib_name} PRIVATE DESKSEND_HAVE_X11=1)
+    if(HAVE_X11_EXTENSIONS_XTEST_H AND HAVE_Xtst)
+      target_compile_definitions(${lib_name} PRIVATE DESKSEND_HAVE_XTEST=1)
+    endif()
+    target_link_libraries(${lib_name} PRIVATE ${libs})
+  endif()
+endif()
 
 target_link_libraries(${lib_name}
   PUBLIC

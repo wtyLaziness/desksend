@@ -16,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 class BaseClientProxy;
@@ -36,6 +37,10 @@ public:
   // --- Server-side (coordinator & primary computer) hooks ---
   void updatePrimaryShape(int32_t x, int32_t y, int32_t w, int32_t h);
   void setPrimaryEdgeSegments(std::vector<DragEdgeSegment> segments);
+  void setServerClientProxies(const std::vector<BaseClientProxy *> &clients);
+  std::vector<std::string> availableTransferTargets() const;
+  static std::string encodeTransferTargetsForIpc(const std::vector<std::string> &targets);
+  bool requestDirectFileSend(const std::string &targetPeer, const std::vector<std::string> &files);
   void setServerPeerHosts(const std::vector<std::string> &peerHosts);
   void shutdownSentinels();
 
@@ -170,9 +175,20 @@ private:
   bool m_sourceButtonNeedsRelease = false;
   bool m_dragCancellationInProgress = false;
   bool m_dragCancellationComplete = false;
+  bool m_primaryLeftButtonDown = false;
   uint32_t m_visibleSentinelEdgeMask = 0;
   std::vector<DragEdgeSegment> m_primaryEdgeSegments;
   bool m_primaryEdgeSegmentsConfigured = false;
+  struct PendingDirectSend
+  {
+    std::string requestId;
+    std::vector<std::string> files;
+  };
+
+  uint64_t m_nextDirectSendSeq = 0;
+  std::vector<PendingDirectSend> m_clientDirectPending;
+  std::vector<std::string> m_clientTransferTargets;
+  std::vector<std::pair<std::string, BaseClientProxy *>> m_serverClients;
   std::vector<std::string> m_serverPeerHosts;
 
   // Server-side remote pre-capture & active cross-screen drag state
@@ -191,6 +207,7 @@ private:
   uint64_t m_clientPendingTimestampMs = 0;
   int m_clientPendingSide = 0;
   bool m_clientCanCaptureDrag = false;
+  bool m_clientLeftButtonDown = false;
   bool m_clientHandoffCommitted = false;
   bool m_clientCancellationInProgress = false;
   bool m_clientSentinelVisible = false;

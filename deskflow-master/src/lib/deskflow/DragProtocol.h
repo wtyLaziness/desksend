@@ -36,6 +36,7 @@ struct DragEdgeSegment
 inline constexpr std::string_view kMsgDragClientPreCaptureClear = "DESKSEND_CLIENT_PRECAPTURE_CLEAR";
 inline constexpr std::string_view kMsgDragCommitHandoff = "DESKSEND_COMMIT_HANDOFF";
 inline constexpr std::string_view kMsgDragHoverLeave = "DESKSEND_HOVER_LEAVE";
+inline constexpr int32_t kDirectSendDropCoord = -100000;
 inline constexpr std::string_view kServerPeerTargetMarker = "__SERVER__";
 
 char dragEdgeSideCode(DragEdgeSide side);
@@ -79,6 +80,17 @@ bool parseSendDropMessage(
 
 std::string serializeSendCancelMessage(std::string_view token = {});
 bool parseSendCancelMessage(std::string_view info, std::string &outToken);
+
+std::string serializeTransferTargetsMessage(const std::vector<std::string> &targets);
+bool parseTransferTargetsMessage(std::string_view info, std::vector<std::string> &outTargets);
+std::string serializeDirectSendRequestMessage(std::string_view requestId, std::string_view targetPeer);
+bool parseDirectSendRequestMessage(std::string_view info, std::string &outRequestId, std::string &outTargetPeer);
+std::string serializeDirectSendGrantMessage(std::string_view requestId, std::string_view token, std::string_view targetIp);
+bool parseDirectSendGrantMessage(
+    std::string_view info, std::string &outRequestId, std::string &outToken, std::string &outTargetIp
+);
+std::string serializeDirectSendCancelMessage(std::string_view requestId);
+bool parseDirectSendCancelMessage(std::string_view info, std::string &outRequestId);
 
 std::string redactDragLogPayload(std::string_view info);
 

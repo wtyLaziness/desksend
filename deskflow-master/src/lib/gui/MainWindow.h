@@ -26,6 +26,8 @@
 #endif
 
 class QAction;
+class QDragEnterEvent;
+class QDropEvent;
 class QMenu;
 class QLocalServer;
 
@@ -76,6 +78,8 @@ public:
 
 protected:
   void changeEvent(QEvent *e) override;
+  void dragEnterEvent(QDragEnterEvent *event) override;
+  void dropEvent(QDropEvent *event) override;
   bool eventFilter(QObject *obj, QEvent *event) override;
 
 private:
@@ -135,6 +139,10 @@ private:
   void setupControls();
   void showFirstConnectedMessage();
   void updateStatus();
+  bool canSendFiles() const;
+  void updateSendFilesAction();
+  void sendFilesDialog();
+  void sendFilesToPeer(const QStringList &paths);
   void showAndActivate();
   void showHostNameEditor();
   void setHostName();
@@ -201,6 +209,7 @@ private:
   QAction *m_actionStartCore = nullptr;
   QAction *m_actionRestartCore = nullptr;
   QAction *m_actionStopCore = nullptr;
+  QAction *m_actionSendFiles = nullptr;
   QAction *m_actionShowHelp = nullptr;
 
   // Network monitoring

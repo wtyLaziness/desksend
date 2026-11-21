@@ -9,6 +9,7 @@
 #include "IpcClient.h"
 
 #include <QObject>
+#include <QStringList>
 
 namespace deskflow::gui::ipc {
 
@@ -20,6 +21,8 @@ public:
   explicit CoreIpcClient(QObject *parent = nullptr);
 
   void sendStop();
+  void requestTransferPeers();
+  bool sendFiles(const QString &targetPeer, const QStringList &paths);
 
 Q_SIGNALS:
   void commandReceived(const QString &command, const QString &args);

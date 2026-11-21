@@ -5,6 +5,7 @@
  */
 
 #include "deskflow/DropExecutor.h"
+#include "deskflow/PlatformDropSupport.h"
 
 #include "base/DirectionTypes.h"
 #include "base/Log.h"
@@ -968,8 +969,80 @@ struct InProcessDropExecutor::SentinelBridge
   std::atomic<int> cancellingSide{0};
   std::atomic<HWND> cancelTimerWindow{nullptr};
 #else
-  explicit SentinelBridge(InProcessDropExecutor *ownerPtr) : owner(ownerPtr) {}
-  InProcessDropExecutor *owner = nullptr;
+  static constexpr int kThickness = 2;
+  static constexpr int kActivationZone = 16;
+
+  explicit SentinelBridge(InProcessDropExecutor *owner)
+  {
+    host.setCallbacks({
+        [owner, alive = alive](int sideIndex, std::vector<std::string> files, int32_t x, int32_t y) {
+          if (*alive) {
+            owner->onSentinelDragEnter(sideIndex, std::move(files), x, y);
+          }
+        },
+        [owner, alive = alive]() {
+          if (*alive) {
+            owner->onSentinelDragLeave();
+          }
+        },
+        [this, owner, alive = alive](bool stillPressed) {
+          if (*alive) {
+            cancellingNativeDrag.store(false);
+            nativeDragCancellationComplete.store(true);
+            owner->onSentinelCancellationCompleted(stillPressed);
+          }
+        },
+    });
+  }
+
+  ~SentinelBridge()
+  {
+    *alive = false;
+    shutdown();
+  }
+
+  void ensureInitialized(int32_t x, int32_t y, int32_t w, int32_t h)
+  {
+    host.ensureInitialized(x, y, w, h);
+  }
+
+  void setEdgeGeometryAndVisible(size_t idx, int32_t x, int32_t y, int32_t w, int32_t h, bool show)
+  {
+    host.setEdgeGeometryAndVisible(idx, x, y, w, h, show);
+  }
+
+  void setEdgeVisible(size_t idx, bool show)
+  {
+    host.setEdgeVisible(idx, show);
+  }
+
+  void hideAll()
+  {
+    host.hideAll();
+  }
+
+  void clearCancellationFlags()
+  {
+    cancellingNativeDrag.store(false);
+    nativeDragCancellationComplete.store(false);
+    host.clearCancellationFlags();
+  }
+
+  void cancelBeforeSwitch(int sideIndex)
+  {
+    cancellingNativeDrag.store(true);
+    host.cancelBeforeSwitch(sideIndex);
+  }
+
+  void shutdown()
+  {
+    host.shutdown();
+  }
+
+  std::atomic<bool> cancellingNativeDrag{false};
+  std::atomic<bool> nativeDragCancellationComplete{false};
+  std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>>(true);
+  platform_drop::QtEdgeSentinelHost host;
 #endif
 };
 
@@ -1090,6 +1163,8 @@ void InProcessDropExecutor::execute(const DropAgentCommand &cmd)
   case DropAgentCommandType::CopyFilesToClipboard:
 #if defined(_WIN32)
     copyFilesToWindowsClipboard(cmd.items);
+#else
+    platform_drop::copyFilesToPlatformClipboard(cmd.items);
 #endif
     break;
   case DropAgentCommandType::SetDragActive:
@@ -1150,16 +1225,9 @@ bool InProcessDropExecutor::hasActiveTransfers() const
 
 void InProcessDropExecutor::updatePrimaryShape(int32_t x, int32_t y, int32_t w, int32_t h)
 {
-#if defined(_WIN32)
   if (m_enableSentinels && w > 0 && h > 0) {
     m_sentinels->ensureInitialized(x, y, w, h);
   }
-#else
-  (void)x;
-  (void)y;
-  (void)w;
-  (void)h;
-#endif
 }
 
 void InProcessDropExecutor::handlePrimaryMouseMove(
@@ -1167,12 +1235,20 @@ void InProcessDropExecutor::handlePrimaryMouseMove(
     const std::vector<DragEdgeSegment> &edgeSegments
 )
 {
-#if defined(_WIN32)
+#if !defined(_WIN32)
+  if (!platform_drop::isNativeEdgeSentinelSupported()) {
+    return;
+  }
+#endif
   if (!m_enableSentinels || aw <= 0 || ah <= 0) {
     return;
   }
   m_sentinels->ensureInitialized(ax, ay, aw, ah);
+#if defined(_WIN32)
   const bool leftButtonDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+#else
+  const bool leftButtonDown = platform_drop::isNativeLeftMouseButtonDown(true);
+#endif
   if (!leftButtonDown) {
     m_sentinels->hideAll();
     return;
@@ -1235,25 +1311,13 @@ void InProcessDropExecutor::handlePrimaryMouseMove(
   for (size_t side = 0; side < 4; ++side) {
     m_sentinels->setEdgeVisible(side, ((activeSides & sideMasks[side]) != 0) && nearSide[side]);
   }
-#else
-  (void)x;
-  (void)y;
-  (void)ax;
-  (void)ay;
-  (void)aw;
-  (void)ah;
-  (void)activeSides;
-  (void)edgeSegments;
-#endif
 }
 
 void InProcessDropExecutor::handlePrimaryLeftMouseDown()
 {
-#if defined(_WIN32)
   if (m_enableSentinels) {
     m_sentinels->clearCancellationFlags();
   }
-#endif
 }
 
 void InProcessDropExecutor::handleLeftMouseUp(bool releaseSourceButton)
@@ -1268,26 +1332,28 @@ void InProcessDropExecutor::handleLeftMouseUp(bool releaseSourceButton)
     sendLeftButtonUp(kSyntheticMouseExtraInfo);
   }
 #else
-  (void)releaseSourceButton;
+  if (m_enableSentinels) {
+    m_sentinels->hideAll();
+    m_sentinels->clearCancellationFlags();
+  }
+  if (releaseSourceButton) {
+    platform_drop::postNativeLeftMouseUp();
+  }
 #endif
 }
 
 void InProcessDropExecutor::handleHideSentinels()
 {
-#if defined(_WIN32)
   if (m_enableSentinels) {
     m_sentinels->hideAll();
   }
-#endif
 }
 
 void InProcessDropExecutor::handleShutdownSentinels()
 {
-#if defined(_WIN32)
   if (m_enableSentinels) {
     m_sentinels->shutdown();
   }
-#endif
 }
 
 void InProcessDropExecutor::handleNudgeAcrossEdge(int sideIndex)
@@ -1302,22 +1368,21 @@ void InProcessDropExecutor::handleNudgeAcrossEdge(int sideIndex)
   const int dy = sideIndex == 2 ? -8 : sideIndex == 3 ? 8 : 0;
   sendRelativeMouseMove(dx, dy);
 #else
-  (void)sideIndex;
+  if (m_enableSentinels && platform_drop::isNativeEdgeSentinelSupported()) {
+    const int dx = sideIndex == 0 ? -8 : sideIndex == 1 ? 8 : 0;
+    const int dy = sideIndex == 2 ? -8 : sideIndex == 3 ? 8 : 0;
+    platform_drop::postNativeRelativeMouseMove(dx, dy);
+  }
 #endif
 }
 
 void InProcessDropExecutor::handleCancelNativeDrag(int sideIndex)
 {
-#if defined(_WIN32)
   if (!m_enableSentinels) {
     onSentinelCancellationCompleted(false);
     return;
   }
   m_sentinels->cancelBeforeSwitch(sideIndex);
-#else
-  (void)sideIndex;
-  onSentinelCancellationCompleted(false);
-#endif
 }
 
 void InProcessDropExecutor::onSentinelDragEnter(int sideIndex, std::vector<std::string> files, int32_t x, int32_t y)
@@ -1410,11 +1475,11 @@ std::string InProcessDropExecutor::resolveDropTargetDirectory(
   if (outIsDirectFolderTarget) {
     *outIsDirectFolderTarget = true;
   }
-#if defined(_WIN32)
   if (const char *forcedDir = std::getenv("DESKSEND_DEFAULT_DROP_DIR"); forcedDir && forcedDir[0] != '\0') {
     return forcedDir;
   }
 
+#if defined(_WIN32)
   struct ComScope
   {
     HRESULT hr;
@@ -1534,11 +1599,10 @@ std::string InProcessDropExecutor::resolveDropTargetDirectory(
   if (outIsDirectFolderTarget) {
     *outIsDirectFolderTarget = false;
   }
-#else
-  (void)screenX;
-  (void)screenY;
-#endif
   return fallbackDir;
+#else
+  return platform_drop::resolveNonWindowsDropTargetDirectory(screenX, screenY, fallbackDir, outIsDirectFolderTarget);
+#endif
 }
 
 void InProcessDropExecutor::notifyActiveTransfersChangedLocked(bool &outShouldNotify, bool &outActive)
@@ -1749,7 +1813,11 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
       proc->deleteLater();
       if (shouldWarn) {
         m_receiverOverlay.finish(
+#if defined(_WIN32)
             false, QCoreApplication::translate("FileDropBridge", "Receiver failed to start: unable to launch localsend-cli.exe")
+#else
+            false, QCoreApplication::translate("FileDropBridge", "Receiver failed to start: unable to launch localsend-cli")
+#endif
         );
       }
     }
@@ -2232,7 +2300,11 @@ void InProcessDropExecutor::processNextSendJob()
           }
           LOG_WARN("FileDropBridge: failed to start localsend-cli for %s", destination.toStdString().c_str());
           m_senderOverlay.finish(
+#if defined(_WIN32)
               false, QCoreApplication::translate("FileDropBridge", "Send failed: unable to launch localsend-cli.exe")
+#else
+              false, QCoreApplication::translate("FileDropBridge", "Send failed: unable to launch localsend-cli")
+#endif
           );
           if (auto *host = m_host.load()) {
             host->onSendCompleted(jobTargetIp, false);
@@ -2477,8 +2549,9 @@ void InProcessDropExecutor::finalizeActiveSession()
     copyFilesToWindowsClipboard(filesForClipboard);
   }
 #else
-  (void)shouldCopyToClipboard;
-  (void)filesForClipboard;
+  if (shouldCopyToClipboard && !filesForClipboard.empty()) {
+    platform_drop::copyFilesToPlatformClipboard(filesForClipboard);
+  }
 #endif
 
   if (!stagingDirStr.empty()) {

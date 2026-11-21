@@ -4,6 +4,7 @@
 #include "deskflow/DropAgentIpc.h"
 #include "deskflow/DropExecutor.h"
 #include "deskflow/FileDropBridge.h"
+#include "deskflow/PlatformDropSupport.h"
 #include "base/Log.h"
 #include "net/IDataSocket.h"
 #include "server/BaseClientProxy.h"
@@ -609,6 +610,69 @@ private Q_SLOTS:
     QVERIFY(QFileInfo::exists(fallbackDir.filePath(QStringLiteral("received.txt"))));
 
     qunsetenv("DESKSEND_DEFAULT_DROP_DIR");
+  }
+
+  void platformDropSupport_urlsAndClipboardPayloads()
+  {
+    using namespace deskflow::platform_drop;
+    const std::vector<std::string> files{
+        QDir::temp().filePath(QStringLiteral("\u4e2d\u6587 file.txt")).toStdString(),
+    };
+    const auto urls = buildLocalFileUrls(files);
+    QCOMPARE(urls.size(), 1);
+    QVERIFY(urls.front().isLocalFile());
+    QVERIFY(urls.front().toEncoded().contains("%E4%B8%AD%E6%96%87%20file.txt"));
+    QCOMPARE(extractLocalFilePathsFromUrls(urls), files);
+    QCOMPARE(buildGnomeCopiedFilesPayload(files), QByteArray("copy\n") + urls.front().toEncoded());
+    QCOMPARE(parseFinderPathOutput("ignored\n  /Users/test/My Folder\r\n/other\n"), std::string("/Users/test/My Folder"));
+    QVERIFY(parseFinderPathOutput("ignored\nrelative/path\n").empty());
+  }
+
+  void dropExecutor_resolveDropTargetAndUniquePathCrossOs()
+  {
+    using deskflow::InProcessDropExecutor;
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const auto fallback = temp.path().toStdString();
+    const QByteArray forced = temp.filePath(QStringLiteral("forced")).toUtf8();
+    const char envName[] = "DESKSEND_DEFAULT_DROP_DIR";
+    const bool hadOverride = qEnvironmentVariableIsSet(envName);
+    const auto previousOverride = qgetenv(envName);
+
+    qputenv(envName, forced);
+    bool forcedDirect = false;
+    const auto overridden = InProcessDropExecutor::resolveDropTargetDirectory(0, 0, fallback, &forcedDirect);
+#if !defined(_WIN32)
+    qunsetenv(envName);
+    bool isDirectFolder = false;
+    const auto resolved = InProcessDropExecutor::resolveDropTargetDirectory(0, 0, fallback, &isDirectFolder);
+#endif
+    if (hadOverride) {
+      qputenv(envName, previousOverride);
+    } else {
+      qunsetenv(envName);
+    }
+
+    QCOMPARE(overridden, forced.toStdString());
+    QVERIFY(forcedDirect);
+#if !defined(_WIN32)
+    QCOMPARE(isDirectFolder, resolved != fallback);
+#endif
+
+    const auto checkCollision = [&](const QString &name, const QString &numberedName) {
+      const auto relative = name.toStdString();
+      const auto original = temp.filePath(name);
+      QCOMPARE(QString::fromStdString(InProcessDropExecutor::uniqueDestinationPath(fallback, relative)), original);
+      QFile file(original);
+      QVERIFY(file.open(QIODevice::WriteOnly));
+      file.close();
+      QCOMPARE(
+          QString::fromStdString(InProcessDropExecutor::uniqueDestinationPath(fallback, relative)),
+          temp.filePath(numberedName)
+      );
+    };
+    checkCollision(QStringLiteral("path/to/.gitignore"), QStringLiteral("path/to/.gitignore (1)"));
+    checkCollision(QStringLiteral("path/to/report.txt"), QStringLiteral("path/to/report (1).txt"));
   }
 
   void dropAgentIpc_roundTripsAllCommandsAndEvents()
@@ -1508,6 +1572,227 @@ private Q_SLOTS:
     QCOMPARE(host.results[1].second, true);
     QVERIFY(!executor.hasActiveTransfers());
   }
+
+  void dragProtocol_roundTripsDirectSendMessagesAndTargets()
+  {
+    using namespace deskflow;
+    const std::vector<std::string> expectedTargets{"__SERVER__", "linux-box", "macbook"};
+    auto targets = expectedTargets;
+    const auto empty = serializeTransferTargetsMessage({});
+    QCOMPARE(empty, std::string("DESKSEND_TRANSFER_TARGETS:"));
+    QVERIFY(parseTransferTargetsMessage(empty, targets));
+    QVERIFY(targets.empty());
+    const auto message = serializeTransferTargetsMessage(expectedTargets);
+    QCOMPARE(message, std::string("DESKSEND_TRANSFER_TARGETS:__SERVER__,linux-box,macbook"));
+    QVERIFY(parseTransferTargetsMessage(message, targets));
+    QCOMPARE(targets, expectedTargets);
+    QVERIFY(serializeTransferTargetsMessage({"a,b"}).empty());
+    QVERIFY(serializeTransferTargetsMessage({"a\nb"}).empty());
+    for (const auto *invalid : {
+             "DESKSEND_TRANSFER_TARGETS:a,", "DESKSEND_TRANSFER_TARGETS:,a",
+             "DESKSEND_TRANSFER_TARGETS:a\nb", "DESKSEND_OTHER:a"
+         }) {
+      QVERIFY(!parseTransferTargetsMessage(invalid, targets));
+    }
+
+    std::string requestId;
+    std::string target;
+    for (const std::string peer : {"__SERVER__", "linux-box"}) {
+      const auto request = serializeDirectSendRequestMessage("req-1", peer);
+      QCOMPARE(request, "DESKSEND_DIRECT_SEND_REQ:req-1:" + peer);
+      QVERIFY(parseDirectSendRequestMessage(request, requestId, target));
+      QCOMPARE(requestId, std::string("req-1"));
+      QCOMPARE(target, peer);
+    }
+    QVERIFY(serializeDirectSendRequestMessage("req:1", "linux-box").empty());
+    QVERIFY(!parseDirectSendRequestMessage("DESKSEND_DIRECT_SEND_REQ:req-1", requestId, target));
+
+    std::string token;
+    for (const std::string ip : {"10.0.0.3", "fe80::1"}) {
+      const auto grant = serializeDirectSendGrantMessage("req-1", "secret", ip);
+      QCOMPARE(grant, "DESKSEND_DIRECT_SEND_GRANT:req-1:secret:" + ip);
+      QVERIFY(parseDirectSendGrantMessage(grant, requestId, token, target));
+      QCOMPARE(requestId, std::string("req-1"));
+      QCOMPARE(token, std::string("secret"));
+      QCOMPARE(target, ip);
+      QCOMPARE(redactDragLogPayload(grant), "DESKSEND_DIRECT_SEND_GRANT:req-1:<redacted>:" + ip);
+    }
+
+    const auto cancel = serializeDirectSendCancelMessage("req-2");
+    QCOMPARE(cancel, std::string("DESKSEND_DIRECT_SEND_CANCEL:req-2"));
+    QVERIFY(parseDirectSendCancelMessage(cancel, requestId));
+    QCOMPARE(requestId, std::string("req-2"));
+    for (const std::string id : {"", "req:2", "req\n2"}) {
+      QVERIFY(serializeDirectSendCancelMessage(id).empty());
+      QVERIFY(!parseDirectSendCancelMessage("DESKSEND_DIRECT_SEND_CANCEL:" + id, requestId));
+    }
+    QVERIFY(!parseDirectSendCancelMessage("DESKSEND_DIRECT_SEND_REQ:req-2", requestId));
+  }
+
+  void fileDropBridge_directSendCorrelatesByRequestIdAcrossAllRoutes()
+  {
+    using namespace deskflow;
+    using Command = DropAgentCommandType;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QFile first(dir.filePath(QStringLiteral("direct.txt")));
+    QFile second(dir.filePath(QStringLiteral("other.txt")));
+    for (auto *file : {&first, &second}) {
+      QVERIFY(file->open(QIODevice::WriteOnly));
+      QCOMPARE(file->write("data"), qint64{4});
+      file->close();
+    }
+    const std::vector<std::string> files{first.fileName().toStdString()};
+    const std::vector<std::string> otherFiles{second.fileName().toStdString()};
+
+    auto &bridge = FileDropBridge::instance();
+    MockDragClientProxy clientA("clientA", "10.0.0.2:24800");
+    MockDragClientProxy clientB("clientB", "10.0.0.3:24800");
+    std::vector<std::pair<uint32_t, std::string>> uplink;
+    const auto reset = [](FileDropBridge *bridge) {
+      bridge->resetAllStateForTesting();
+      bridge->setDropExecutorForTesting(
+          std::make_unique<RecordingDropExecutor>(std::make_shared<RecordedExecutorState>())
+      );
+    };
+    const std::unique_ptr<FileDropBridge, decltype(reset)> cleanup(&bridge, reset);
+    const auto useExecutor = [&](const auto &state) {
+      bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(state));
+      state->clearCommands();
+    };
+    const auto checkSend = [](const RecordedExecutorState &state, const std::string &ip,
+                              const std::string &token, const std::vector<std::string> &expectedFiles) {
+      QCOMPARE(state.countCommands(Command::SendFiles), size_t{1});
+      const auto *send = state.findCommand(Command::SendFiles);
+      QVERIFY(send);
+      QCOMPARE(send->text, ip);
+      QCOMPARE(send->authToken, token);
+      QCOMPARE(send->items, expectedFiles);
+    };
+
+    // 服务端直发给 Client A。
+    bridge.resetAllStateForTesting();
+    const auto serverState = std::make_shared<RecordedExecutorState>();
+    useExecutor(serverState);
+    bridge.setServerClientProxies({&clientA});
+    QCOMPARE(bridge.availableTransferTargets(), std::vector<std::string>{"clientA"});
+    QVERIFY(bridge.requestDirectFileSend("clientA", files));
+    QCOMPARE(clientA.dragMessages.size(), size_t{2});
+    QCOMPARE(clientA.dragMessages[0].first, uint32_t{1});
+    QCOMPARE(clientA.dragMessages[1].first, uint32_t{1});
+    std::string token;
+    QVERIFY(parseDragStartMessage(clientA.dragMessages[0].second, token));
+    QCOMPARE(clientA.dragMessages[1].second, "DESKSEND_DROP:-100000,-100000:" + FileDropBridge::computeTokenTag(token));
+    checkSend(*serverState, "10.0.0.2", token, files);
+
+    const auto startClient = [&](const auto &clientState) {
+      bridge.resetAllStateForTesting();
+      clientA.dragMessages.clear();
+      clientB.dragMessages.clear();
+      uplink.clear();
+      useExecutor(clientState);
+      bridge.startClientReceiver("10.0.0.1");
+      bridge.setClientDragMessageSender([&](uint32_t count, const std::string &payload) {
+        uplink.emplace_back(count, payload);
+      });
+    };
+    const auto relayRequest = [&](size_t index) {
+      const auto &[count, payload] = uplink.at(index);
+      bridge.onServerReceiveClientDragInfo(&clientA, static_cast<uint16_t>(count), payload);
+    };
+
+    // Client A 直发给服务端，再直发给 Client B。
+    for (const std::string peer : {"__SERVER__", "clientB"}) {
+      const auto clientState = std::make_shared<RecordedExecutorState>();
+      const auto receiverState = std::make_shared<RecordedExecutorState>();
+      startClient(clientState);
+      bridge.setServerClientProxies({&clientA, &clientB});
+      QVERIFY(bridge.requestDirectFileSend(peer, files));
+      QCOMPARE(uplink.size(), size_t{1});
+      QCOMPARE(uplink[0].first, uint32_t{1});
+      std::string requestId;
+      std::string targetPeer;
+      QVERIFY(parseDirectSendRequestMessage(uplink[0].second, requestId, targetPeer));
+      QCOMPARE(targetPeer, peer);
+
+      useExecutor(receiverState);
+      relayRequest(0);
+      QCOMPARE(clientA.dragMessages.size(), size_t{1});
+      QCOMPARE(clientA.dragMessages[0].first, uint32_t{1});
+      std::string grantedId;
+      std::string grantedTarget;
+      const auto &grant = clientA.dragMessages[0].second;
+      QVERIFY(parseDirectSendGrantMessage(grant, grantedId, token, grantedTarget));
+      QCOMPARE(grantedId, requestId);
+      const auto tag = FileDropBridge::computeTokenTag(token);
+
+      if (peer == "__SERVER__") {
+        QCOMPARE(grantedTarget, std::string("__SERVER__"));
+        const auto *active = receiverState->findCommand(Command::SetDragActive);
+        const auto *auth = receiverState->findCommand(Command::ReceiverAuthCommand);
+        const auto *preparing = receiverState->findCommand(Command::BeginPreparing);
+        const auto *drop = receiverState->findCommand(Command::DropTarget);
+        QVERIFY(active);
+        QVERIFY(active->dragActive);
+        QVERIFY(auth);
+        QCOMPARE(auth->text, "GRANT " + token);
+        QVERIFY(preparing);
+        QCOMPARE(preparing->fileCount, uint32_t{1});
+        QVERIFY(drop);
+        QCOMPARE(drop->fileCount, uint32_t{1});
+        QCOMPARE(drop->x, kDirectSendDropCoord);
+        QCOMPARE(drop->y, kDirectSendDropCoord);
+        QCOMPARE(drop->text, tag);
+      } else {
+        QCOMPARE(grantedTarget, std::string("10.0.0.3"));
+        QCOMPARE(clientB.dragMessages.size(), size_t{2});
+        QCOMPARE(clientB.dragMessages[0].first, uint32_t{1});
+        QCOMPARE(clientB.dragMessages[1].first, uint32_t{1});
+        QCOMPARE(clientB.dragMessages[0].second, "DESKSEND_START:" + token);
+        QCOMPARE(clientB.dragMessages[1].second, "DESKSEND_DROP:-100000,-100000:" + tag);
+      }
+
+      useExecutor(clientState);
+      bridge.onClientReceiveDragInfo(1, grant);
+      checkSend(*clientState, peer == "__SERVER__" ? "10.0.0.1" : "10.0.0.3", token, files);
+    }
+
+    // 取消未知目标的请求后，另一条请求仍能发送自己的文件。
+    const auto clientState = std::make_shared<RecordedExecutorState>();
+    const auto receiverState = std::make_shared<RecordedExecutorState>();
+    startClient(clientState);
+    bridge.setServerClientProxies({&clientA, &clientB});
+    QVERIFY(bridge.requestDirectFileSend("unknown", files));
+    QVERIFY(bridge.requestDirectFileSend("clientB", otherFiles));
+    QCOMPARE(uplink.size(), size_t{2});
+    std::string cancelledId;
+    std::string survivingId;
+    std::string targetPeer;
+    QVERIFY(parseDirectSendRequestMessage(uplink[0].second, cancelledId, targetPeer));
+    QCOMPARE(targetPeer, std::string("unknown"));
+    QVERIFY(parseDirectSendRequestMessage(uplink[1].second, survivingId, targetPeer));
+    QCOMPARE(targetPeer, std::string("clientB"));
+    QVERIFY(cancelledId != survivingId);
+
+    useExecutor(receiverState);
+    relayRequest(0);
+    relayRequest(1);
+    QCOMPARE(clientA.dragMessages.size(), size_t{2});
+    QCOMPARE(clientA.dragMessages[0].second, "DESKSEND_DIRECT_SEND_CANCEL:" + cancelledId);
+    std::string grantedId;
+    std::string grantedTarget;
+    QVERIFY(parseDirectSendGrantMessage(clientA.dragMessages[1].second, grantedId, token, grantedTarget));
+    QCOMPARE(grantedId, survivingId);
+    QCOMPARE(grantedTarget, std::string("10.0.0.3"));
+
+    useExecutor(clientState);
+    bridge.onClientReceiveDragInfo(1, clientA.dragMessages[0].second);
+    bridge.onClientReceiveDragInfo(1, serializeDirectSendGrantMessage(cancelledId, "stale-token", "10.0.0.3"));
+    QCOMPARE(clientState->countCommands(Command::SendFiles), size_t{0});
+    bridge.onClientReceiveDragInfo(1, clientA.dragMessages[1].second);
+    checkSend(*clientState, "10.0.0.3", token, otherFiles);
+  }
+
 };
 
 namespace {

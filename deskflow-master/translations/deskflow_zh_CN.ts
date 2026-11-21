@@ -483,6 +483,14 @@
         <source>File receive completed</source>
         <translation>文件接收完成</translation>
     </message>
+    <message>
+        <source>Receiver failed to start: unable to launch localsend-cli</source>
+        <translation>接收端启动失败：无法启动 localsend-cli</translation>
+    </message>
+    <message>
+        <source>Send failed: unable to launch localsend-cli</source>
+        <translation>发送失败：无法启动 localsend-cli</translation>
+    </message>
 </context>
 <context>
     <name>FingerprintDialog</name>
@@ -918,6 +926,30 @@ Continue?</source>
 Are you sure you want to continue?</source>
         <translation>当前仍有文件正在传输，停止或退出将中断传输。
 确定要继续吗？</translation>
+    </message>
+    <message>
+        <source>Send Files...</source>
+        <translation>发送文件...</translation>
+    </message>
+    <message>
+        <source>Send Files</source>
+        <translation>发送文件</translation>
+    </message>
+    <message>
+        <source>Select files to send</source>
+        <translation>选择要发送的文件</translation>
+    </message>
+    <message>
+        <source>Choose destination computer:</source>
+        <translation>选择接收文件的电脑：</translation>
+    </message>
+    <message>
+        <source>Host computer</source>
+        <translation>主机电脑</translation>
+    </message>
+    <message>
+        <source>Connect to another computer before sending files.</source>
+        <translation>请先连接到另一台电脑后再发送文件。</translation>
     </message>
 </context>
 <context>
