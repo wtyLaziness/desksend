@@ -12,7 +12,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      DEPS: ${{ runner.temp }}/linux-deps
       LIBEI_COMMIT: 8a46bf3d4b6af7f25a61be53386cf618218114ef
       LIBPORTAL_COMMIT: c23024018c8eb076549a1517fcb2d7f80d3e2ed5
     steps:
@@ -32,10 +31,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/linux-deps
-          key: linux-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-${{ env.LIBEI_COMMIT }}-${{ env.LIBPORTAL_COMMIT }}
+          key: linux-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.LIBEI_COMMIT }}-${{ env.LIBPORTAL_COMMIT }}
       - name: Build and install libei and libportal
         if: steps.linux-deps.outputs.cache-hit != 'true'
         run: |
+          DEPS="$RUNNER_TEMP/linux-deps"
           git init "$RUNNER_TEMP/libei"
           git -C "$RUNNER_TEMP/libei" fetch --depth=1 https://gitlab.freedesktop.org/libinput/libei "$LIBEI_COMMIT"
           git -C "$RUNNER_TEMP/libei" checkout --detach FETCH_HEAD
@@ -57,6 +57,7 @@ jobs:
           meson install -C "$RUNNER_TEMP/libportal/build"
       - name: Export Linux dependency paths
         run: |
+          DEPS="$RUNNER_TEMP/linux-deps"
           printf '%s\n' \
             "PKG_CONFIG_PATH=$DEPS/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
             "LD_LIBRARY_PATH=$DEPS/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
