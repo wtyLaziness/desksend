@@ -143,7 +143,7 @@ jobs:
       - name: Build DeskSend
         run: cmake --build deskflow-master/build
       - name: Run unit tests
-        run: QT_QPA_PLATFORM=offscreen ctest --test-dir deskflow-master/build --output-on-failure
+        run: QT_QPA_PLATFORM=offscreen ctest --test-dir deskflow-master/build/src/unittests --no-tests=error --output-on-failure
       - name: Install and verify staged files
         run: |
           cmake --install deskflow-master/build --prefix "$GITHUB_WORKSPACE/stage"
@@ -153,6 +153,7 @@ jobs:
             test -x "$bundle/MacOS/$executable"
           done
           test -f "$bundle/Resources/LocalSend-LICENSE.txt"
+          codesign --verify --deep --strict "$GITHUB_WORKSPACE/stage/DeskSend.app"
       - name: Archive staged installation
         run: tar -czf DeskSend-macos-arm64.tar.gz -C "$GITHUB_WORKSPACE/stage" DeskSend.app
       - uses: actions/upload-artifact@v4

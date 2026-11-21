@@ -188,7 +188,7 @@ jobs:
       - name: Build DeskSend
         run: cmake --build deskflow-master/build
       - name: Run unit tests
-        run: xvfb-run -a ctest --test-dir deskflow-master/build --output-on-failure
+        run: xvfb-run -a ctest --test-dir deskflow-master/build/src/unittests --no-tests=error --output-on-failure
       - name: Install and verify staged files
         run: |
           cmake --install deskflow-master/build --prefix "$GITHUB_WORKSPACE/stage"
