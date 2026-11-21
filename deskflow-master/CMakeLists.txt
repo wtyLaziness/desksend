@@ -179,6 +179,31 @@ if(UNIX AND NOT APPLE)
     find_package(Qt6 ${REQUIRED_QT_VERSION} REQUIRED COMPONENTS DBus)
 endif()
 
+# Qt 6.8 can link AGL even when the macOS SDK no longer ships it (QTBUG-137687).
+if(APPLE)
+  set(_desksend_sdk "${CMAKE_OSX_SYSROOT}")
+  if(NOT _desksend_sdk)
+    execute_process(
+      COMMAND xcrun --show-sdk-path
+      OUTPUT_VARIABLE _desksend_sdk
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+    )
+  endif()
+  if(_desksend_sdk AND NOT EXISTS "${_desksend_sdk}/System/Library/Frameworks/AGL.framework")
+    foreach(_target IN ITEMS WrapOpenGL::WrapOpenGL Qt6::Gui)
+      if(TARGET "${_target}")
+        get_target_property(_libs "${_target}" INTERFACE_LINK_LIBRARIES)
+        if(_libs)
+          string(REGEX REPLACE "(^|;)-framework;AGL(;|$)" "\\1" _libs "${_libs}")
+          list(FILTER _libs EXCLUDE REGEX [=[^("-framework +AGL"|-framework[; ]+AGL|.*/AGL(\.framework)?)$]=])
+          set_property(TARGET "${_target}" PROPERTY INTERFACE_LINK_LIBRARIES "${_libs}")
+        endif()
+      endif()
+    endforeach()
+  endif()
+endif()
+
 # Define the location of Qt deployment tool
 if(WIN32)
   if (CMAKE_BUILD_TYPE STREQUAL "Debug" AND VCPKG_QT)

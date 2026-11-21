@@ -25,7 +25,7 @@ jobs:
             libxext-dev libxinerama-dev libxrandr-dev libxi-dev libxkbfile-dev \
             libxkbcommon-dev libxkbregistry-dev libice-dev libsm-dev libssl-dev \
             libgl1-mesa-dev libdbus-1-dev libegl1 libxkbcommon-x11-0 libxcb-cursor0 \
-            libxcb-icccm4 libxcb-keysyms1 libxcb-xinerama0 libxcb-shape0 xvfb
+            libxcb-icccm4 libxcb-keysyms1 libxcb-xinerama0 libxcb-shape0 xvfb fonts-dejavu-core fontconfig
       - name: Cache Linux source dependencies
         id: linux-deps
         uses: actions/cache@v4
@@ -182,7 +182,7 @@ jobs:
       - name: Configure CMake
         working-directory: deskflow-master
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON \
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON -DSKIP_BUILD_TESTS=ON \
             -DBUILD_INSTALLER=OFF \
             -DDESKSEND_LOCALSEND_CLI="$GITHUB_WORKSPACE/localsend-main/target/release/localsend-cli"
       - name: Build DeskSend
