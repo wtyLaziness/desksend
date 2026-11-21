@@ -55,12 +55,6 @@ jobs:
             -Dintrospection=false -Dbackend-qt6=disabled
           meson compile -C "$RUNNER_TEMP/libportal/build"
           meson install -C "$RUNNER_TEMP/libportal/build"
-      - name: Export Linux dependency paths
-        run: |
-          DEPS="$RUNNER_TEMP/linux-deps"
-          printf '%s\n' \
-            "PKG_CONFIG_PATH=$DEPS/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
-            "LD_LIBRARY_PATH=$DEPS/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
       - name: Install Rust toolchain
         working-directory: localsend-main
         run: rustup toolchain install
@@ -177,6 +171,14 @@ jobs:
         with:
           version: "6.8.*"
           cache: true
+      - name: Export Linux dependency paths
+        run: |
+          DEPS="$RUNNER_TEMP/linux-deps"
+          test -f "$DEPS/lib/pkgconfig/libei-1.0.pc"
+          test -f "$DEPS/lib/pkgconfig/libportal.pc"
+          printf '%s\n' \
+            "PKG_CONFIG_PATH=$DEPS/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+            "LD_LIBRARY_PATH=$DEPS/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
       - name: Configure CMake
         working-directory: deskflow-master
         run: |
