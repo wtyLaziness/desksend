@@ -37,7 +37,7 @@ class IpcServerTests : public QObject
 private Q_SLOTS:
   void keepsPartialConfigCommandUntilFinalChunk()
   {
-    const auto name = QStringLiteral("desksend-test-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    const auto name = QStringLiteral("ds-ipc-%1").arg(QUuid::createUuid().toString(QUuid::Id128).left(12));
     TestServer server(name);
     server.listen();
 
