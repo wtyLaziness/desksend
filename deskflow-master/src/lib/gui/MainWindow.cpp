@@ -500,6 +500,7 @@ void MainWindow::openGetNewVersionUrl()
     saveSettings();
     m_saveOnExit = false;
     stopCore();
+    m_coreProcess.stopServiceForExit();
     close();
   });
   dialog.exec();

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
 // SPDX-FileCopyrightText: (C) 2012 Synergy App Ltd
 #include "VersionChecker.h"
+#include "common/Settings.h"
 #include "common/UrlConstants.h"
 #include "common/VersionInfo.h"
 #include <QDateTime>
@@ -14,15 +15,36 @@
 #include <QVersionNumber>
 #include <QVariant>
 
-VersionChecker::VersionChecker(QObject *parent) : QObject(parent), m_network(new QNetworkAccessManager(this))
+VersionChecker::VersionChecker(QObject *parent)
+    : QObject(parent),
+      m_network(new QNetworkAccessManager(this)),
+      m_packageKind(currentPackageKind())
 {
   connect(m_network, &QNetworkAccessManager::finished, this, &VersionChecker::replyFinished);
+}
+VersionChecker::PackageKind VersionChecker::currentPackageKind()
+{
+  return Settings::isPortableMode() ? PackageKind::PortableZip : PackageKind::MsiInstaller;
+}
+void VersionChecker::setPackageKind(PackageKind kind)
+{
+  if (m_packageKind == kind)
+    return;
+  m_packageKind = kind;
+  m_etag.clear();
+  m_cachedRelease = {};
+  m_hasCachedRelease = false;
+}
+QString VersionChecker::expectedAssetName(const QString &version, PackageKind kind)
+{
+  return (kind == PackageKind::MsiInstaller) ? QStringLiteral("DeskSend-%1-windows-x64.msi").arg(version)
+                                             : QStringLiteral("DeskSend-%1-windows-x64.zip").arg(version);
 }
 bool VersionChecker::isNewer(const QString &current, const QString &candidate)
 {
   return QVersionNumber::compare(QVersionNumber::fromString(candidate), QVersionNumber::fromString(current)) > 0;
 }
-bool VersionChecker::parseRelease(const QByteArray &json, Release &release, QString &error)
+bool VersionChecker::parseRelease(const QByteArray &json, Release &release, QString &error, PackageKind kind)
 {
   release = {};
   const auto document = QJsonDocument::fromJson(json);
@@ -35,7 +57,7 @@ bool VersionChecker::parseRelease(const QByteArray &json, Release &release, QStr
     return false;
   }
   const auto version = match.captured(1);
-  const auto name = QStringLiteral("DeskSend-%1-windows-x64.zip").arg(version);
+  const auto name = expectedAssetName(version, kind);
   const QUrl expected(QStringLiteral("https://github.com/wtyLaziness/desksend-releases/releases/download/%1/%2").arg(tag, name));
   for (const auto &entry : object.value("assets").toArray()) {
     const auto asset = entry.toObject();
@@ -142,13 +164,15 @@ bool VersionChecker::parseLatestTagUrl(const QUrl &location, QString &version)
   return true;
 }
 
-bool VersionChecker::parseSha256Sums(const QByteArray &text, const QString &version, QByteArray &sha256)
+bool VersionChecker::parseSha256Sums(
+    const QByteArray &text, const QString &version, QByteArray &sha256, PackageKind kind
+)
 {
   sha256.clear();
   if (version.isEmpty())
     return false;
 
-  const QString expectedName = QStringLiteral("DeskSend-%1-windows-x64.zip").arg(version);
+  const QString expectedName = expectedAssetName(version, kind);
   QString content = QString::fromUtf8(text);
   if (content.startsWith(QChar(0xFEFF)))
     content.remove(0, 1);
@@ -298,7 +322,7 @@ void VersionChecker::handlePrimaryReply(QNetworkReply *reply, int statusCode)
 
   Release parsed;
   QString error;
-  if (!parseRelease(reply->readAll(), parsed, error)) {
+  if (!parseRelease(reply->readAll(), parsed, error, m_packageKind)) {
     finishFailure(error);
     return;
   }
@@ -341,9 +365,7 @@ void VersionChecker::handleFallbackTagReply(QNetworkReply *reply, int statusCode
     return;
   }
 
-  m_pendingDownload = releaseAssetUrl(
-      m_pendingVersion, QStringLiteral("DeskSend-%1-windows-x64.zip").arg(m_pendingVersion)
-  );
+  m_pendingDownload = releaseAssetUrl(m_pendingVersion, expectedAssetName(m_pendingVersion, m_packageKind));
   startFallbackSumsGet();
 }
 
@@ -358,7 +380,7 @@ void VersionChecker::handleFallbackSumsReply(QNetworkReply *reply, int statusCod
   }
 
   const QByteArray payload = reply->readAll();
-  if (payload.size() > 64 * 1024 || !parseSha256Sums(payload, m_pendingVersion, m_pendingSha256)) {
+  if (payload.size() > 64 * 1024 || !parseSha256Sums(payload, m_pendingVersion, m_pendingSha256, m_packageKind)) {
     finishFailure(tr("Invalid update package URL, size, or SHA-256 digest."));
     return;
   }

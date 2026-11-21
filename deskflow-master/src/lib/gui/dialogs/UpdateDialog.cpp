@@ -45,10 +45,12 @@ UpdateDialog::UpdateDialog(QWidget *parent)
   connect(m_action, &QPushButton::clicked, this, [this]() { m_ready ? install() : download(); });
   connect(&m_checker, &VersionChecker::checkFailed, this, &UpdateDialog::fail);
   connect(&m_checker, &VersionChecker::checked, this, [this](bool available) {
+    const QString availableText =
+        (m_checker.packageKind() == VersionChecker::PackageKind::MsiInstaller)
+            ? tr("DeskSend %1 is available (MSI installer %2 MiB).")
+            : tr("DeskSend %1 is available (full package %2 MiB).");
     m_status->setText(
-        available ? tr("DeskSend %1 is available (full package %2 MiB).")
-                        .arg(m_checker.release().version)
-                        .arg(m_checker.release().size / 1048576.0, 0, 'f', 1)
+        available ? availableText.arg(m_checker.release().version).arg(m_checker.release().size / 1048576.0, 0, 'f', 1)
                   : tr("You are running the latest official DeskSend release.")
     );
     m_action->setEnabled(available);
@@ -125,7 +127,9 @@ void UpdateDialog::download()
     fail(tr("Unable to create temporary update directory."));
     return;
   }
-  m_archive = m_directory + "/update.zip";
+  m_archive = m_directory +
+              ((m_checker.packageKind() == VersionChecker::PackageKind::MsiInstaller) ? QStringLiteral("/update.msi")
+                                                                                      : QStringLiteral("/update.zip"));
   m_file = std::make_unique<QSaveFile>(m_archive);
   if (!m_file->open(QIODevice::WriteOnly)) {
     const QString openErr = m_file->errorString();
@@ -197,14 +201,22 @@ void UpdateDialog::install()
   if (m_confirmInstall && !m_confirmInstall()) {
     return;
   }
-  if (!Settings::isPortableMode() || Settings::value(Settings::Core::ProcessMode).value<Settings::ProcessMode>() != Settings::ProcessMode::Desktop) {
-    fail(tr("Built-in updates apply to the portable package. Please download the full archive from the DeskSend releases page."));
-    return;
-  }
-  QTemporaryFile probe(QCoreApplication::applicationDirPath() + "/.desksend-write-XXXXXX");
-  if (!probe.open()) {
-    fail(tr("The application directory is not writable. Please extract the full package to a writable folder."));
-    return;
+  const bool useMsi = (m_checker.packageKind() == VersionChecker::PackageKind::MsiInstaller);
+  if (useMsi) {
+    if (Settings::isPortableMode()) {
+      fail(tr("Unable to prepare updater script."));
+      return;
+    }
+  } else {
+    if (!Settings::isPortableMode() || Settings::value(Settings::Core::ProcessMode).value<Settings::ProcessMode>() != Settings::ProcessMode::Desktop) {
+      fail(tr("Built-in updates apply to the portable package. Please download the full archive from the DeskSend releases page."));
+      return;
+    }
+    QTemporaryFile probe(QCoreApplication::applicationDirPath() + "/.desksend-write-XXXXXX");
+    if (!probe.open()) {
+      fail(tr("The application directory is not writable. Please extract the full package to a writable folder."));
+      return;
+    }
   }
   const auto helper = m_directory + "/Apply-DeskSendUpdate.ps1";
   if (!QFile::copy(":/updates/Apply-DeskSendUpdate.ps1", helper)) {
@@ -216,6 +228,9 @@ void UpdateDialog::install()
                         "-InstallDir", QCoreApplication::applicationDirPath(), "-Archive", m_archive,
                         "-ExpectedHash", QString::fromLatin1(m_checker.release().sha256),
                         "-GuiProcessId", QString::number(QCoreApplication::applicationPid())};
+  if (useMsi) {
+    arguments.append(QStringLiteral("-Msi"));
+  }
   if (!QProcess::startDetached(powershell, arguments, m_directory)) {
     fail(tr("Unable to start updater; you can continue using the current version."));
     return;

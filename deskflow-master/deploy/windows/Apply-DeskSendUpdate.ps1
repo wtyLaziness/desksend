@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory)][string]$Archive,
     [Parameter(Mandatory)][ValidatePattern('^[a-fA-F0-9]{64}$')][string]$ExpectedHash,
     [int]$GuiProcessId = 0,
-    [switch]$NoRestart
+    [switch]$NoRestart,
+    [switch]$Msi
 )
 $ErrorActionPreference = 'Stop'
 $installRoot = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
@@ -34,6 +35,43 @@ function Start-DeskSend {
 try {
     if (!(Test-Path -LiteralPath (Join-Path $installRoot 'DeskSend.exe') -PathType Leaf)) { throw '找不到原有 DeskSend 程序。' }
     if ((Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash -ine $ExpectedHash) { throw '更新包 SHA-256 校验失败。' }
+    if ($Msi) {
+        if ([IO.Path]::GetExtension($Archive) -ine '.msi') { throw 'MSI 更新包扩展名无效。' }
+        if ($GuiProcessId -gt 0) {
+            $gui = Get-Process -Id $GuiProcessId -ErrorAction SilentlyContinue
+            if ($gui -and !$gui.WaitForExit(30000)) { throw 'DeskSend 未退出，更新已取消。' }
+        }
+        if (!$NoRestart) {
+            $cimPaths = @{}
+            foreach ($cim in @(Get-CimInstance -ClassName Win32_Process -Filter "Name='deskflow-core.exe' OR Name='deskflow-drop-agent.exe' OR Name='localsend-cli.exe'" -ErrorAction SilentlyContinue)) {
+                if ($cim.ExecutablePath) { $cimPaths[[int]$cim.ProcessId] = $cim.ExecutablePath }
+            }
+            foreach ($process in @(Get-Process -Name 'deskflow-core','deskflow-drop-agent','localsend-cli' -ErrorAction SilentlyContinue)) {
+                $procPath = $null
+                try { $procPath = $process.Path } catch { $procPath = $null }
+                if (!$procPath) { $procPath = $cimPaths[$process.Id] }
+                if ($procPath -and ([IO.Path]::GetDirectoryName($procPath).TrimEnd('\') -ieq $installRoot.TrimEnd('\'))) {
+                    try {
+                        Stop-Process -Id $process.Id -Force -ErrorAction Stop
+                        $null = $process.WaitForExit(10000)
+                    } catch {
+                        Write-UpdateLog ('WARN: 跳过由 MSI 服务控制接管的进程：' + $process.ProcessName + ' (' + $process.Id + ')')
+                    }
+                }
+            }
+        }
+        $stopped = $true
+        $msiLogPath = Join-Path $workRoot 'msi-install.log'
+        $msiArgs = "/i `"$Archive`" INSTALL_ROOT=`"$installRoot`" /passive /norestart /l*v `"$msiLogPath`""
+        $msiProc = Start-Process -FilePath 'msiexec.exe' -ArgumentList $msiArgs -WindowStyle Normal -Wait -PassThru
+        if ($msiProc.ExitCode -ne 0 -and $msiProc.ExitCode -ne 3010) {
+            throw ('MSI 更新安装失败（退出码 ' + $msiProc.ExitCode + '），详见 ' + $msiLogPath)
+        }
+        Write-UpdateLog ('SUCCESS: MSI exit=' + $msiProc.ExitCode + '; msiLog=' + $msiLogPath)
+        Start-DeskSend
+        Write-Output ('UPDATE_SUCCESS: ' + $logPath)
+        exit 0
+    }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $stageRoot = Join-Path $workRoot 'stage'
     $null = New-Item -ItemType Directory -Path $stageRoot
@@ -102,10 +140,10 @@ try {
     # 只结束当前安装目录的后台组件，不影响其他目录中的程序。
     if (!$NoRestart) {
         $cimPaths = @{}
-        foreach ($cim in @(Get-CimInstance -ClassName Win32_Process -Filter "Name='deskflow-core.exe' OR Name='localsend-cli.exe'" -ErrorAction SilentlyContinue)) {
+        foreach ($cim in @(Get-CimInstance -ClassName Win32_Process -Filter "Name='deskflow-core.exe' OR Name='deskflow-drop-agent.exe' OR Name='localsend-cli.exe'" -ErrorAction SilentlyContinue)) {
             if ($cim.ExecutablePath) { $cimPaths[[int]$cim.ProcessId] = $cim.ExecutablePath }
         }
-        foreach ($process in @(Get-Process -Name 'deskflow-core','localsend-cli' -ErrorAction SilentlyContinue)) {
+        foreach ($process in @(Get-Process -Name 'deskflow-core','deskflow-drop-agent','localsend-cli' -ErrorAction SilentlyContinue)) {
             $procPath = $null
             try { $procPath = $process.Path } catch { $procPath = $null }
             if (!$procPath) { $procPath = $cimPaths[$process.Id] }

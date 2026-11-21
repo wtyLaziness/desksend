@@ -9,6 +9,7 @@ class VersionChecker : public QObject
 {
   Q_OBJECT
 public:
+  enum class PackageKind { PortableZip, MsiInstaller };
   struct Release {
     QString version;
     QUrl download;
@@ -17,14 +18,22 @@ public:
   };
   explicit VersionChecker(QObject *parent = nullptr);
   void checkLatest();
-  static bool parseRelease(const QByteArray &json, Release &release, QString &error);
+  PackageKind packageKind() const { return m_packageKind; }
+  void setPackageKind(PackageKind kind);
+  static PackageKind currentPackageKind();
+  static QString expectedAssetName(const QString &version, PackageKind kind = PackageKind::PortableZip);
+  static bool parseRelease(
+      const QByteArray &json, Release &release, QString &error, PackageKind kind = PackageKind::PortableZip
+  );
   static bool isNewer(const QString &current, const QString &candidate);
   static QString formatHttpFailure(
       int statusCode, const QByteArray &rateLimitRemaining, const QByteArray &rateLimitResetEpoch,
       const QString &networkError
   );
   static bool parseLatestTagUrl(const QUrl &location, QString &version);
-  static bool parseSha256Sums(const QByteArray &text, const QString &version, QByteArray &sha256);
+  static bool parseSha256Sums(
+      const QByteArray &text, const QString &version, QByteArray &sha256, PackageKind kind = PackageKind::PortableZip
+  );
   static QUrl releaseAssetUrl(const QString &version, const QString &fileName);
   static bool shouldUseFallback(int statusCode);
   const Release &release() const { return m_release; }
@@ -57,6 +66,7 @@ private:
   QUrl m_pendingDownload;
   QByteArray m_pendingSha256;
   QString m_primaryError;
+  PackageKind m_packageKind = PackageKind::PortableZip;
   bool m_hasCachedRelease = false;
   bool m_checking = false;
 };

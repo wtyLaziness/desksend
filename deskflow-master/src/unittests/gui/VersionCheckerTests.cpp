@@ -34,12 +34,21 @@ private Q_SLOTS:
     QJsonObject asset{{"name", "DeskSend-1.1.0-windows-x64.zip"}, {"state", "uploaded"}, {"size", 123456},
                       {"digest", "sha256:" + QString(64, 'a')},
                       {"browser_download_url", "https://github.com/wtyLaziness/desksend-releases/releases/download/v1.1.0/DeskSend-1.1.0-windows-x64.zip"}};
-    QJsonObject release{{"tag_name", "v1.1.0"}, {"draft", false}, {"prerelease", false}, {"assets", QJsonArray{asset}}};
+    QJsonObject msiAsset{{"name", "DeskSend-1.1.0-windows-x64.msi"}, {"state", "uploaded"}, {"size", 234567},
+                         {"digest", "sha256:" + QString(64, 'b')},
+                         {"browser_download_url", "https://github.com/wtyLaziness/desksend-releases/releases/download/v1.1.0/DeskSend-1.1.0-windows-x64.msi"}};
+    QJsonObject release{{"tag_name", "v1.1.0"}, {"draft", false}, {"prerelease", false}, {"assets", QJsonArray{asset, msiAsset}}};
     VersionChecker::Release parsed;
     QString error;
     QVERIFY(VersionChecker::parseRelease(QJsonDocument(release).toJson(), parsed, error));
     QCOMPARE(parsed.version, QString("1.1.0"));
     QCOMPARE(parsed.sha256, QByteArray(64, 'a'));
+    QVERIFY(VersionChecker::parseRelease(
+        QJsonDocument(release).toJson(), parsed, error, VersionChecker::PackageKind::MsiInstaller
+    ));
+    QCOMPARE(parsed.version, QString("1.1.0"));
+    QCOMPARE(parsed.sha256, QByteArray(64, 'b'));
+    QCOMPARE(parsed.size, qint64{234567});
     release["draft"] = true;
     QVERIFY(!VersionChecker::parseRelease(QJsonDocument(release).toJson(), parsed, error));
     QVERIFY(parsed.download.isEmpty());
@@ -125,10 +134,15 @@ private Q_SLOTS:
   {
     const QByteArray validSums =
         "58331eb9531e1c90af40ad6323397bd5ccbc0fc78906917390dd218103af04ee  DeskSend-1.0.2-source.zip\n"
-        "7e3160b0f4ff17d0141a6d925af3e1f847afd041784626761a8b24af0223c700  DeskSend-1.0.2-windows-x64.zip\n";
+        "7e3160b0f4ff17d0141a6d925af3e1f847afd041784626761a8b24af0223c700  DeskSend-1.0.2-windows-x64.zip\n"
+        "266e6342756ee59f55f44d7e897c4e357411b9fa2c03a0bfbf0941a350471b8c  DeskSend-1.0.2-windows-x64.msi\n";
     QByteArray sha256;
     QVERIFY(VersionChecker::parseSha256Sums(validSums, QStringLiteral("1.0.2"), sha256));
     QCOMPARE(sha256, QByteArray("7e3160b0f4ff17d0141a6d925af3e1f847afd041784626761a8b24af0223c700"));
+    QVERIFY(VersionChecker::parseSha256Sums(
+        validSums, QStringLiteral("1.0.2"), sha256, VersionChecker::PackageKind::MsiInstaller
+    ));
+    QCOMPARE(sha256, QByteArray("266e6342756ee59f55f44d7e897c4e357411b9fa2c03a0bfbf0941a350471b8c"));
 
     const QByteArray bomBinaryUpper =
         "\xEF\xBB\xBF"

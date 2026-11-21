@@ -1596,6 +1596,10 @@ Enabling this setting will disable the server config GUI.</source>
         <translation>发现 DeskSend %1，完整更新包 %2 MiB。</translation>
     </message>
     <message>
+        <source>DeskSend %1 is available (MSI installer %2 MiB).</source>
+        <translation>发现 DeskSend %1，MSI 安装包 %2 MiB。</translation>
+    </message>
+    <message>
         <source>You are running the latest official DeskSend release.</source>
         <translation>当前已是最新的 DeskSend 正式版。</translation>
     </message>
