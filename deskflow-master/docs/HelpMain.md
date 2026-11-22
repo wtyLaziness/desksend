@@ -1,5 +1,7 @@
 # DeskSend 帮助
 
+**Linux x64**: 运行基线为 Ubuntu 24.04 x64 与 Qt 6.8，需安装匹配的 OpenSSL 3、libei、libportal 及 X11 运行库。归档不捆绑这些库，其他发行版建议从源码构建。
+
 DeskSend 支持在 Windows、macOS 和 Linux 电脑之间共享键鼠、传输文件，并显示拖拽和传输状态。
 
 ## 连接电脑

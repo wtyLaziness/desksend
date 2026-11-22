@@ -299,6 +299,10 @@ if(NOT WIN32)
   endif()
 endif()
 
+if(EXISTS "${PROJECT_SOURCE_DIR}/../THIRD_PARTY_NOTICES.md")
+    install(FILES "${PROJECT_SOURCE_DIR}/../THIRD_PARTY_NOTICES.md" DESTINATION "${CMAKE_INSTALL_LICENSE_DIR}")
+endif()
+
 if(BUILD_INSTALLER)
     add_subdirectory(deploy)
 endif()

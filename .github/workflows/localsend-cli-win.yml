@@ -9,6 +9,18 @@ on:
       - "localsend-main/Cargo.lock"
       - "localsend-main/rust-toolchain.toml"
       - ".github/workflows/localsend-cli-win.yml"
+      - "scripts/package-release.py"
+      - "deskflow-master/cmake/DeskSendVersion.cmake"
+  pull_request:
+    paths:
+      - "localsend-main/cli/**"
+      - "localsend-main/packages/core/**"
+      - "localsend-main/Cargo.toml"
+      - "localsend-main/Cargo.lock"
+      - "localsend-main/rust-toolchain.toml"
+      - ".github/workflows/localsend-cli-win.yml"
+      - "scripts/package-release.py"
+      - "deskflow-master/cmake/DeskSendVersion.cmake"
 jobs:
   build-and-test:
     runs-on: windows-latest
@@ -24,9 +36,9 @@ jobs:
       - name: Build localsend-cli and run unit tests
         working-directory: localsend-main
         run: |
-          cargo test --release --package localsend --package localsend-cli
+          cargo test --locked --release --package localsend --package localsend-cli
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo build --release --package localsend-cli
+          cargo build --locked --release --package localsend-cli
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: End-to-end headless receive & send test
         working-directory: localsend-main
@@ -113,8 +125,12 @@ jobs:
             throw "Auth stdin transferred content mismatch"
           }
           Write-Host "E2E headless file transfer PASSED!"
+      - name: Record CLI artifact provenance
+        run: python scripts/package-release.py --write-provenance windows x64 localsend-main/target/release/BUILD_PROVENANCE.json localsend-main/target/release/localsend-cli.exe
       - uses: actions/upload-artifact@v4
         with:
           name: localsend-cli-win-x64
-          path: localsend-main/target/release/localsend-cli.exe
+          path: |
+            localsend-main/target/release/localsend-cli.exe
+            localsend-main/target/release/BUILD_PROVENANCE.json
           if-no-files-found: error

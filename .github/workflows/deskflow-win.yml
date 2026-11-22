@@ -2,9 +2,9 @@ name: deskflow-win
 on:
   workflow_dispatch:
   push:
-    paths: ["deskflow-master/**", "localsend-main/**", ".github/workflows/deskflow-win.yml"]
+    paths: ["deskflow-master/**", "localsend-main/**", "scripts/package-release.py", "THIRD_PARTY_NOTICES.md", ".github/workflows/deskflow-win.yml"]
   pull_request:
-    paths: ["deskflow-master/**", "localsend-main/**", ".github/workflows/deskflow-win.yml"]
+    paths: ["deskflow-master/**", "localsend-main/**", "scripts/package-release.py", "THIRD_PARTY_NOTICES.md", ".github/workflows/deskflow-win.yml"]
 jobs:
   build:
     runs-on: windows-latest
@@ -12,6 +12,7 @@ jobs:
       DOTNET_ROLL_FORWARD: LatestMajor
     steps:
       - uses: actions/checkout@v4
+      - run: python -m py_compile scripts/package-release.py
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -41,7 +42,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deskflow-master/build/vcpkg_installed
-          key: vcpkg-win-x64-${{ hashFiles('deskflow-master/vcpkg.json') }}
+          key: vcpkg-win-x64-${{ hashFiles('deskflow-master/cmake/vcpkg.json.in') }}
       - name: Configure
         working-directory: deskflow-master
         run: >
@@ -77,7 +78,7 @@ jobs:
               throw 'MSI must install the DeskSend service as stopped and start it on demand'
             }
             $appDir = Split-Path -Parent $service.PathName.Trim('"')
-            foreach ($file in @('DeskSend.exe', 'deskflow-core.exe', 'deskflow-daemon.exe', 'localsend-cli.exe', 'LocalSend-LICENSE.txt')) {
+            foreach ($file in @('DeskSend.exe', 'deskflow-core.exe', 'deskflow-daemon.exe', 'localsend-cli.exe', 'LocalSend-LICENSE.txt', 'THIRD_PARTY_NOTICES.md')) {
               if (!(Test-Path -LiteralPath (Join-Path $appDir $file) -PathType Leaf)) { throw "MSI is missing $file" }
             }
             if (Test-Path -LiteralPath (Join-Path $appDir 'settings/Deskflow.conf')) { throw 'MSI activates portable mode' }
@@ -122,16 +123,34 @@ jobs:
               throw "MSI uninstall did not remove the DeskSend service"
             }
           }
+      - name: Record Windows artifact provenance
+        working-directory: deskflow-master/build
+        run: |
+          $packages = @(Get-ChildItem -File -Include *.zip,DeskSend-*-windows-x64.msi -Path ./*)
+          if (@($packages | Where-Object Extension -eq '.zip').Count -ne 1 -or
+              @($packages | Where-Object Extension -eq '.msi').Count -ne 1) {
+            throw 'Expected exactly one Windows ZIP and one MSI'
+          }
+          foreach ($zip in $packages | Where-Object Extension -eq '.zip') {
+            $entries = tar -tf $zip.FullName
+            if ($LASTEXITCODE -ne 0 -or !($entries -match '/THIRD_PARTY_NOTICES[.]md$')) {
+              throw 'Windows ZIP is missing THIRD_PARTY_NOTICES.md'
+            }
+          }
+          python ../../scripts/package-release.py --write-provenance windows x64 BUILD_PROVENANCE.json @($packages.Name)
       - uses: actions/upload-artifact@v4
         with:
           name: deskflow-win-x64
           path: |
             deskflow-master/build/*.zip
+            deskflow-master/build/BUILD_PROVENANCE.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: desksend-windows-x64-msi
-          path: deskflow-master/build/DeskSend-*-windows-x64.msi
+          path: |
+            deskflow-master/build/DeskSend-*-windows-x64.msi
+            deskflow-master/build/BUILD_PROVENANCE.json
           if-no-files-found: error
       - name: Collect update channel diagnostic test
         run: |

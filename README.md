@@ -39,7 +39,7 @@ DeskSend 将 [Deskflow](https://github.com/deskflow/deskflow) 的键鼠共享与
 - **Windows x64 便携版**：`DeskSend-<版本>-windows-x64.zip`，完整解压到可写目录后运行 `DeskSend.exe`（不要在压缩包预览中直接运行，也不要只复制 EXE，需保留同目录中的 `deskflow-core.exe`、`localsend-cli.exe`、Qt DLL、插件和 `translations/`）。
 - **Windows x64 安装版**：`DeskSend-<版本>-windows-x64.msi`，需要在副机操作 UAC 弹窗或登录界面时安装并开启后台服务及系统身份运行。[UAC 设置步骤](docs/使用指南.md#副机的-uac-弹窗无法点击)
 - **macOS arm64（Apple Silicon）**：`DeskSend-<版本>-macos-arm64.tar.gz`，解压出 `DeskSend.app` 后放入“应用程序”或本地可写目录使用（CI 构建采用 ad-hoc 签名；启用跨屏拖拽需在“系统设置 → 隐私与安全性 → 辅助功能”授权）。
-- **Linux x64**：`DeskSend-<版本>-linux-x64.tar.gz`，CI 构建归档（包含 `deskflow`、`deskflow-core`、`localsend-cli` 与许可证；需匹配系统的 Qt6/OpenSSL/`libei`/`libportal`/X11 运行库，如环境差异较大可按[构建与发布](docs/构建与发布.md)从源码构建）。
+- **Linux x64**：`DeskSend-<版本>-linux-x64.tar.gz`，CI 构建归档（包含 `deskflow`、`deskflow-core`、`localsend-cli` 与许可证；需匹配系统的 Qt6/OpenSSL/`libei`/`libportal`/X11 运行库，如环境差异较大可按[构建与发布](docs/构建与发布.md)从源码构建）。 运行基线为 Ubuntu 24.04 x64 与 Qt 6.8，需安装匹配的 OpenSSL 3、libei、libportal 及 X11 运行库。归档不捆绑这些库，其他发行版建议从源码构建。
 
 如果打开 Geek Uninstaller 等管理员程序后无法跨屏，请在出现问题的 Windows 电脑上以管理员身份启动 DeskSend。[排查步骤](docs/使用指南.md#打开管理员程序后无法跨屏)
 

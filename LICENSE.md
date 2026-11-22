@@ -11,4 +11,4 @@ DeskSend 保留各组成部分的许可证和原作者版权声明。具体文�
 
 每个公开发布版本提供对应构建源码 ZIP 和许可证文本。便携包内的 `Deskflow-LICENSE.txt`、`LocalSend-LICENSE.txt` 及 `LICENSES` 目录保留相关文本。MSI 安装目录内对应的许可文件为 `LICENSE`、`LICENSE_EXCEPTION` 和 `LocalSend-LICENSE.txt`。MSI 安装向导的许可协议页汇总了这三份完整许可文本。
 
-早期说明曾将 LocalSend 标成 MIT，该标注有误；本仓库的 `localsend-main/LICENSE` 和已发布包内的 `LocalSend-LICENSE.txt` 实际为 Apache License 2.0。
+Qt 6、OpenSSL 与其他随包组件的归属和许可入口见 [第三方组件许可](THIRD_PARTY_NOTICES.md)。该文件随三端安装产物交付。LocalSend 使用 Apache License 2.0，许可全文见 `localsend-main/LICENSE` 和随包的 `LocalSend-LICENSE.txt`。

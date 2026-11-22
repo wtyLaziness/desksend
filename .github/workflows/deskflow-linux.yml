@@ -6,16 +6,20 @@ name: deskflow-linux
     paths:
       - "deskflow-master/**"
       - "localsend-main/**"
+      - "THIRD_PARTY_NOTICES.md"
+      - "scripts/package-release.py"
       - ".github/workflows/deskflow-linux.yml"
   pull_request:
     paths:
       - "deskflow-master/**"
       - "localsend-main/**"
+      - "THIRD_PARTY_NOTICES.md"
+      - "scripts/package-release.py"
       - ".github/workflows/deskflow-linux.yml"
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LIBEI_COMMIT: 8a46bf3d4b6af7f25a61be53386cf618218114ef
       LIBPORTAL_COMMIT: c23024018c8eb076549a1517fcb2d7f80d3e2ed5
@@ -36,7 +40,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/linux-deps
-          key: linux-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.LIBEI_COMMIT }}-${{ env.LIBPORTAL_COMMIT }}
+          key: linux-deps-v2-ubuntu-24.04-${{ hashFiles('.github/workflows/deskflow-linux.yml') }}-${{ runner.os }}-${{ runner.arch }}-${{ env.LIBEI_COMMIT }}-${{ env.LIBPORTAL_COMMIT }}
       - name: Build and install libei and libportal
         if: steps.linux-deps.outputs.cache-hit != 'true'
         run: |
@@ -217,12 +221,20 @@ jobs:
           for executable in deskflow deskflow-core localsend-cli; do
             test -f "$stage/bin/$executable"
             test -x "$stage/bin/$executable"
+            summary=$(LD_LIBRARY_PATH="$QT_ROOT_DIR/lib:${LD_LIBRARY_PATH:-}" ldd "$stage/bin/$executable")
+            printf '%s\n' "$summary"
+            if grep -q 'not found' <<< "$summary"; then exit 1; fi
           done
           test -f "$stage/share/licenses/deskflow/LocalSend-LICENSE.txt"
+          test -f "$stage/share/licenses/deskflow/THIRD_PARTY_NOTICES.md"
       - name: Archive staged installation
         run: tar -czf DeskSend-linux-x64.tar.gz -C "$GITHUB_WORKSPACE/stage" .
+      - name: Record linux artifact provenance
+        run: python3 scripts/package-release.py --write-provenance linux x64 BUILD_PROVENANCE.json DeskSend-linux-x64.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: DeskSend-linux-x64
-          path: DeskSend-linux-x64.tar.gz
+          path: |
+            DeskSend-linux-x64.tar.gz
+            BUILD_PROVENANCE.json
           if-no-files-found: error

@@ -3,9 +3,101 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
+import stat
 import subprocess
+import sys
+import tarfile
+import tempfile
 import zipfile
+
+repo = Path(__file__).resolve().parents[1]
+version = (repo / 'deskflow-master/cmake/DeskSendVersion.cmake').read_text(encoding='utf-8').split('"')[1]
+
+
+def hash_file(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def commit_id(ref):
+    return subprocess.check_output(
+        ['git', 'rev-parse', '--verify', '--end-of-options', ref + '^{commit}'], cwd=repo, text=True
+    ).strip()
+
+
+def write_provenance():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('platform', choices=('windows', 'macos', 'linux'))
+    parser.add_argument('arch', choices=('x64', 'arm64'))
+    parser.add_argument('output', type=Path)
+    parser.add_argument('files', nargs='+', type=Path)
+    args = parser.parse_args(sys.argv[2:])
+    hashes = {path.name: hash_file(path) for path in args.files}
+    if len(hashes) != len(args.files):
+        parser.error('Duplicate artifact filenames')
+    record = dict(commit=commit_id('HEAD'), version=version, platform=args.platform, arch=args.arch, sha256=hashes)
+    args.output.write_text(json.dumps(record, indent=2) + '\n', encoding='utf-8')
+
+
+def member_parts(name):
+    parts = name.rstrip('/').split('/')
+    if '\\' in name or ':' in name or any(part in ('', '.', '..') for part in parts):
+        raise ValueError(f'Invalid archive path: {name}')
+    return tuple(parts)
+
+
+def check_tar(path, platform):
+    members = {}
+    with tarfile.open(path, 'r:gz') as archive:
+        for member in archive:
+            name = member.name.removeprefix('./')
+            if name in ('', '.') and member.isdir():
+                continue
+            parts = member_parts(name)
+            if platform == 'macos' and parts[0] != 'DeskSend.app':
+                raise ValueError(f'Unexpected macOS tar member: {name}')
+            if parts in members or not (member.isfile() or member.isdir() or member.issym()):
+                raise ValueError(f'Invalid or duplicate tar member: {name}')
+            members[parts] = member
+    for parts, member in members.items():
+        if any(not members[parts[:i]].isdir() for i in range(1, len(parts)) if parts[:i] in members):
+            raise ValueError(f'Tar path descends through a non-directory: {member.name}')
+        if not member.issym():
+            continue
+        resolved, followed = list(parts[:-1]), {parts}
+        link = member.linkname
+        pending = link.split('/')
+        if not link or link.startswith('/') or '\\' in link or ':' in link:
+            raise ValueError(f'Invalid tar link: {member.name}')
+        while pending:
+            part = pending.pop(0)
+            if part == '..':
+                if len(resolved) <= (1 if platform == 'macos' else 0):
+                    raise ValueError(f'Escaping tar link: {member.name}')
+                resolved.pop()
+            elif part not in ('', '.'):
+                resolved.append(part)
+                key = tuple(resolved)
+                entry = members.get(key)
+                if entry and entry.issym():
+                    link = entry.linkname
+                    if key in followed or not link or link.startswith('/') or '\\' in link or ':' in link:
+                        raise ValueError(f'Invalid tar link chain: {member.name}')
+                    followed.add(key)
+                    resolved.pop()
+                    pending = link.split('/') + pending
+    prefix = ('DeskSend.app', 'Contents', 'MacOS') if platform == 'macos' else ('bin',)
+    for exe in ('DeskSend' if platform == 'macos' else 'deskflow', 'deskflow-core', 'localsend-cli'):
+        member = members.get(prefix + (exe,))
+        if not member or not member.isfile() or not member.size or not member.mode & 0o111:
+            raise ValueError(f'Missing executable: {"/".join(prefix + (exe,))}')
+
+
+if sys.argv[1:2] == ['--write-provenance']:
+    write_provenance()
+    sys.exit(0)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--deskflow-zip', required=True, type=Path)
@@ -14,35 +106,72 @@ parser.add_argument('--localsend-exe', required=True, type=Path)
 parser.add_argument('--macos-tar', type=Path)
 parser.add_argument('--linux-tar', type=Path)
 parser.add_argument('--build-commit', required=True)
+parser.add_argument('--allow-missing-provenance', action='store_true')
 parser.add_argument('--out', required=True, type=Path)
 args = parser.parse_args()
-repo = Path(__file__).resolve().parents[1]
-version = (repo / 'deskflow-master/cmake/DeskSendVersion.cmake').read_text(encoding='utf-8').split('"')[1]
 installer_name = f'DeskSend-{version}-windows-x64.msi'
 if args.deskflow_msi and (args.deskflow_msi.name != installer_name or not args.deskflow_msi.is_file()):
     parser.error(f'--deskflow-msi 必须指向 {installer_name}')
 for label, tar_path in (('--macos-tar', args.macos_tar), ('--linux-tar', args.linux_tar)):
     if tar_path and not tar_path.is_file():
         parser.error(f'{label} 指向的文件不存在：{tar_path}')
-build_commit = subprocess.check_output(['git', 'rev-parse', args.build_commit], cwd=repo, text=True).strip()
+build_commit = commit_id(args.build_commit)
 source_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
 subprocess.run(['git', 'diff', '--exit-code', build_commit, source_commit, '--', 'deskflow-master', 'localsend-main'], cwd=repo, check=True)
+for path, platform, arch in (
+    (args.deskflow_zip, 'windows', 'x64'), (args.deskflow_msi, 'windows', 'x64'),
+    (args.localsend_exe, 'windows', 'x64'), (args.macos_tar, 'macos', 'arm64'),
+    (args.linux_tar, 'linux', 'x64'),
+):
+    if path is None:
+        continue
+    sidecar = path.with_name('BUILD_PROVENANCE.json')
+    if sidecar.is_file():
+        record = json.loads(sidecar.read_text(encoding='utf-8-sig'))
+        expected = dict(commit=build_commit, version=version, platform=platform, arch=arch)
+        if any(record.get(key) != value for key, value in expected.items()) or (
+            record.get('sha256', {}).get(path.name) != hash_file(path)
+        ):
+            parser.error(f'Artifact provenance does not match: {path}')
+    elif not args.allow_missing_provenance:
+        parser.error(f'Missing BUILD_PROVENANCE.json next to {path}')
+    if platform != 'windows':
+        check_tar(path, platform)
 args.out.mkdir(parents=True, exist_ok=True)
 root = args.out / f'DeskSend-{version}-windows-x64'
 if root.exists():
     raise SystemExit(f'输出目录已经存在，请使用新的输出路径：{root}')
 root.mkdir()
 with zipfile.ZipFile(args.deskflow_zip) as archive:
-    # CI 产物有一层版本目录，仅接受普通的相对路径。
+    entries = {}
+    roots = set()
+    spellings = {}
     for info in archive.infolist():
-        path = Path(*info.filename.replace('\\', '/').split('/')[1:])
-        if not path.parts or info.is_dir():
+        parts = member_parts(info.filename)
+        roots.add(parts[0])
+        for part in parts:
+            stem = part.split('.')[0].rstrip().upper()
+            if (part.endswith((' ', '.')) or re.fullmatch(r'CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[1-9¹²³]', stem)
+                    or any(ord(char) < 32 or char in '<>"|?*' for char in part)):
+                raise ValueError(f'Invalid Windows archive path: {info.filename}')
+        key = tuple(part.casefold() for part in parts)
+        if key in entries or stat.S_ISLNK(info.external_attr >> 16) or (len(parts) == 1 and not info.is_dir()):
+            raise ValueError(f'Invalid or duplicate ZIP member: {info.filename}')
+        entries[key] = (info, parts)
+        for i in range(1, len(parts) + 1):
+            if spellings.setdefault(key[:i], parts[:i]) != parts[:i]:
+                raise ValueError(f'Conflicting ZIP path casing: {info.filename}')
+    if len(roots) != 1:
+        raise ValueError('Windows ZIP must have exactly one root directory')
+    for key, (info, parts) in entries.items():
+        if any(not entries[key[:i]][0].is_dir() for i in range(1, len(key)) if key[:i] in entries):
+            raise ValueError(f'ZIP path descends through a file: {info.filename}')
+        if info.is_dir():
             continue
-        if path.is_absolute() or '..' in path.parts or ':' in str(path):
-            raise ValueError('无效的构建产物路径')
-        target = root / path
+        target = root.joinpath(*parts[1:])
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(archive.read(info))
+        with archive.open(info) as source, target.open('xb') as output:
+            shutil.copyfileobj(source, output)
 shutil.copy2(args.localsend_exe, root / 'localsend-cli.exe')
 for name in ('DeskSend.exe', 'deskflow-core.exe', 'localsend-cli.exe'):
     if not (root / name).is_file():
@@ -81,7 +210,7 @@ DeskSend 基于 Deskflow（GPLv2 + OpenSSL exception）及 LocalSend（Apache-2.
 shutil.copy2(repo / 'localsend-main/LICENSE', root / 'LocalSend-LICENSE.txt')
 shutil.copytree(repo / 'deskflow-master/LICENSES', root / 'LICENSES', dirs_exist_ok=True)
 shutil.copy2(repo / 'deskflow-master/LICENSE', root / 'Deskflow-LICENSE.txt')
-hash_file = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+shutil.copy2(repo / 'THIRD_PARTY_NOTICES.md', root / 'THIRD_PARTY_NOTICES.md')
 files = {p.relative_to(root).as_posix(): hash_file(p) for p in sorted(root.rglob('*')) if p.is_file() and 'settings' not in p.relative_to(root).parts}
 manifest = {'format': 1, 'product': 'DeskSend', 'version': version, 'build_commit': build_commit, 'source_commit': source_commit, 'files': files}
 (root / 'desksend-build.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
@@ -91,11 +220,17 @@ with zipfile.ZipFile(binary_zip, 'w', zipfile.ZIP_DEFLATED) as archive:
         if path.is_file():
             archive.write(path, path.relative_to(args.out))
 source_zip = args.out / f'DeskSend-{version}-source.zip'
-subprocess.run(['git', 'archive', '--format=zip', f'--prefix=DeskSend-{version}-source/', '-o', str(source_zip.resolve()), source_commit], cwd=repo, check=True)
-with zipfile.ZipFile(source_zip) as archive:
-    forbidden = [name for name in archive.namelist() if name.lower().endswith(('.pem', '.key', '.log')) or '/.git/' in name or '/settings/Deskflow.conf' in name]
-    if forbidden:
-        raise ValueError(f'源码包包含不应公开的文件：{forbidden}')
+with tempfile.TemporaryDirectory(prefix='.desksend-source-', dir=args.out) as temp:
+    candidate = Path(temp) / source_zip.name
+    subprocess.run(['git', 'archive', '--format=zip', f'--prefix=DeskSend-{version}-source/',
+                    '-o', str(candidate.resolve()), source_commit], cwd=repo, check=True)
+    with zipfile.ZipFile(candidate) as archive:
+        forbidden = [name for name in archive.namelist()
+                     if name.lower().endswith(('.pem', '.key', '.log', '.pfx', '.p12'))
+                     or '/.git/' in name.lower() or '/settings/deskflow.conf' in name.lower()]
+        if forbidden:
+            raise ValueError(f'源码包包含不应公开的文件：{forbidden}')
+    candidate.replace(source_zip)
 release_assets = [binary_zip, source_zip]
 if args.deskflow_msi:
     installer = args.out / installer_name

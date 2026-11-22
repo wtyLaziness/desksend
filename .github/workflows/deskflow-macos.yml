@@ -6,11 +6,15 @@ name: deskflow-macos
     paths:
       - "deskflow-master/**"
       - "localsend-main/**"
+      - "THIRD_PARTY_NOTICES.md"
+      - "scripts/package-release.py"
       - ".github/workflows/deskflow-macos.yml"
   pull_request:
     paths:
       - "deskflow-master/**"
       - "localsend-main/**"
+      - "THIRD_PARTY_NOTICES.md"
+      - "scripts/package-release.py"
       - ".github/workflows/deskflow-macos.yml"
 
 jobs:
@@ -174,11 +178,16 @@ jobs:
             test -x "$bundle/MacOS/$executable"
           done
           test -f "$bundle/Resources/LocalSend-LICENSE.txt"
+          test -f "$bundle/Resources/THIRD_PARTY_NOTICES.md"
           codesign --verify --deep --strict "$GITHUB_WORKSPACE/stage/DeskSend.app"
       - name: Archive staged installation
-        run: tar -czf DeskSend-macos-arm64.tar.gz -C "$GITHUB_WORKSPACE/stage" DeskSend.app
+        run: COPYFILE_DISABLE=1 tar -czf DeskSend-macos-arm64.tar.gz -C "$GITHUB_WORKSPACE/stage" DeskSend.app
+      - name: Record macos artifact provenance
+        run: python3 scripts/package-release.py --write-provenance macos arm64 BUILD_PROVENANCE.json DeskSend-macos-arm64.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: DeskSend-macos-arm64
-          path: DeskSend-macos-arm64.tar.gz
+          path: |
+            DeskSend-macos-arm64.tar.gz
+            BUILD_PROVENANCE.json
           if-no-files-found: error
