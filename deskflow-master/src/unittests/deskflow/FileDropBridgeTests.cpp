@@ -1652,6 +1652,8 @@ private Q_SLOTS:
     }
     QVERIFY(serializeDirectSendRequestMessage("req:1", "linux-box").empty());
     QVERIFY(!parseDirectSendRequestMessage("DESKSEND_DIRECT_SEND_REQ:req-1", requestId, target));
+    QVERIFY(!parseDirectSendRequestMessage("DESKSEND_DIRECT_SEND_REQ:req 1:peer", requestId, target));
+    QVERIFY(!parseTransferTargetsMessage("DESKSEND_TRANSFER_TARGETS:a\tb", targets));
 
     std::string token;
     for (const std::string ip : {"10.0.0.3", "fe80::1"}) {
@@ -1663,6 +1665,10 @@ private Q_SLOTS:
       QCOMPARE(target, ip);
       QCOMPARE(redactDragLogPayload(grant), "DESKSEND_DIRECT_SEND_GRANT:req-1:<redacted>:" + ip);
     }
+
+    QVERIFY(!parseDirectSendGrantMessage("DESKSEND_DIRECT_SEND_GRANT:req-1:bad token:fe80::1", requestId, token, target));
+    QCOMPARE(redactDragLogPayload("DESKSEND_SEND_DROP:1,2:secret:host\nother-secret"),
+             std::string("DESKSEND_SEND_DROP:<redacted>"));
 
     const auto cancel = serializeDirectSendCancelMessage("req-2");
     QCOMPARE(cancel, std::string("DESKSEND_DIRECT_SEND_CANCEL:req-2"));
@@ -1837,6 +1843,14 @@ private Q_SLOTS:
     QCOMPARE(clientState->countCommands(Command::SendFiles), size_t{0});
     bridge.onClientReceiveDragInfo(1, clientA.dragMessages[1].second);
     checkSend(*clientState, "10.0.0.3", token, otherFiles);
+    bridge.onClientReceiveDragInfo(1, clientA.dragMessages[1].second);
+    QCOMPARE(clientState->countCommands(Command::SendFiles), size_t{1});
+    bridge.onClientReceiveDragInfo(1, "DESKSEND_DROP:invalid,2");
+    bridge.onClientReceiveDragInfo(1, "DESKSEND_CANCEL:bad token");
+    QCOMPARE(clientState->countCommands(Command::DropTarget), size_t{0});
+    QCOMPARE(clientState->countCommands(Command::CancelPreparing), size_t{0});
+    bridge.onClientReceiveDragInfo(1, "DESKSEND_START:valid-token\nfile.txt");
+    QCOMPARE(clientState->countCommands(Command::ReceiverAuthCommand), size_t{1});
   }
 
 };

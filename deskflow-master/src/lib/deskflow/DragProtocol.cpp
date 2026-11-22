@@ -5,6 +5,7 @@
  */
 
 #include "deskflow/DragProtocol.h"
+#include "deskflow/ProtocolTypes.h"
 
 #include <algorithm>
 #include <charconv>
@@ -28,7 +29,9 @@ constexpr std::string_view kSendCancelPrefix = "DESKSEND_SEND_CANCEL:";
 bool validWireToken(std::string_view token)
 {
   return !token.empty() && token.size() <= 256 &&
-         token.find_first_of(std::string_view(" \t\r\n\0:", 6)) == std::string_view::npos;
+         std::none_of(token.begin(), token.end(), [](unsigned char ch) {
+           return ch <= 32 || ch == 127 || ch == ':';
+         });
 }
 
 bool parseInt32(std::string_view s, int32_t &out)
@@ -65,7 +68,7 @@ bool parseCoords(std::string_view s, int32_t &outX, int32_t &outY)
 
 bool startsWith(std::string_view s, std::string_view prefix)
 {
-  return s.size() >= prefix.size() && s.substr(0, prefix.size()) == prefix;
+  return s.size() <= PROTOCOL_MAX_MESSAGE_LENGTH && s.size() >= prefix.size() && s.substr(0, prefix.size()) == prefix;
 }
 
 } // namespace
@@ -369,7 +372,8 @@ bool parseDragDropMessage(std::string_view info, int32_t &outX, int32_t &outY, s
   const std::string_view body = info.substr(kDropPrefix.size());
   const size_t colon = body.find(':');
   const std::string_view coords = (colon == std::string_view::npos) ? body : body.substr(0, colon);
-  if (!parseCoords(coords, outX, outY)) {
+  if ((colon != std::string_view::npos && !validWireToken(body.substr(colon + 1))) ||
+      !parseCoords(coords, outX, outY)) {
     return false;
   }
   if (colon == std::string_view::npos) {
@@ -486,12 +490,12 @@ constexpr std::string_view kDirectCancelPrefix = "DESKSEND_DIRECT_SEND_CANCEL:";
 
 bool validDirectField(std::string_view value)
 {
-  return value.find_first_of(std::string_view("\r\n\0", 3)) == std::string_view::npos;
+  return std::none_of(value.begin(), value.end(), [](unsigned char ch) { return ch < 32 || ch == 127; });
 }
 
 bool validDirectId(std::string_view value)
 {
-  return !value.empty() && validDirectField(value) && value.find(':') == std::string_view::npos;
+  return validWireToken(value);
 }
 
 } // namespace
@@ -554,6 +558,9 @@ bool parseDirectSendRequestMessage(std::string_view info, std::string &outReques
   if (colon == 0 || colon == std::string_view::npos) {
     return false;
   }
+  if (!validDirectId(body.substr(0, colon))) {
+    return false;
+  }
   outRequestId.assign(body.substr(0, colon));
   outTargetPeer.assign(body.substr(colon + 1));
   return true;
@@ -583,6 +590,9 @@ bool parseDirectSendGrantMessage(
   if (second == std::string_view::npos || second == first + 1 || second == body.size() - 1) {
     return false;
   }
+  if (!validDirectId(body.substr(0, first)) || !validWireToken(body.substr(first + 1, second - first - 1))) {
+    return false;
+  }
   outRequestId.assign(body.substr(0, first));
   outToken.assign(body.substr(first + 1, second - first - 1));
   outTargetIp.assign(body.substr(second + 1));
@@ -605,6 +615,9 @@ bool parseDirectSendCancelMessage(std::string_view info, std::string &outRequest
 
 std::string redactDragLogPayload(std::string_view info)
 {
+  if (info.size() > PROTOCOL_MAX_MESSAGE_LENGTH) {
+    return "<oversized drag payload>";
+  }
   if (startsWith(info, kDirectGrantPrefix)) {
     std::string requestId;
     std::string token;
@@ -628,7 +641,9 @@ std::string redactDragLogPayload(std::string_view info)
     const size_t firstColon = body.find(':');
     if (firstColon != std::string_view::npos) {
       const size_t secondColon = body.find(':', firstColon + 1);
-      if (secondColon != std::string_view::npos) {
+      int32_t x = 0, y = 0;
+      std::string token, target;
+      if (secondColon != std::string_view::npos && parseSendDropMessage(info, x, y, token, target)) {
         std::string out(kSendDropPrefix);
         out.append(body.substr(0, firstColon));
         out.append(":<redacted>:");

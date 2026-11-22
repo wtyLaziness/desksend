@@ -10,6 +10,7 @@
 #include "base/Log.h"
 #include "deskflow/DragProtocol.h"
 #include "deskflow/PlatformDropSupport.h"
+#include "deskflow/ProtocolTypes.h"
 #include "deskflow/ipc/CoreIpc.h"
 #include "io/StreamFilter.h"
 #include "net/IDataSocket.h"
@@ -256,15 +257,19 @@ void FileDropBridge::setPrimaryEdgeSegments(std::vector<DragEdgeSegment> segment
 
 void FileDropBridge::setServerClientProxies(const std::vector<BaseClientProxy *> &clients)
 {
+  std::vector<std::pair<std::string, BaseClientProxy *>> namedClients;
+  for (auto *client : clients) {
+    if (client) {
+      auto name = client->getName();
+      if (!name.empty()) {
+        namedClients.emplace_back(std::move(name), client);
+      }
+    }
+  }
   std::optional<std::vector<std::string>> targets;
   {
     std::scoped_lock lock(m_mutex);
-    m_serverClients.clear();
-    for (auto *client : clients) {
-      if (client && !client->getName().empty()) {
-        m_serverClients.emplace_back(client->getName(), client);
-      }
-    }
+    m_serverClients = std::move(namedClients);
     if (m_clientServerHost.empty()) {
       targets = serverTransferTargets(m_serverClients);
     }
@@ -304,6 +309,8 @@ bool FileDropBridge::requestDirectFileSend(const std::string &targetPeer, const 
   {
     std::scoped_lock lock(m_mutex);
     if (m_clientDragSender && !m_clientServerHost.empty()) {
+      const auto now = nowMs();
+      std::erase_if(m_clientDirectPending, [now](const auto &entry) { return entry.expiresAtMs <= now; });
       if (m_clientDirectPending.size() >= 64) {
         return false;
       }
@@ -313,14 +320,16 @@ bool FileDropBridge::requestDirectFileSend(const std::string &targetPeer, const 
         return false;
       }
       sender = m_clientDragSender;
-      m_clientDirectPending.push_back({requestId, files});
+      m_clientDirectPending.push_back({requestId, files, now + 30000});
     } else if (targetPeer.empty() && m_serverClients.size() == 1) {
       target = m_serverClients.front().second;
     } else {
       for (const auto &[name, proxy] : m_serverClients) {
         if (name == targetPeer) {
+          if (target) {
+            return false;
+          }
           target = proxy;
-          break;
         }
       }
     }
@@ -1132,9 +1141,12 @@ void FileDropBridge::onServerReceiveClientDragInfo(BaseClientProxy *client, uint
     {
       std::scoped_lock lock(m_mutex);
       for (const auto &[name, proxy] : m_serverClients) {
-        if (name == targetPeer && proxy != client) {
+        if (name == targetPeer) {
+          if (destination || proxy == client) {
+            destination = nullptr;
+            break;
+          }
           destination = proxy;
-          break;
         }
       }
     }
@@ -1438,6 +1450,12 @@ void FileDropBridge::startClientReceiver(const std::string &serverHost)
   std::vector<std::string> targets;
   {
     std::scoped_lock lock(m_mutex);
+    if (m_clientServerHost != serverHost) {
+      m_clientDirectPending.clear();
+      m_clientTransferTargets.clear();
+      m_clientPeerHosts.clear();
+      m_clientEdgeSegments.clear();
+    }
     m_clientServerHost = serverHost;
     if (!serverHost.empty() && m_clientTransferTargets.empty()) {
       m_clientTransferTargets.emplace_back(kServerPeerTargetMarker);
@@ -1474,7 +1492,8 @@ void FileDropBridge::setClientDragMessageSender(ClientDragMessageSender sender)
   std::optional<std::vector<std::string>> targets;
   {
     std::scoped_lock lock(m_mutex);
-    m_clientDragSender = std::move(sender);
+    m_clientDirectPending.clear();
+    m_clientDragSender.swap(sender);
     if (m_clientDragSender && !m_clientServerHost.empty()) {
       targets = m_clientTransferTargets;
     }
@@ -1696,6 +1715,9 @@ std::shared_ptr<TransferStatusOverlay> FileDropBridge::overlayFor(bool receiving
 
 void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::string &info)
 {
+  if (info.size() > PROTOCOL_MAX_MESSAGE_LENGTH) {
+    return;
+  }
   std::vector<std::string> targets;
   if (parseTransferTargetsMessage(info, targets)) {
     {
@@ -1716,6 +1738,10 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
         return entry.requestId == directRequestId;
       });
       if (pending == m_clientDirectPending.end()) {
+        return;
+      }
+      if (pending->expiresAtMs <= nowMs()) {
+        m_clientDirectPending.erase(pending);
         return;
       }
       cmd.items = std::move(pending->files);
@@ -1868,8 +1894,12 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
     return;
   }
 
-  const std::string dropPrefix = "DESKSEND_DROP:";
-  if (info.rfind(dropPrefix, 0) == 0) {
+  int32_t dropX = 0;
+  int32_t dropY = 0;
+  std::string tokenTag;
+  std::string token;
+  const std::string_view startHeader = std::string_view(info).substr(0, info.find('\n'));
+  if (fileCount != 0 && parseDragDropMessage(info, dropX, dropY, tokenTag)) {
     DropAgentCommand hideCmd;
     hideCmd.type = DropAgentCommandType::HideHover;
     exec->execute(hideCmd);
@@ -1879,42 +1909,25 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
     prepCmd.fileCount = fileCount;
     exec->execute(prepCmd);
 
-    const std::string coords = info.substr(dropPrefix.size());
-    auto comma = coords.find(',');
-    if (comma != std::string::npos) {
-      const int32_t x = std::atoi(coords.substr(0, comma).c_str());
-      const std::string rest = coords.substr(comma + 1);
-      const auto tagSep = rest.find(':');
-      const int32_t y = std::atoi((tagSep == std::string::npos ? rest : rest.substr(0, tagSep)).c_str());
-      std::string tokenTag = (tagSep == std::string::npos) ? std::string{} : rest.substr(tagSep + 1);
-      const size_t nl = tokenTag.find_first_of("\r\n");
-      if (nl != std::string::npos) {
-        tokenTag.resize(nl);
-      }
-
-      DropAgentCommand dropCmd;
-      dropCmd.type = DropAgentCommandType::DropTarget;
-      dropCmd.fileCount = fileCount;
-      dropCmd.x = x;
-      dropCmd.y = y;
-      dropCmd.text = std::move(tokenTag);
-      exec->execute(dropCmd);
-    }
-  } else if (info.rfind("DESKSEND_START", 0) == 0) {
+    DropAgentCommand dropCmd;
+    dropCmd.type = DropAgentCommandType::DropTarget;
+    dropCmd.fileCount = fileCount;
+    dropCmd.x = dropX;
+    dropCmd.y = dropY;
+    dropCmd.text = std::move(tokenTag);
+    exec->execute(dropCmd);
+  } else if (fileCount != 0 && parseDragStartMessage(startHeader, token)) {
     DropAgentCommand activeCmd;
     activeCmd.type = DropAgentCommandType::SetDragActive;
     activeCmd.dragActive = true;
     exec->execute(activeCmd);
 
-    std::string token;
-    if (parseDragStartMessage(info, token)) {
-      DropAgentCommand authCmd;
-      authCmd.type = DropAgentCommandType::ReceiverAuthCommand;
-      authCmd.text = "GRANT " + token;
-      exec->execute(authCmd);
-    }
+    DropAgentCommand authCmd;
+    authCmd.type = DropAgentCommandType::ReceiverAuthCommand;
+    authCmd.text = "GRANT " + token;
+    exec->execute(authCmd);
     LOG_INFO("FileDropBridge: incoming drag started (%u file(s))", fileCount);
-  } else if (info.rfind("DESKSEND_CANCEL", 0) == 0) {
+  } else if (parseDragCancelMessage(info, token)) {
     DropAgentCommand hideCmd;
     hideCmd.type = DropAgentCommandType::HideHover;
     exec->execute(hideCmd);
@@ -1928,16 +1941,7 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
     activeCmd.dragActive = false;
     exec->execute(activeCmd);
 
-    std::string token;
-    const std::string cancelPrefix = "DESKSEND_CANCEL:";
-    if (info.rfind(cancelPrefix, 0) == 0) {
-      token = info.substr(cancelPrefix.size());
-      const size_t endPos = token.find_first_of("\r\n");
-      if (endPos != std::string::npos) {
-        token.resize(endPos);
-      }
-    }
-    if (!token.empty() && token.find_first_of(" \t\r\n") == std::string::npos) {
+    if (!token.empty()) {
       DropAgentCommand cancelTokCmd;
       cancelTokCmd.type = DropAgentCommandType::CancelDropToken;
       cancelTokCmd.text = computeTokenTag(token);

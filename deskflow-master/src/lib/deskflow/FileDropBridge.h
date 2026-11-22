@@ -183,6 +183,7 @@ private:
   {
     std::string requestId;
     std::vector<std::string> files;
+    uint64_t expiresAtMs = 0;
   };
 
   uint64_t m_nextDirectSendSeq = 0;
