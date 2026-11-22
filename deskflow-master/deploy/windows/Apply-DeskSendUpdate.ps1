@@ -16,16 +16,54 @@ $logPath = Join-Path $workRoot 'update.log'
 $changed = [Collections.Generic.List[object]]::new()
 $copyStarted = $false
 $stopped = $false
+$stageRoot = $null
 
 function Write-UpdateLog([string]$Message) {
     Add-Content -LiteralPath $logPath -Value $Message -Encoding UTF8
 }
 function Get-ChildPath([string]$Root, [string]$Relative) {
     if ([IO.Path]::IsPathRooted($Relative) -or $Relative.Contains(':')) { throw '更新包包含非法路径。' }
+    foreach ($segment in ($Relative.TrimEnd('/', '\') -split '[/\\]')) {
+        if (!$segment -or $segment.EndsWith('.') -or $segment.EndsWith(' ')) { throw '更新包包含非法路径。' }
+    }
     $full = [IO.Path]::GetFullPath((Join-Path $Root $Relative))
     if (!$full.StartsWith($Root.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw '更新路径越界。' }
     return $full
 }
+function Assert-NoReparsePoint([string]$Path) {
+    $parents = [Collections.Generic.Stack[string]]::new()
+    for ($current = [IO.Path]::GetFullPath($Path); $current; $current = [IO.Path]::GetDirectoryName($current)) {
+        $parents.Push($current)
+    }
+    while ($parents.Count) {
+        $current = $parents.Pop()
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
+        if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw ('Reparse point in update path: ' + $current)
+        }
+    }
+}
+
+function Remove-UpdateDirectory([string]$Path) {
+    Assert-NoReparsePoint $Path
+    foreach ($item in Get-ChildItem -LiteralPath $Path -Force) {
+        Assert-NoReparsePoint $item.FullName
+        if ($item.PSIsContainer) {
+            Remove-UpdateDirectory $item.FullName
+        } else {
+            Remove-Item -LiteralPath $item.FullName -Force
+        }
+    }
+    [IO.Directory]::Delete($Path)
+}
+
+$archiveParent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Archive))
+$tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+$ownsDownload = [IO.Path]::GetDirectoryName($archiveParent) -ieq $tempRoot -and
+    [IO.Path]::GetFileName($archiveParent) -match '^DeskSend-update-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -and
+    [IO.Path]::GetFileName($Archive) -in @('update.zip', 'update.msi') -and
+    $PSCommandPath -ieq (Join-Path $archiveParent 'Apply-DeskSendUpdate.ps1') -and
+    !(($installRoot + '\').StartsWith($archiveParent + '\', [StringComparison]::OrdinalIgnoreCase))
 function Start-DeskSend {
     if (!$NoRestart) {
         Start-Process -FilePath (Join-Path $installRoot 'DeskSend.exe') -WorkingDirectory $installRoot -WindowStyle Hidden
@@ -33,6 +71,9 @@ function Start-DeskSend {
 }
 
 try {
+    Assert-NoReparsePoint $installRoot
+    Assert-NoReparsePoint $workRoot
+    if ($ownsDownload) { Assert-NoReparsePoint $Archive }
     if (!(Test-Path -LiteralPath (Join-Path $installRoot 'DeskSend.exe') -PathType Leaf)) { throw '找不到原有 DeskSend 程序。' }
     if ((Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash -ine $ExpectedHash) { throw '更新包 SHA-256 校验失败。' }
     if ($Msi) {
@@ -107,30 +148,28 @@ try {
         if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ine $file.Value) { throw ('文件校验失败：' + $relative) }
         # 禁止通过已有目录链接把程序文件写到安装目录以外。
         $target = Get-ChildPath $installRoot $relative
-        $parent = [IO.Path]::GetDirectoryName($target)
-        while ($parent.Length -ge $installRoot.Length) {
-            if ((Test-Path -LiteralPath $parent) -and ((Get-Item -LiteralPath $parent).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw '安装目录包含目录链接，无法自动更新。' }
-            $parent = [IO.Path]::GetDirectoryName($parent)
-        }
-        if ((Test-Path -LiteralPath $target) -and ((Get-Item -LiteralPath $target).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw '安装文件包含链接。' }
+        Assert-NoReparsePoint $target
     }
     $obsoleteRelatives = [Collections.Generic.List[string]]::new()
     $prevManifestPath = Join-Path $installRoot 'desksend-build.json'
+    Assert-NoReparsePoint $prevManifestPath
     if (Test-Path -LiteralPath $prevManifestPath -PathType Leaf) {
+        $prevManifest = $null
         try {
             $prevManifest = Get-Content -LiteralPath $prevManifestPath -Encoding UTF8 -Raw | ConvertFrom-Json
-            if ($prevManifest -and $prevManifest.files) {
-                foreach ($oldFile in @($prevManifest.files.PSObject.Properties)) {
-                    $oldRel = $oldFile.Name.Replace('/', '\')
-                    if ($oldRel -match '^(settings|\.desksend-backups)(\\|$)' -or $newRelatives.Contains($oldRel)) { continue }
-                    $oldTarget = Get-ChildPath $installRoot $oldRel
-                    if ((Test-Path -LiteralPath $oldTarget -PathType Leaf) -and !((Get-Item -LiteralPath $oldTarget).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-                        $obsoleteRelatives.Add($oldRel)
-                    }
+        } catch {
+            Write-UpdateLog ('WARN: invalid previous update manifest: ' + $_.Exception.Message)
+        }
+        if ($prevManifest -and $prevManifest.files) {
+            foreach ($oldFile in @($prevManifest.files.PSObject.Properties)) {
+                $oldRel = $oldFile.Name.Replace('/', '\')
+                if ($oldRel -match '^(settings|\.desksend-backups)(\\|$)' -or $newRelatives.Contains($oldRel)) { continue }
+                $oldTarget = Get-ChildPath $installRoot $oldRel
+                Assert-NoReparsePoint $oldTarget
+                if (Test-Path -LiteralPath $oldTarget -PathType Leaf) {
+                    $obsoleteRelatives.Add($oldRel)
                 }
             }
-        } catch {
-            Write-UpdateLog ('WARN: 忽略损坏的旧版清单，跳过过期文件清理：' + $_.Exception.Message)
         }
     }
     if ($GuiProcessId -gt 0) {
@@ -164,11 +203,14 @@ try {
     }
     $stopped = $true
     $backupRoot = Join-Path $installRoot ('.desksend-backups\' + [guid]::NewGuid().ToString('N'))
+    Assert-NoReparsePoint $backupRoot
     $null = New-Item -ItemType Directory -Path $backupRoot
     # 先备份所有待覆盖与待清理的旧版文件，全部成功后才开始写入。
     foreach ($relative in @($files.Name) + @('desksend-build.json')) {
         $target = Get-ChildPath $installRoot $relative
         $backup = Get-ChildPath $backupRoot $relative
+        Assert-NoReparsePoint $target
+        Assert-NoReparsePoint $backup
         $existed = Test-Path -LiteralPath $target -PathType Leaf
         if ($existed) {
             $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($backup)) -Force
@@ -179,12 +221,15 @@ try {
     foreach ($relative in $obsoleteRelatives) {
         $target = Get-ChildPath $installRoot $relative
         $backup = Get-ChildPath $backupRoot $relative
+        Assert-NoReparsePoint $target
+        Assert-NoReparsePoint $backup
         $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($backup)) -Force
         Copy-Item -LiteralPath $target -Destination $backup
         $changed.Add([pscustomobject]@{ Action='Delete'; Relative=$relative; Target=$target; Backup=$backup; Existed=$true })
     }
     $copyStarted = $true
     foreach ($file in $changed) {
+        Assert-NoReparsePoint $file.Target
         if ($file.Action -eq 'Write') {
             $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($file.Target)) -Force
             Copy-Item -LiteralPath (Get-ChildPath $packageRoot $file.Relative) -Destination $file.Target -Force
@@ -198,7 +243,10 @@ try {
         Get-ChildItem -LiteralPath $backupsParent -Directory -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTimeUtc, CreationTimeUtc, Name -Descending |
             Select-Object -Skip 2 |
-            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+            ForEach-Object {
+                try { Remove-UpdateDirectory $_.FullName }
+                catch { Write-UpdateLog ('WARN: backup cleanup skipped: ' + $_.Exception.Message) }
+            }
     }
     Write-UpdateLog ('SUCCESS: ' + $manifest.version + '; backup=' + $backupRoot)
     Start-DeskSend
@@ -211,6 +259,8 @@ try {
     if ($copyStarted) {
         foreach ($file in $changed) {
             try {
+                Assert-NoReparsePoint $file.Target
+                Assert-NoReparsePoint $file.Backup
                 if ($file.Existed) {
                     $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($file.Target)) -Force
                     Copy-Item -LiteralPath $file.Backup -Destination $file.Target -Force
@@ -237,4 +287,11 @@ try {
     }
     Write-Output ('UPDATE_FAILED: ' + $failure + '; log=' + $logPath)
     exit 1
+} finally {
+    foreach ($path in @($stageRoot, $(if ($ownsDownload) { $archiveParent }))) {
+        if ($path) {
+            try { Remove-UpdateDirectory $path }
+            catch { Write-UpdateLog ('WARN: temporary cleanup skipped: ' + $_.Exception.Message) }
+        }
+    }
 }

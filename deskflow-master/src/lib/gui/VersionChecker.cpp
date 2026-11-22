@@ -247,7 +247,7 @@ void VersionChecker::startPrimaryApi()
   if (m_hasCachedRelease && !m_etag.isEmpty()) {
     request.setRawHeader("If-None-Match", m_etag.toUtf8());
   }
-  m_activeReply = m_network->get(request);
+  startMetadataReply(m_network->get(request), 1024 * 1024);
 }
 
 void VersionChecker::startFallbackTagHead()
@@ -262,7 +262,7 @@ void VersionChecker::startFallbackSumsGet()
   m_stage = CheckStage::FallbackSumsGet;
   const QUrl sumsUrl = releaseAssetUrl(m_pendingVersion, QStringLiteral("SHA256SUMS.txt"));
   const QNetworkRequest request = makeUpdateRequest(sumsUrl, QNetworkRequest::NoLessSafeRedirectPolicy);
-  m_activeReply = m_network->get(request);
+  startMetadataReply(m_network->get(request), 64 * 1024);
 }
 
 void VersionChecker::startFallbackAssetHead()
@@ -272,12 +272,40 @@ void VersionChecker::startFallbackAssetHead()
   m_activeReply = m_network->head(request);
 }
 
+void VersionChecker::startMetadataReply(QNetworkReply *reply, qsizetype limit)
+{
+  m_activeReply = reply;
+  m_metadata.clear();
+  m_metadataLimit = limit;
+  m_metadataTooLarge = false;
+  reply->setReadBufferSize(64 * 1024);
+  connect(reply, &QNetworkReply::readyRead, this, [this, reply] {
+    if (reply == m_activeReply && !collectMetadata(reply))
+      reply->abort();
+  });
+}
+
+bool VersionChecker::collectMetadata(QNetworkReply *reply)
+{
+  if (m_metadataTooLarge || reply->bytesAvailable() > m_metadataLimit - m_metadata.size()) {
+    m_metadataTooLarge = true;
+    return false;
+  }
+  m_metadata += reply->readAll();
+  return true;
+}
+
 void VersionChecker::replyFinished(QNetworkReply *reply)
 {
   reply->deleteLater();
   if (reply != m_activeReply)
     return;
   m_activeReply = nullptr;
+  if ((m_stage == CheckStage::PrimaryApi || m_stage == CheckStage::FallbackSumsGet) && !collectMetadata(reply)) {
+    m_metadata.clear();
+    finishFailure(tr("Update metadata exceeds the size limit."));
+    return;
+  }
 
   const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
   switch (m_stage) {
@@ -322,7 +350,7 @@ void VersionChecker::handlePrimaryReply(QNetworkReply *reply, int statusCode)
 
   Release parsed;
   QString error;
-  if (!parseRelease(reply->readAll(), parsed, error, m_packageKind)) {
+  if (!parseRelease(m_metadata, parsed, error, m_packageKind)) {
     finishFailure(error);
     return;
   }
@@ -379,8 +407,7 @@ void VersionChecker::handleFallbackSumsReply(QNetworkReply *reply, int statusCod
     return;
   }
 
-  const QByteArray payload = reply->readAll();
-  if (payload.size() > 64 * 1024 || !parseSha256Sums(payload, m_pendingVersion, m_pendingSha256, m_packageKind)) {
+  if (!parseSha256Sums(m_metadata, m_pendingVersion, m_pendingSha256, m_packageKind)) {
     finishFailure(tr("Invalid update package URL, size, or SHA-256 digest."));
     return;
   }

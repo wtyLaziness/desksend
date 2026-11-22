@@ -916,6 +916,14 @@ Additionally, check you are able to %1 the server config file: %2</source>
         <translation>检查 DeskSend 更新…</translation>
     </message>
     <message>
+        <source>Download updates from GitHub Releases...</source>
+        <translation>从 GitHub 发布页下载更新…</translation>
+    </message>
+    <message>
+        <source>Could not open GitHub Releases. Open %1 in your browser.</source>
+        <translation>无法打开 GitHub 发布页。请在浏览器中打开 %1。</translation>
+    </message>
+    <message>
         <source>File transfers are currently in progress. Installing the update will stop active transfers.
 Continue?</source>
         <translation>当前仍有文件正在传输，安装更新会中断传输。
@@ -1688,8 +1696,8 @@ Enabling this setting will disable the server config GUI.</source>
         <translation>安装并重启</translation>
     </message>
     <message>
-        <source>Built-in updates apply to the portable package. Please download the full archive from the DeskSend releases page.</source>
-        <translation>内置更新适用于便携版。请从 DeskSend 发布页下载完整包。</translation>
+        <source>This ZIP update requires DeskSend in portable desktop mode. Choose the package for your installation from GitHub Releases.</source>
+        <translation>此 ZIP 更新包要求 DeskSend 以便携桌面模式运行。请在 GitHub 发布页选择适合当前安装方式的软件包。</translation>
     </message>
     <message>
         <source>The application directory is not writable. Please extract the full package to a writable folder.</source>
@@ -1710,6 +1718,10 @@ Enabling this setting will disable the server config GUI.</source>
 </context>
 <context>
     <name>VersionChecker</name>
+    <message>
+        <source>Update metadata exceeds the size limit.</source>
+        <translation>更新元数据超过大小限制。</translation>
+    </message>
     <message>
         <source>Invalid release metadata; no stable release found.</source>
         <translation>发布信息无效，未找到正式版。</translation>

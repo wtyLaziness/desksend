@@ -37,6 +37,7 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDesktopServices>
+#include <QScopedValueRollback>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
@@ -500,6 +501,7 @@ void MainWindow::openAboutDialog()
 
 void MainWindow::openGetNewVersionUrl()
 {
+#ifdef Q_OS_WIN
   UpdateDialog dialog(this);
   dialog.setConfirmInstall([this, &dialog]() {
     if (!m_coreProcess.hasActiveFileTransfers()) {
@@ -520,6 +522,10 @@ void MainWindow::openGetNewVersionUrl()
     close();
   });
   dialog.exec();
+#else
+  if (!QDesktopServices::openUrl(QUrl(kUrlDownload)))
+    QMessageBox::warning(this, kAppName, tr("Could not open GitHub Releases. Open %1 in your browser.").arg(kUrlDownload));
+#endif
 }
 
 void MainWindow::openSettings()
@@ -696,6 +702,7 @@ void MainWindow::open()
   const auto kCriticalDialogDelay = 100;
   QTimer::singleShot(kCriticalDialogDelay, this, &messages::raiseCriticalDialog);
 
+#ifdef Q_OS_WIN
   if (!Settings::value(Settings::Gui::AutoUpdateCheck).isValid()) {
     Settings::setValue(Settings::Gui::AutoUpdateCheck, messages::showUpdateCheckOption(this));
   }
@@ -705,6 +712,8 @@ void MainWindow::open()
   } else {
     qDebug() << "skipping check for new version, disabled";
   }
+
+#endif
 
   if (Settings::value(Settings::Gui::AutoStartCore).toBool()) {
     startCore();
@@ -725,7 +734,11 @@ void MainWindow::createMenuBar()
 
   m_menuView->addAction(m_logDock->toggleViewAction());
 
+#ifdef Q_OS_WIN
   auto updates = m_menuHelp->addAction(tr("Check for DeskSend Updates..."));
+#else
+  auto updates = m_menuHelp->addAction(tr("Download updates from GitHub Releases..."));
+#endif
   updates->setObjectName("actionDeskSendUpdates");
   connect(updates, &QAction::triggered, this, &MainWindow::openGetNewVersionUrl);
   m_menuHelp->addSeparator();
@@ -883,17 +896,29 @@ void MainWindow::handleMissingKeyboardLayouts(const QString &layouts)
 
 void MainWindow::handlePeerFingerprint(const QString &fingerprint)
 {
+  m_pendingFingerprints.enqueue({fingerprint, m_coreProcess.mode() == CoreMode::Client});
+  if (m_confirmingFingerprint)
+    return;
+  QScopedValueRollback confirming(m_confirmingFingerprint, true);
+  while (!m_pendingFingerprints.isEmpty()) {
+    const auto [next, isClient] = m_pendingFingerprints.dequeue();
+    confirmPeerFingerprint(next, isClient);
+  }
+}
+
+void MainWindow::confirmPeerFingerprint(const QString &fingerprint, bool isClient)
+{
   const auto sha256Text = QString(fingerprint).remove(':');
+  const auto databasePath = isClient ? Settings::tlsTrustedServersDb() : Settings::tlsTrustedClientsDb();
   const Fingerprint sha256 = {QCryptographicHash::Sha256, QByteArray::fromHex(sha256Text.toLatin1())};
 
-  const bool isClient = m_coreProcess.mode() == CoreMode::Client;
   if ((isClient && m_checkedServers.contains(sha256Text)) || (!isClient && m_checkedClients.contains(sha256Text))) {
     qDebug("ignoring fingerprint, already handled");
     return;
   }
 
   FingerprintDatabase db;
-  db.read(trustedFingerprintDatabase());
+  db.read(databasePath);
 
   if (db.isTrusted(sha256)) {
     qDebug("fingerprint is trusted");
@@ -911,15 +936,18 @@ void MainWindow::handlePeerFingerprint(const QString &fingerprint)
   FingerprintDialog fingerprintDialog(this, m_fingerprint, mode, sha256);
 
   if (fingerprintDialog.exec() == QDialog::Accepted) {
-    db.addTrusted(sha256);
-    if (!db.write(trustedFingerprintDatabase())) {
-      qCritical().noquote() << "unable to write fingerprint to db:" << trustedFingerprintDatabase();
+    FingerprintDatabase current;
+    current.read(databasePath);
+    current.addTrusted(sha256);
+    if (!current.write(databasePath)) {
+      qCritical().noquote() << "unable to write fingerprint to db:" << databasePath;
       m_coreProcess.stop();
       return;
     }
     if (isClient) {
       m_checkedServers.removeAll(sha256Text);
-      m_coreProcess.start();
+      if (m_coreProcess.mode() == CoreMode::Client)
+        m_coreProcess.start();
     } else {
       m_checkedClients.removeAll(sha256Text);
     }
@@ -1370,12 +1398,6 @@ void MainWindow::setHostName()
   if (isServer)
     serverConfig().updateServerName();
   applyConfig();
-}
-
-QString MainWindow::trustedFingerprintDatabase() const
-{
-  const bool isClient = m_coreProcess.mode() == CoreMode::Client;
-  return isClient ? Settings::tlsTrustedServersDb() : Settings::tlsTrustedClientsDb();
 }
 
 bool MainWindow::generateCertificate()

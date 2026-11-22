@@ -10,6 +10,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QQueue>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSystemTrayIcon>
@@ -157,12 +158,6 @@ private:
   bool canRunCore() const;
 
   /**
-   * @brief trustedFingerprintDatabase get the FingerprintDatabase for the trusted clients or trusted servers.
-   * @return The path to the trusted fingerprint file
-   */
-  QString trustedFingerprintDatabase() const;
-
-  /**
    * @brief generateCertificate Generate a new certificate
    * @return true when successful
    */
@@ -184,6 +179,9 @@ private:
   bool m_newClientPromptShowing = false;
   bool m_serverConfigDialogVisible = false;
   QSize m_expandedSize = QSize();
+  void confirmPeerFingerprint(const QString &fingerprint, bool isClient);
+  QQueue<QPair<QString, bool>> m_pendingFingerprints;
+  bool m_confirmingFingerprint = false;
   QStringList m_checkedClients;
   QStringList m_checkedServers;
   QSystemTrayIcon *m_trayIcon = nullptr;

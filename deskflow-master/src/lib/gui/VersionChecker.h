@@ -42,8 +42,11 @@ Q_SIGNALS:
   void checked(bool available);
   void checkFailed(const QString &error);
 private:
+  friend class VersionCheckerTests;
   enum class CheckStage { None, PrimaryApi, FallbackTagHead, FallbackSumsGet, FallbackAssetHead };
 
+  void startMetadataReply(QNetworkReply *reply, qsizetype limit);
+  bool collectMetadata(QNetworkReply *reply);
   void replyFinished(QNetworkReply *reply);
   void startPrimaryApi();
   void startFallbackTagHead();
@@ -58,6 +61,9 @@ private:
 
   QNetworkAccessManager *m_network;
   QNetworkReply *m_activeReply = nullptr;
+  QByteArray m_metadata;
+  qsizetype m_metadataLimit = 0;
+  bool m_metadataTooLarge = false;
   Release m_release;
   Release m_cachedRelease;
   QString m_etag;

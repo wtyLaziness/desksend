@@ -3,12 +3,51 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QNetworkReply>
 #include <QtTest>
+#include <algorithm>
 
 class VersionCheckerTests : public QObject
 {
   Q_OBJECT
 private Q_SLOTS:
+  void oversizedMetadataAbortsWhileReceiving()
+  {
+    class Reply final : public QNetworkReply
+    {
+    public:
+      Reply() { open(QIODevice::ReadOnly | QIODevice::Unbuffered); }
+      void abort() override { aborted = true; }
+      void push(const QByteArray &chunk)
+      {
+        bytes += chunk;
+        Q_EMIT readyRead();
+      }
+      qint64 bytesAvailable() const override { return bytes.size() + QNetworkReply::bytesAvailable(); }
+      bool aborted = false;
+
+    protected:
+      qint64 readData(char *data, qint64 size) override
+      {
+        const auto count = std::min<qint64>(size, bytes.size());
+        std::copy_n(bytes.constData(), count, data);
+        bytes.remove(0, count);
+        return count;
+      }
+
+    private:
+      QByteArray bytes;
+    };
+    VersionChecker checker;
+    Reply reply;
+    checker.startMetadataReply(&reply, 8);
+    reply.push("1234");
+    reply.push("5678");
+    QVERIFY(!reply.aborted);
+    reply.push("9");
+    QVERIFY(reply.aborted);
+    QCOMPARE(checker.m_metadata, QByteArray("12345678"));
+  }
   void publicChannel()
   {
     if (!qEnvironmentVariableIsSet("DESKSEND_LIVE_UPDATE_TEST"))

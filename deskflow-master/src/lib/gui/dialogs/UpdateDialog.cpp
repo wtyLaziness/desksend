@@ -209,7 +209,7 @@ void UpdateDialog::install()
     }
   } else {
     if (!Settings::isPortableMode() || Settings::value(Settings::Core::ProcessMode).value<Settings::ProcessMode>() != Settings::ProcessMode::Desktop) {
-      fail(tr("Built-in updates apply to the portable package. Please download the full archive from the DeskSend releases page."));
+      fail(tr("This ZIP update requires DeskSend in portable desktop mode. Choose the package for your installation from GitHub Releases."));
       return;
     }
     QTemporaryFile probe(QCoreApplication::applicationDirPath() + "/.desksend-write-XXXXXX");

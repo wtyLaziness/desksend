@@ -38,6 +38,7 @@
 #include <QJsonDocument>
 #include <QMetaEnum>
 #include <QMutexLocker>
+#include <QPointer>
 #include <QRegularExpression>
 
 namespace deskflow::gui {
@@ -122,6 +123,12 @@ CoreProcess::CoreProcess(const ServerConfig &serverConfig)
   }
 
   connect(m_daemonIpcClient, &ipc::DaemonIpcClient::connected, this, &CoreProcess::daemonIpcClientConnected);
+  connect(m_daemonIpcClient, &ipc::DaemonIpcClient::connectionFailed, this, [this] {
+    if (m_lastProcessMode == ProcessMode::Service && m_processState == ProcessState::Starting) {
+      stop(ProcessMode::Service);
+      Q_EMIT error(Error::StartFailed);
+    }
+  });
   connect(
       m_daemonIpcClient, &ipc::DaemonIpcClient::connectionFailed, this, &CoreProcess::daemonIpcClientConnectionFailed
   );
@@ -296,7 +303,7 @@ void CoreProcess::startProcessFromDaemon()
     }
     m_daemonIpcClient->sendConfigFile(configFile);
     m_daemonIpcClient->sendStartProcess();
-    setProcessState(ProcessState::Started);
+    connectCoreIpc(true);
   };
 
   if (m_daemonIpcClient->isConnected()) {
@@ -429,7 +436,7 @@ void CoreProcess::handleLogLines(const QString &text)
 
 void CoreProcess::start(std::optional<ProcessMode> processModeOption)
 {
-  if (m_processState == ProcessState::Started) {
+  if (m_processState == ProcessState::Started || m_processState == ProcessState::Starting) {
     qCritical("not starting core process, already started");
     return;
   }
@@ -509,72 +516,69 @@ void CoreProcess::start(std::optional<ProcessMode> processModeOption)
     qInfo().noquote() << "log file:" << logFile;
   }
 
-  // Wired before the start calls so it catches Started from both sync (desktop) and async (service) paths.
-  connect(
-      this, &CoreProcess::processStateChanged, this,
-      [this](ProcessState state) {
-        if (state != ProcessState::Started) {
-          return;
-        }
-
-        // Delay briefly to give the core process time to start its IPC server.
-        QTimer::singleShot(kRetryDelay, this, [this] {
-          if (m_processState != ProcessState::Started) {
-            return;
-          }
-
-          if (m_coreIpcClient) {
-            m_coreIpcClient->disconnectFromServer();
-            m_coreIpcClient->deleteLater();
-            m_coreIpcClient = nullptr;
-          }
-
-          m_coreIpcClient = new ipc::CoreIpcClient(this);
-
-          // queued so a modal dialog opened by a handler can't block readyRead and strand later messages
-          connect(
-              m_coreIpcClient, &ipc::CoreIpcClient::commandReceived, this,
-              [this, client = m_coreIpcClient](const QString &command, const QString &args) {
-                if (m_coreIpcClient == client && client->isConnected()) {
-                  onCoreIpcMessageReceived(command, args);
-                }
-              },
-              Qt::QueuedConnection
-          );
-          connect(m_coreIpcClient, &ipc::CoreIpcClient::connected, this, [this, client = m_coreIpcClient] {
-            qDebug("connected to core ipc server");
-            if (m_coreIpcClient == client) {
-              client->requestTransferPeers();
-            }
-          });
-          connect(m_coreIpcClient, &ipc::CoreIpcClient::connectionFailed, this, [this, client = m_coreIpcClient] {
-            if (m_coreIpcClient == client) {
-              setConnectionState(ConnectionState::Disconnected);
-            }
-            qWarning("failed to establish core ipc connection");
-          });
-          connect(m_coreIpcClient, &ipc::CoreIpcClient::serverShutdown, this, [this, client = m_coreIpcClient] {
-            qDebug("core ipc server shut down cleanly");
-            client->deleteLater();
-            if (m_coreIpcClient == client) {
-              m_coreIpcClient = nullptr;
-              setConnectionState(ConnectionState::Disconnected);
-            }
-          });
-
-          m_coreIpcClient->connectToServer();
-        });
-      },
-      static_cast<Qt::ConnectionType>(Qt::SingleShotConnection | Qt::QueuedConnection)
-  );
-
   if (processMode == ProcessMode::Desktop) {
     startForegroundProcess(args);
+    QTimer::singleShot(kRetryDelay, this, [this, process = QPointer<QProcess>(m_process)] {
+      if (process && m_process == process.data() && m_processState == ProcessState::Started)
+        connectCoreIpc(false);
+    });
   } else if (processMode == ProcessMode::Service) {
+    m_lastProcessMode = processMode;
     startProcessFromDaemon();
   }
 
   m_lastProcessMode = processMode;
+}
+
+void CoreProcess::connectCoreIpc(bool serviceStart)
+{
+  if (m_coreIpcClient) {
+    m_coreIpcClient->disconnectFromServer();
+    m_coreIpcClient->deleteLater();
+    m_coreIpcClient = nullptr;
+  }
+
+  m_coreIpcClient = new ipc::CoreIpcClient(this);
+
+  // queued so a modal dialog opened by a handler can't block readyRead and strand later messages
+  connect(
+      m_coreIpcClient, &ipc::CoreIpcClient::commandReceived, this,
+      [this, client = m_coreIpcClient](const QString &command, const QString &args) {
+        if (m_coreIpcClient == client && client->isConnected()) {
+          onCoreIpcMessageReceived(command, args);
+        }
+      },
+      Qt::QueuedConnection
+  );
+  connect(m_coreIpcClient, &ipc::CoreIpcClient::connected, this, [this, client = m_coreIpcClient, serviceStart] {
+    qDebug("connected to core ipc server");
+    if (m_coreIpcClient == client) {
+      if (serviceStart && m_processState == ProcessState::Starting)
+        setProcessState(ProcessState::Started);
+      client->requestTransferPeers();
+    }
+  });
+  connect(m_coreIpcClient, &ipc::CoreIpcClient::connectionFailed, this, [this, client = m_coreIpcClient, serviceStart] {
+    if (m_coreIpcClient == client) {
+      if (serviceStart && m_processState == ProcessState::Starting) {
+        stop(ProcessMode::Service);
+        Q_EMIT error(Error::StartFailed);
+      } else {
+        setConnectionState(ConnectionState::Disconnected);
+      }
+    }
+    qWarning("failed to establish core ipc connection");
+  }, Qt::QueuedConnection);
+  connect(m_coreIpcClient, &ipc::CoreIpcClient::serverShutdown, this, [this, client = m_coreIpcClient] {
+    qDebug("core ipc server shut down cleanly");
+    client->deleteLater();
+    if (m_coreIpcClient == client) {
+      m_coreIpcClient = nullptr;
+      setConnectionState(ConnectionState::Disconnected);
+    }
+  });
+
+  m_coreIpcClient->connectToServer();
 }
 
 void CoreProcess::stop(std::optional<ProcessMode> processModeOption)
@@ -597,6 +601,8 @@ void CoreProcess::stop(std::optional<ProcessMode> processModeOption)
     qDebug("core process is starting, cancelling");
     if (processMode == ProcessMode::Service) {
       disconnect(m_pendingDaemonCommand);
+      if (m_daemonIpcClient->isConnected())
+        m_daemonIpcClient->sendStopProcess();
     }
     setProcessState(ProcessState::Stopped);
   } else if (m_processState != ProcessState::Stopped) {

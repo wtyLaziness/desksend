@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
 #include "common/VersionInfo.h"
+#include "common/Constants.h"
 #include "gui/ipc/IpcClient.h"
 #include <QLocalServer>
 #include <QLocalSocket>
@@ -36,6 +37,27 @@ private Q_SLOTS:
     Settings::setSettingsFile(m_tempDir.filePath(QStringLiteral("Deskflow.conf")));
     Settings::setStateFile(m_tempDir.filePath(QStringLiteral("Deskflow.state")));
     Settings::setValue(Settings::Core::ProcessMode, Settings::ProcessMode::Desktop);
+  }
+
+  void serviceStartWaitsForCoreHello()
+  {
+    QLocalServer endpoint;
+    endpoint.setSocketOptions(QLocalServer::UserAccessOption);
+    QVERIFY(endpoint.listen(QString::fromLatin1(kCoreIpcName)));
+    ServerConfig config;
+    deskflow::gui::CoreProcess core(config);
+    core.setProcessState(deskflow::core::ProcessState::Starting);
+    core.connectCoreIpc(true);
+
+    QTRY_VERIFY(endpoint.hasPendingConnections());
+    auto *peer = endpoint.nextPendingConnection();
+    QTRY_VERIFY(peer->canReadLine());
+    const auto hello = QStringLiteral("hello=%1+%2\n").arg(kVersion, kVersionGitSha).toUtf8();
+    QCOMPARE(peer->readLine(), hello);
+    QCOMPARE(core.m_processState, deskflow::core::ProcessState::Starting);
+    peer->write(hello);
+    peer->flush();
+    QTRY_COMPARE(core.m_processState, deskflow::core::ProcessState::Started);
   }
 
   void cleanupStopsProcessEvenWhenAlreadyStopping()
