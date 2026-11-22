@@ -133,7 +133,7 @@ pub(super) struct SendState {
 /// Expands a file or directory into local paths and protocol-v2 file names.
 /// Directory names include the selected root so receivers can reconstruct it.
 fn collect_path(path: &Path) -> Vec<CollectedPath> {
-    let metadata = match path.metadata() {
+    let metadata = match path.symlink_metadata() {
         Ok(metadata) => metadata,
         Err(error) => {
             return vec![Err((path.to_path_buf(), error.to_string()))];

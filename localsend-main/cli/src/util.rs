@@ -96,34 +96,60 @@ pub fn unique_path(dir: &Path, file_name: &str) -> PathBuf {
     let _ = std::fs::create_dir_all(dir);
     let name = filename::sanitize_path(file_name, filename::Rules::current());
 
-    let candidate = dir.join(&name);
-    if !candidate.exists() {
+    unique_sanitized_path(dir, &name)
+}
+
+fn unique_sanitized_path(dir: &Path, name: &str) -> PathBuf {
+    let candidate = dir.join(name);
+    if std::fs::symlink_metadata(&candidate).is_err() {
         return candidate;
     }
 
     let (stem, extension) = match name.rsplit_once('.') {
         Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{extension}")),
-        _ => (name.as_str(), String::new()),
+        _ => (name, String::new()),
     };
     (1..)
         .map(|i| dir.join(format!("{stem} ({i}){extension}")))
-        .find(|candidate| !candidate.exists())
+        .find(|candidate| std::fs::symlink_metadata(candidate).is_err())
         .unwrap()
 }
 
 /// Resolves a sender-supplied relative path (e.g. `MyFolder/sub/file.txt`) inside `dir`,
 /// sanitizing each path component individually and stripping any `.` or `..` segments
 /// so folder hierarchy is preserved safely without path traversal.
-pub fn unique_nested_path(dir: &Path, file_name: &str) -> PathBuf {
+pub fn unique_nested_path(dir: &Path, file_name: &str, preserve_line_breaks: bool) -> PathBuf {
     let rules = filename::Rules::current();
     let segments: Vec<String> = file_name
         .split(['/', '\\'])
         .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
-        .map(|seg| filename::sanitize(seg, rules))
+        .map(|seg| {
+            if preserve_line_breaks
+                && matches!(rules, filename::Rules::Posix | filename::Rules::Hfs)
+                && seg.contains(['\r', '\n'])
+            {
+                let normalized = filename::normalize(seg);
+                let mut name = String::new();
+                for ch in normalized.chars() {
+                    let sanitized = match ch {
+                        '\r' | '\n' => ch,
+                        ch if ch.is_control() || (ch == ':' && rules == filename::Rules::Hfs) => '_',
+                        ch => ch,
+                    };
+                    if name.len() + sanitized.len_utf8() > 255 {
+                        break;
+                    }
+                    name.push(sanitized);
+                }
+                name
+            } else {
+                filename::sanitize(seg, rules)
+            }
+        })
         .filter(|seg| !seg.is_empty() && seg != "." && seg != "..")
         .collect();
 
-    if segments.len() <= 1 {
+    if segments.is_empty() {
         return unique_path(dir, file_name);
     }
 
@@ -134,7 +160,7 @@ pub fn unique_nested_path(dir: &Path, file_name: &str) -> PathBuf {
     let _ = std::fs::create_dir_all(&parent);
 
     let last = &segments[segments.len() - 1];
-    unique_path(&parent, last)
+    unique_sanitized_path(&parent, last)
 }
 
 /// Estimates the transfer speed from cumulative byte counts, smoothed with an
@@ -184,13 +210,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
 
-        let p1 = unique_nested_path(&base, "MyFolder/sub/hello.txt");
+        let p1 = unique_nested_path(&base, "MyFolder/sub/hello.txt", false);
         assert_eq!(p1, base.join("MyFolder").join("sub").join("hello.txt"));
         assert!(base.join("MyFolder").join("sub").is_dir());
 
-        let p2 = unique_nested_path(&base, "../../EvilFolder/../safe.txt");
+        let p2 = unique_nested_path(&base, "../../EvilFolder/../safe.txt", false);
         assert_eq!(p2, base.join("EvilFolder").join("safe.txt"));
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+/// 解码 DeskSend 的 UTF-8 路径帧，拒绝空路径、NUL 及畸形十六进制。
+pub fn decode_path_hex(frame: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(!frame.is_empty() && frame.len() % 2 == 0, "Invalid path frame");
+    let mut bytes = Vec::with_capacity(frame.len() / 2);
+    for pair in frame.as_bytes().chunks_exact(2) {
+        let hi = (pair[0] as char).to_digit(16).ok_or_else(|| anyhow::anyhow!("Invalid path frame"))?;
+        let lo = (pair[1] as char).to_digit(16).ok_or_else(|| anyhow::anyhow!("Invalid path frame"))?;
+        bytes.push(((hi << 4) | lo) as u8);
+    }
+    anyhow::ensure!(!bytes.contains(&0), "NUL in path frame");
+    Ok(String::from_utf8(bytes)?)
+}
+
+pub fn encode_path_hex(path: &str) -> String {
+    use std::fmt::Write;
+    let mut frame = String::with_capacity(path.len() * 2);
+    for byte in path.bytes() {
+        let _ = write!(frame, "{byte:02x}");
+    }
+    frame
+}
+
+#[cfg(test)]
+mod path_frame_tests {
+    use super::{decode_path_hex, encode_path_hex};
+
+    #[test]
+    fn preserves_cr_lf_and_unicode() {
+        let path = "folder/a\r\n中文.txt";
+        assert_eq!(decode_path_hex(&encode_path_hex(path)).unwrap(), path);
+    }
+
+    #[test]
+    fn rejects_invalid_paths() {
+        for frame in ["", "0", "zz", "ff", "00"] {
+            assert!(decode_path_hex(frame).is_err());
+        }
     }
 }

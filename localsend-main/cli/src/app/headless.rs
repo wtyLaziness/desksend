@@ -366,12 +366,12 @@ fn parse_auth_command(line: &str) -> Option<AuthCommand> {
     let trimmed = line.trim();
     if let Some(token) = trimmed.strip_prefix("GRANT ") {
         let token = token.trim();
-        if !token.is_empty() {
+        if !token.is_empty() && token.len() <= 256 && !token.chars().any(|ch| ch.is_control() || ch.is_whitespace()) {
             return Some(AuthCommand::Grant(token.to_string()));
         }
     } else if let Some(token) = trimmed.strip_prefix("REVOKE ") {
         let token = token.trim();
-        if !token.is_empty() {
+        if !token.is_empty() && token.len() <= 256 && !token.chars().any(|ch| ch.is_control() || ch.is_whitespace()) {
             return Some(AuthCommand::Revoke(token.to_string()));
         }
     } else if let Some(id) = trimmed.strip_prefix("CANCEL ")
@@ -387,6 +387,7 @@ pub(super) async fn run_receive(
     storage: Repository,
     auto_accept_from: Option<String>,
     auth_stdin: bool,
+    received_paths_hex: bool,
 ) -> anyhow::Result<()> {
     let identity = storage.identity.clone();
     let (events_tx, mut events_rx) = mpsc::channel::<AppEvent>(64);
@@ -429,7 +430,7 @@ pub(super) async fn run_receive(
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    loop {
+    let result = loop {
         tokio::select! {
             auth_cmd = async {
                 match auth_rx.as_mut() {
@@ -468,7 +469,7 @@ pub(super) async fn run_receive(
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                break;
+                break Ok(());
             }
             Some(event) = server_rx.recv() => {
                 match event {
@@ -542,7 +543,7 @@ pub(super) async fn run_receive(
                         if !active_sessions.contains(&session_id) {
                             continue;
                         }
-                        let path = util::unique_nested_path(&storage.destination, &file.file_name);
+                        let path = util::unique_nested_path(&storage.destination, &file.file_name, received_paths_hex);
                         file_paths.insert((session_id.clone(), file_id.clone()), path.clone());
                         let (result_tx, result_rx) = oneshot::channel::<Result<(), String>>();
                         let bytes = Arc::new(AtomicU64::new(0));
@@ -593,7 +594,8 @@ pub(super) async fn run_receive(
                             end_receive_session(&mut progress, &file_paths, &session_id, SessionEndReasonV2::Cancelled, auth_stdin);
                         }
                     }
-                    ServerEventV2::CancelReceived { .. } | ServerEventV2::ListenerFailed { .. } => {}
+                    ServerEventV2::CancelReceived { .. } => {}
+                    ServerEventV2::ListenerFailed { error } => break Err(anyhow::anyhow!("Receiver listener stopped: {error}")),
                 }
             }
             Some(event) = events_rx.recv() => {
@@ -611,18 +613,25 @@ pub(super) async fn run_receive(
                         && !cancelled
                     {
                         match result {
+                            Ok(()) if received_paths_hex => {
+                                if let Some(path) = path.to_str() {
+                                    println!("RECEIVED_FILE_HEX:{}", util::encode_path_hex(path));
+                                } else {
+                                    println!("RECEIVE_FILE_FAILED:invalid UTF-8 path");
+                                }
+                            }
                             Ok(()) => println!("RECEIVED_FILE:{}", path.display()),
-                            Err(err) => println!("RECEIVE_FILE_FAILED:{}:{}", path.display(), err),
+                            Err(err) => println!("RECEIVE_FILE_FAILED:{}:{}", sanitize::single_line(&path.to_string_lossy()), sanitize::single_line(&err.to_string())),
                         }
                     }
                 }
             }
             Some(_disc) = discovery_rx.recv() => {}
         }
-    }
+    };
 
     stop_network(&server, Some(server_stop_tx), &discovery, discovery_stop_tx).await;
-    Ok(())
+    result
 }
 
 fn end_receive_session(

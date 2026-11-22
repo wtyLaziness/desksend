@@ -1886,7 +1886,7 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
 
   QStringList args;
   args << QStringLiteral("--port") << port << QStringLiteral("--destination") << staging << QStringLiteral("receive")
-       << QStringLiteral("--auto-accept-from") << allowSpec << QStringLiteral("--auth-stdin");
+       << QStringLiteral("--auto-accept-from") << allowSpec << QStringLiteral("--auth-stdin") << QStringLiteral("--received-paths-hex");
 
   auto *proc = new QProcess();
   bindProcessToApplication(proc);
@@ -2065,7 +2065,7 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
           m_receiverRestartAttempt = 0;
         }
       }
-      const QString filePrefix = QStringLiteral("RECEIVED_FILE:");
+      const QString filePrefix = QStringLiteral("RECEIVED_FILE_HEX:");
       const QString startPrefix = QStringLiteral("RECEIVE_SESSION_STARTED:");
       if (line.startsWith(QStringLiteral("RECEIVE_PROGRESS:"))) {
         const auto fields = line.split(':');
@@ -2081,7 +2081,14 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
           }
         }
       } else if (line.startsWith(filePrefix)) {
-        handleReceivedFileLine(line.mid(filePrefix.size()).toStdString());
+        const auto encoded = line.mid(filePrefix.size()).toLatin1();
+        const auto path = QByteArray::fromHex(encoded);
+        if (path.isEmpty() || path.contains('\0') || path.toHex() != encoded ||
+            QString::fromUtf8(path).toUtf8() != path) {
+          handleReceiveFileFailedLine();
+        } else {
+          handleReceivedFileLine(path.toStdString());
+        }
       } else if (line.startsWith(QStringLiteral("RECEIVE_FILE_FAILED:"))) {
         handleReceiveFileFailedLine();
       } else if (line.startsWith(startPrefix)) {
@@ -2370,13 +2377,11 @@ void InProcessDropExecutor::processNextSendJob()
     args << QStringLiteral("--port") << QStringLiteral("0");
   }
   args << QStringLiteral("send") << QStringLiteral("--to") << destination << QStringLiteral("--pin-stdin")
-       << QStringLiteral("--paths-stdin") << QStringLiteral("--cancel-stdin");
+       << QStringLiteral("--paths-stdin") << QStringLiteral("--paths-stdin-hex") << QStringLiteral("--cancel-stdin");
 
   QByteArray stdinPayload = QByteArray::fromStdString(job.authToken + "\n");
   for (const auto &f : job.files) {
-    QByteArray line = QByteArray::fromStdString(f);
-    line.replace('\r', "");
-    line.replace('\n', "");
+    const QByteArray line = QByteArray::fromStdString(f).toHex();
     if (!line.isEmpty()) {
       stdinPayload.append(line);
       stdinPayload.append('\n');

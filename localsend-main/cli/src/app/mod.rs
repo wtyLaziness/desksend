@@ -79,10 +79,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     if let Some(Command::Receive {
         auto_accept_from,
         auth_stdin,
+        received_paths_hex,
     }) = &args.command
     {
         let storage = storage::Repository::load(&args)?;
-        return headless::run_receive(storage, auto_accept_from.clone(), *auth_stdin).await;
+        return headless::run_receive(storage, auto_accept_from.clone(), *auth_stdin, *received_paths_hex).await;
     }
     let (payload, target, pin, cancel_stdin) = match &args.command {
         Some(Command::Send {
@@ -90,6 +91,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             text,
             pin_stdin,
             paths_stdin,
+            paths_stdin_hex,
             cancel_stdin,
             paths,
         }) => {
@@ -114,7 +116,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                             break;
                         }
                         if !trimmed.is_empty() {
-                            stdin_paths.push(PathBuf::from(trimmed));
+                            let path = if *paths_stdin_hex {
+                                crate::util::decode_path_hex(trimmed)?
+                            } else {
+                                trimmed.to_owned()
+                            };
+                            stdin_paths.push(PathBuf::from(path));
                         }
                     }
                     anyhow::ensure!(!stdin_paths.is_empty(), "No paths provided on stdin");

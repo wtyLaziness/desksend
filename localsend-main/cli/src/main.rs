@@ -32,6 +32,10 @@ pub enum Command {
         #[arg(long, conflicts_with_all = ["text", "paths"])]
         paths_stdin: bool,
 
+        /// Encode each stdin path as hexadecimal UTF-8.
+        #[arg(long, requires = "paths_stdin")]
+        paths_stdin_hex: bool,
+
         /// End the stdin path list with a blank line, then accept a CANCEL command
         #[arg(long, requires_all = ["to", "paths_stdin"])]
         cancel_stdin: bool,
@@ -49,6 +53,10 @@ pub enum Command {
         /// Require one-time authorization tokens on stdin (`GRANT <token>` / `REVOKE <token>`)
         #[arg(long)]
         auth_stdin: bool,
+
+        /// Encode received paths as hexadecimal UTF-8 records.
+        #[arg(long)]
+        received_paths_hex: bool,
     },
 }
 
@@ -160,6 +168,7 @@ mod tests {
             paths_stdin,
             cancel_stdin,
             paths,
+            ..
         }) = args.command
         else {
             panic!("expected the send command");
