@@ -7,6 +7,7 @@
 #pragma once
 
 #include <QObject>
+#include <QTimer>
 
 class QLocalSocket;
 
@@ -30,6 +31,7 @@ public:
   void connectToServer();
   void disconnectFromServer();
   void flush(int msecs = 500);
+  bool stopIncompatibleCore();
 
   bool isConnected() const
   {
@@ -66,6 +68,10 @@ private:
   State m_state{State::Unconnected};
   QString m_socketName;
   QByteArray m_readBuffer;
+  QTimer m_retryTimer;
+  QTimer m_helloTimer;
+  bool m_versionRejected = false;
+  bool m_stoppingLegacyCore = false;
   int m_retryCount{0};
   QString m_typeName;
 };

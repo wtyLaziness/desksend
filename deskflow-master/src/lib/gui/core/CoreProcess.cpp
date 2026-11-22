@@ -175,7 +175,7 @@ void CoreProcess::checkExistingProcess()
   });
   connect(client, &ipc::CoreIpcClient::versionMismatch, this, [client] {
     qInfo("existing core has mismatched version, asking it to stop");
-    client->sendStop();
+    client->stopIncompatibleCore();
   });
   connect(client, &ipc::CoreIpcClient::serverShutdown, this, [this, client] {
     qInfo("existing core stopped successfully");

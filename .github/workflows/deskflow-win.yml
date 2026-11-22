@@ -87,12 +87,24 @@ jobs:
             $pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'desksend-daemon', 'InOut')
             try {
               $pipe.Connect(5000)
+              $versionHeader = Get-Content "$env:GITHUB_WORKSPACE/deskflow-master/build/src/lib/common/VersionInfo.h" -Raw
+              $version = [regex]::Match($versionHeader, 'kVersion = "([^"]+)"').Groups[1].Value
+              $revision = [regex]::Match($versionHeader, 'kVersionGitSha = "([^"]*)"').Groups[1].Value
+              if (!$version) { throw 'Cannot determine the installed daemon IPC version' }
+              $hello = "hello=$version+$revision"
+              $reader = [System.IO.StreamReader]::new($pipe)
+              $helloBytes = [System.Text.Encoding]::UTF8.GetBytes("$hello`n")
+              $pipe.Write($helloBytes, 0, $helloBytes.Length)
+              $greeting = $reader.ReadLineAsync()
+              if (!$greeting.Wait(5000) -or $greeting.Result -ne $hello) {
+                throw 'The DeskSend service IPC did not complete hello'
+              }
               $prefix = [System.Text.Encoding]::UTF8.GetBytes('log')
               $suffix = [System.Text.Encoding]::UTF8.GetBytes("Path`n")
               $pipe.Write($prefix, 0, $prefix.Length)
               Start-Sleep -Milliseconds 100
               $pipe.Write($suffix, 0, $suffix.Length)
-              $reply = [System.IO.StreamReader]::new($pipe).ReadLineAsync()
+              $reply = $reader.ReadLineAsync()
               if (!$reply.Wait(5000) -or $reply.Result -notlike 'logPath=*desksend-daemon.log') {
                 throw 'The DeskSend service IPC did not return its log path'
               }

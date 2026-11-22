@@ -45,12 +45,14 @@ private:
   void processMessage(QLocalSocket *clientSocket, const QString &message);
   virtual void processCommand(QLocalSocket *clientSocket, const QString &command, const QStringList &parts) = 0;
   void handleNewConnection();
+  void acceptClient(QLocalSocket *clientSocket);
   void handleReadyRead();
   void handleDisconnected();
   void handleErrorOccurred();
 
   QLocalServer *m_server;
   QSet<QLocalSocket *> m_clients;
+  QSet<QLocalSocket *> m_readyClients;
   QString m_serverName;
   QStringList m_pendingMessages;
   QByteArray m_typeName;

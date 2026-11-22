@@ -1,4 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
+#include "common/VersionInfo.h"
+#include "gui/ipc/IpcClient.h"
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QSignalSpy>
+#include <QUuid>
+
 #include "common/Settings.h"
 #include "gui/config/ServerConfig.h"
 #include "gui/core/CoreProcess.h"
@@ -12,8 +19,6 @@
 
 #ifdef Q_OS_WIN
 #include "arch/win32/ArchDaemonWindows.h"
-
-#include <QUuid>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -149,6 +154,38 @@ private Q_SLOTS:
     QCOMPARE(waitResult, WAIT_OBJECT_0);
   }
 #endif
+
+  void ipcReconnectClearsPartialLine()
+  {
+    const auto name = QStringLiteral("ds-reconnect-%1").arg(QUuid::createUuid().toString(QUuid::Id128));
+    QLocalServer server;
+    server.setSocketOptions(QLocalServer::UserAccessOption);
+    QVERIFY(server.listen(name));
+    deskflow::gui::ipc::IpcClient client(nullptr, name, QStringLiteral("test"));
+    QSignalSpy connected(&client, &deskflow::gui::ipc::IpcClient::connected);
+    QSignalSpy failed(&client, &deskflow::gui::ipc::IpcClient::connectionFailed);
+    const auto hello = QStringLiteral("hello=%1+%2\n").arg(kVersion, kVersionGitSha).toUtf8();
+
+    client.connectToServer();
+    QTRY_VERIFY(server.hasPendingConnections());
+    auto *first = server.nextPendingConnection();
+    QTRY_VERIFY(first->canReadLine());
+    QCOMPARE(first->readLine(), hello);
+    first->write("stale");
+    first->flush();
+    QTest::qWait(50);
+    first->disconnectFromServer();
+    QTRY_COMPARE(failed.size(), 1);
+
+    client.connectToServer();
+    QTRY_VERIFY(server.hasPendingConnections());
+    auto *second = server.nextPendingConnection();
+    QTRY_VERIFY(second->canReadLine());
+    QCOMPARE(second->readLine(), hello);
+    second->write(hello);
+    second->flush();
+    QTRY_COMPARE(connected.size(), 1);
+  }
 
 private:
   QTemporaryDir m_tempDir;
