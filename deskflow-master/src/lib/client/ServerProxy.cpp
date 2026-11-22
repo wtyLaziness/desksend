@@ -302,7 +302,10 @@ ServerProxy::ConnectionResult ServerProxy::parseMessage(const uint8_t *code)
   else if (memcmp(code, kMsgDDragInfo, 4) == 0) {
     uint16_t fileCount = 0;
     std::string dragInfo;
-    ProtocolUtil::readf(m_stream, kMsgDDragInfo + 4, &fileCount, &dragInfo);
+    if (!ProtocolUtil::readf(m_stream, kMsgDDragInfo + 4, &fileCount, &dragInfo)) {
+      requestDisconnect("incomplete message from server");
+      return Disconnect;
+    }
     const std::string logInfo = deskflow::redactDragLogPayload(dragInfo);
     LOG_INFO("recv drag info count=%u info=\"%s\"", fileCount, logInfo.c_str());
     deskflow::FileDropBridge::instance().onClientReceiveDragInfo(fileCount, dragInfo);

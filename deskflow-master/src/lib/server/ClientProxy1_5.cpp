@@ -39,7 +39,9 @@ void ClientProxy1_5::fileChunkSending(uint8_t mark, char *data, size_t dataSize)
 bool ClientProxy1_5::parseMessage(const uint8_t *code)
 {
   if (memcmp(code, kMsgDFileTransfer, 4) == 0) {
-    fileChunkReceived();
+    uint8_t mark = 0;
+    std::string data;
+    return ProtocolUtil::readf(getStream(), kMsgDFileTransfer + 4, &mark, &data);
   } else if (memcmp(code, kMsgDDragInfo, 4) == 0) {
     dragInfoReceived();
   } else {

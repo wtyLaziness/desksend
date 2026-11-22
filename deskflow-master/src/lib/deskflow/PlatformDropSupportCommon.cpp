@@ -106,8 +106,13 @@ protected:
     }
     auto global = mapToGlobal(event->position().toPoint());
 #if defined(DESKSEND_HAVE_X11)
-    const auto origin = screen()->geometry().topLeft();
-    global = origin + (global - origin) * screen()->devicePixelRatio();
+    const auto *edgeScreen = screen();
+    if (!edgeScreen) {
+      event->ignore();
+      return;
+    }
+    const auto origin = edgeScreen->geometry().topLeft();
+    global = origin + (global - origin) * edgeScreen->devicePixelRatio();
 #endif
     event->acceptProposedAction();
     m_callbacks.onDragEnter(m_sideIndex, std::move(files), global.x(), global.y());

@@ -15,6 +15,7 @@
 #include "deskflow/Computer.h"
 #include "deskflow/IPlatformComputer.h"
 #include "deskflow/ProtocolTypes.h"
+#include "deskflow/ProtocolUtil.h"
 #include "io/IStream.h"
 #include "net/ISocketFactory.h"
 #include "net/NetworkAddress.h"
@@ -619,8 +620,21 @@ void ServerProxyTests::sendDragInfo_writesDdrgFrameAndRedactsSensitiveLogs()
   wireRecvPayload.push_back(static_cast<char>((recvLen >> 8) & 0xFF));
   wireRecvPayload.push_back(static_cast<char>(recvLen & 0xFF));
   wireRecvPayload.append(recvPayload);
+  {
+    FakeStream input;
+    std::string received = "unchanged";
+    input.push(std::string("\xff\xff\xff\xff", 4));
+    QVERIFY(!ProtocolUtil::readf(&input, "%s", &received));
+    QCOMPARE(received, std::string("unchanged"));
+    const std::string largePayload(2 * 1024 * 1024, 'x');
+    input.push(std::string("\x00\x20\x00\x00", 4) + largePayload);
+    QVERIFY(ProtocolUtil::readf(&input, "%s", &received));
+    QCOMPARE(received, largePayload);
+  }
   stream.push(wireRecvPayload);
   QVERIFY(proxy.invokeHandleMessageIsOkay(reinterpret_cast<const uint8_t *>(kMsgDDragInfo)));
+  stream.push(wireRecvPayload.substr(0, wireRecvPayload.size() - 1));
+  const bool truncatedDispatched = proxy.invokeHandleMessageIsOkay(reinterpret_cast<const uint8_t *>(kMsgDDragInfo));
 
   CLOG->remove(logRecorder);
   CLOG->setFilter(prevFilter);
@@ -633,6 +647,7 @@ void ServerProxyTests::sendDragInfo_writesDdrgFrameAndRedactsSensitiveLogs()
   }
   delete logRecorder;
   QVERIFY(sawRedacted);
+  QVERIFY(!truncatedDispatched);
 }
 
 QTEST_MAIN(ServerProxyTests)
