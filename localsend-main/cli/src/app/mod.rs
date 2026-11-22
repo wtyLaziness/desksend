@@ -22,13 +22,12 @@ use localsend::discovery::{
 };
 use localsend::http::server::v2::ServerEventV2;
 use localsend::http::server::web::{WebConfig, WebDownloadEvent};
-use localsend::http::server::{ServerConfigV2, ServerHandle, start_with_port};
+use localsend::http::server::{ServerConfigV2, ServerHandle, V2Limits, start_with_port_and_limits};
 use localsend::model::discovery::ProtocolType;
 use localsend::multicast::{DEFAULT_MULTICAST_GROUP, DEFAULT_MULTICAST_GROUP_V6, DEFAULT_PORT};
 use localsend::util::interface::{InterfaceFilter, local_interface_addresses};
 use receive::{Answer, PendingReceive, ReceiveSession};
 use sending::{Payload, SendState};
-use std::io::BufRead;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -97,8 +96,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         }) => {
             let mut stdin = (*pin_stdin || *paths_stdin).then(|| std::io::stdin().lock());
             let pin = if *pin_stdin {
-                let mut line = String::new();
-                stdin.as_mut().unwrap().read_line(&mut line)?;
+                let line = crate::util::read_bounded_line(stdin.as_mut().unwrap(), 1024)?.unwrap_or_default();
                 let trimmed = line.trim_end_matches(&['\r', '\n'][..]).to_string();
                 anyhow::ensure!(!trimmed.is_empty(), "Empty PIN provided on stdin");
                 Some(trimmed)
@@ -109,8 +107,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 Some(text) => Payload::Text(sending::read_text(text)?),
                 None if *paths_stdin => {
                     let mut stdin_paths = Vec::new();
-                    for line in stdin.take().unwrap().lines() {
-                        let line = line?;
+                    let mut input = stdin.take().unwrap();
+                    let mut bytes = 0usize;
+                    while let Some(line) = crate::util::read_bounded_line(&mut input, 128 * 1024)? {
+                        bytes += line.len();
+                        anyhow::ensure!(bytes <= 16 * 1024 * 1024 && stdin_paths.len() < 65535, "Path list exceeds limit");
                         let trimmed = line.trim_end_matches(&['\r', '\n'][..]);
                         if *cancel_stdin && trimmed.is_empty() {
                             break;
@@ -175,10 +176,10 @@ struct Network {
     discovery_stop_tx: oneshot::Sender<()>,
 }
 
-async fn start_network(identity: &Arc<storage::Identity>) -> anyhow::Result<Network> {
+async fn start_network(identity: &Arc<storage::Identity>, limits: V2Limits) -> anyhow::Result<Network> {
     let (server_tx, server_rx) = mpsc::channel::<ServerEventV2>(16);
     let (server_stop_tx, server_stop_rx) = oneshot::channel::<()>();
-    let server = start_with_port(
+    let server = start_with_port_and_limits(
         identity.port,
         Some(identity.tls_config()),
         identity.client_info(),
@@ -190,6 +191,7 @@ async fn start_network(identity: &Arc<storage::Identity>) -> anyhow::Result<Netw
         }),
         WebConfig::default(),
         server_stop_rx,
+        limits,
     )
     .await?;
 
@@ -363,7 +365,7 @@ async fn run_interactive(
         discovery,
         mut discovery_rx,
         discovery_stop_tx,
-    } = start_network(&identity).await?;
+    } = start_network(&identity, V2Limits::default()).await?;
     spawn_staged_discovery(
         discovery.clone(),
         events_tx.clone(),

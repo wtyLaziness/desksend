@@ -12,7 +12,7 @@ pub(crate) async fn nonce_exchange(
     state: AppState,
     client_info: RequestClientInfo,
 ) -> Result<JsonResponse<NonceResponse>, AppError> {
-    let payload = body.collect_to_json::<NonceRequest>().await?;
+    let payload = body.collect_to_json::<NonceRequest>(1024).await?;
 
     let nonce = util::base64::decode(&payload.nonce).map_err(|_| {
         tracing::warn!("Failed to decode nonce from base64");
@@ -56,7 +56,7 @@ pub(crate) async fn register(
     state: AppState,
     client_info: RequestClientInfo,
 ) -> Result<JsonResponse<RegisterResponseDto>, AppError> {
-    let payload = body.collect_to_json::<RegisterDto>().await?;
+    let payload = body.collect_to_json::<RegisterDto>(64 * 1024).await?;
 
     let info = state.info.lock().await.clone();
     let has_web_interface = state.web.share.download().is_some();

@@ -110,6 +110,22 @@ impl TokenGate {
     }
 }
 
+const PIN_WINDOW_SECONDS: u32 = 30;
+const PIN_TIME_MASK: u32 = (1 << 30) - 1;
+
+fn pin_clock() -> u32 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    (START.get_or_init(Instant::now).elapsed().as_secs() as u32) & PIN_TIME_MASK
+}
+
+fn current_attempts(record: u32, now: u32) -> u32 {
+    if now.wrapping_sub(record >> 2) & PIN_TIME_MASK >= PIN_WINDOW_SECONDS {
+        0
+    } else {
+        record & 3
+    }
+}
+
 /// Checks the `pin` query parameter against the required PIN (if any).
 pub(crate) async fn check_pin(
     required_pin: Option<&str>,
@@ -122,7 +138,8 @@ pub(crate) async fn check_pin(
     };
 
     let mut attempts = pin_attempts.lock().await;
-    let count = attempts.get(&ip).copied().unwrap_or(0);
+    let now = pin_clock();
+    let count = current_attempts(attempts.get(&ip).copied().unwrap_or(0), now);
     if count >= MAX_PIN_ATTEMPTS {
         return Err(AppError::Message(
             StatusCode::TOO_MANY_REQUESTS,
@@ -136,7 +153,7 @@ pub(crate) async fn check_pin(
             Ok(())
         }
         Some(_) => {
-            attempts.put(ip, count + 1);
+            attempts.put(ip, (now << 2) | (count + 1).min(MAX_PIN_ATTEMPTS));
             Err(AppError::Message(
                 StatusCode::UNAUTHORIZED,
                 "Invalid PIN".to_string(),
@@ -156,23 +173,19 @@ pub(crate) async fn check_token_gate(
     pin_attempts: &Mutex<LruCache<IpAddr, u32>>,
     query: &HashMap<String, String>,
     ip: IpAddr,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     {
         let gate = token_gate.lock().await;
         if !gate.is_enabled() {
-            return Ok(());
+            return Ok(false);
         }
     }
 
-    {
-        let mut attempts = pin_attempts.lock().await;
-        let count = attempts.get(&ip).copied().unwrap_or(0);
-        if count >= MAX_PIN_ATTEMPTS {
-            return Err(AppError::Message(
-                StatusCode::TOO_MANY_REQUESTS,
-                "Too many requests".to_string(),
-            ));
-        }
+    let mut attempts = pin_attempts.lock().await;
+    let now = pin_clock();
+    let count = current_attempts(attempts.get(&ip).copied().unwrap_or(0), now);
+    if count >= MAX_PIN_ATTEMPTS {
+        return Err(AppError::Status(StatusCode::TOO_MANY_REQUESTS));
     }
 
     let Some(provided_pin) = query.get("pin").filter(|p| !p.is_empty()) else {
@@ -187,13 +200,11 @@ pub(crate) async fn check_token_gate(
         gate.verify_and_consume(provided_pin)
     };
 
-    let mut attempts = pin_attempts.lock().await;
     if accepted {
         attempts.pop(&ip);
-        Ok(())
+        Ok(true)
     } else {
-        let count = attempts.get(&ip).copied().unwrap_or(0);
-        attempts.put(ip, count + 1);
+        attempts.put(ip, (now << 2) | (count + 1).min(MAX_PIN_ATTEMPTS));
         Err(AppError::Message(
             StatusCode::UNAUTHORIZED,
             "Invalid PIN".to_string(),
@@ -204,6 +215,13 @@ pub(crate) async fn check_token_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pin_lock_expires() {
+        let record = (100 << 2) | MAX_PIN_ATTEMPTS;
+        assert_eq!(current_attempts(record, 129), MAX_PIN_ATTEMPTS);
+        assert_eq!(current_attempts(record, 130), 0);
+    }
 
     #[test]
     fn token_gate_grant_consume_and_replay_rejected() {

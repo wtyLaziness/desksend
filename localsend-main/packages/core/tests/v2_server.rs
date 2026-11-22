@@ -8,7 +8,7 @@ use localsend::http::dto_v2::{PrepareUploadRequestDtoV2, RegisterDtoV2};
 use localsend::http::server::common::save::FileUploadTarget;
 use localsend::http::server::v2::{PrepareUploadDecisionV2, ServerEventV2, SessionEndReasonV2};
 use localsend::http::server::web::WebConfig;
-use localsend::http::server::{start_with_port, ServerConfigV2, ServerHandle};
+use localsend::http::server::{start_with_port, start_with_port_and_limits, ServerConfigV2, ServerHandle, V2Limits};
 use localsend::http::state::ClientInfo;
 use localsend::model::discovery::ProtocolType;
 use localsend::model::transfer::{FileContent, FileDto, FileMetadata};
@@ -256,6 +256,62 @@ fn assert_status(result: Result<impl Sized, ClientError>, expected_status: u16) 
         Err(ClientError::StatusCode(err)) => assert_eq!(err.status, expected_status),
         Err(err) => panic!("Expected status code {expected_status}, got error: {err:?}"),
         Ok(_) => panic!("Expected status code {expected_status}, got success"),
+    }
+}
+
+#[tokio::test]
+async fn oversized_chunked_nonce_is_rejected_before_end_of_body() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let server = start_test_server(None, false, None).await;
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", server.port)).await.unwrap();
+    stream.write_all(b"POST /api/localsend/v3/nonce HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+    for _ in 0..3 {
+        stream.write_all(b"200\r\n").await.unwrap();
+        stream.write_all(&[b'x'; 512]).await.unwrap();
+        stream.write_all(b"\r\n").await.unwrap();
+    }
+    let mut status = [0u8; 12];
+    tokio::time::timeout(Duration::from_secs(2), stream.read_exact(&mut status)).await.unwrap().unwrap();
+    assert_eq!(&status, b"HTTP/1.1 413");
+}
+
+#[tokio::test]
+async fn token_gate_is_active_before_first_request_and_idle_session_expires() {
+    let (event_tx, mut events) = mpsc::channel(8);
+    let (_stop_tx, stop_rx) = oneshot::channel();
+    let handle = start_with_port_and_limits(
+        0, None,
+        ClientInfo {
+            alias: "receiver".into(), version: "2.2".into(), device_model: None,
+            device_type: None, token: "fingerprint".into(),
+        },
+        None, Some(ServerConfigV2 { pin: None, verify_checksums: true, event_tx }),
+        WebConfig::default(), stop_rx,
+        V2Limits { require_token: true, session_idle_timeout: Duration::from_millis(100), ..V2Limits::default() },
+    ).await.unwrap();
+    let client = LsHttpClientV2::try_new_without_cert().unwrap();
+    let prepare = |pin| client.prepare_upload(
+        ProtocolType::Http, "127.0.0.1", handle.port(), None,
+        prepare_upload_request(&[file_dto("file-a", "a.txt", 5)]), pin, CancellationToken::new(),
+    );
+    assert_status(prepare(None).await, 401);
+    assert!(events.try_recv().is_err());
+    for secret in ["first-token", "second-token"] {
+        handle.grant_v2_token(secret.into()).await;
+        let decide = async {
+            let ServerEventV2::PrepareUpload { files, decision_tx, token_authenticated, .. } = events.recv().await.unwrap() else {
+                panic!("expected prepare event");
+            };
+            assert!(token_authenticated);
+            decision_tx.send(PrepareUploadDecisionV2::Accept(files.keys().cloned().collect())).unwrap();
+        };
+        let (reply, ()) = tokio::join!(prepare(Some(secret)), decide);
+        assert!(reply.is_ok());
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap(),
+            Some(ServerEventV2::SessionEnd { reason: SessionEndReasonV2::Cancelled, .. })
+        ));
     }
 }
 

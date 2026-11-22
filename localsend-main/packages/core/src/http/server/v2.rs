@@ -67,6 +67,7 @@ pub enum ServerEventV2 {
 
         /// Non-secret SHA-256 hex tag (16 chars) of the supplied PIN/token, if any.
         pin_tag: Option<String>,
+        token_authenticated: bool,
 
         /// Channel to send the decision (accept all, a subset, or decline).
         decision_tx: oneshot::Sender<PrepareUploadDecisionV2>,
@@ -160,7 +161,7 @@ pub(crate) async fn register(
     state: AppState,
     client_info: RequestClientInfo,
 ) -> Result<JsonResponse<RegisterResponseDtoV2>, AppError> {
-    let payload = body.collect_to_json::<RegisterDtoV2>().await?;
+    let payload = body.collect_to_json::<RegisterDtoV2>(64 * 1024).await?;
 
     // On TLS, only trust registrations whose claimed fingerprint is proven
     // by the client certificate of the mTLS handshake.
@@ -243,7 +244,7 @@ pub(crate) async fn prepare_upload(
     )
     .await?;
 
-    check_token_gate(
+    let token_authenticated = check_token_gate(
         &v2.token_gate,
         &v2.pin_attempts,
         &query,
@@ -253,11 +254,16 @@ pub(crate) async fn prepare_upload(
 
     let mut payload = req
         .into_body()
-        .collect_to_json::<PrepareUploadRequestDtoV2>()
+        .collect_to_json::<PrepareUploadRequestDtoV2>(16 * 1024 * 1024)
         .await?;
 
     if payload.files.is_empty() {
         return Err(AppError::BadRequest("No files provided".to_string()));
+    }
+
+    let total = payload.files.values().try_fold(0u64, |sum, file| sum.checked_add(file.size));
+    if total.is_none_or(|total| v2.limits.max_session_bytes.is_some_and(|limit| total > limit)) {
+        return Err(AppError::Status(StatusCode::PAYLOAD_TOO_LARGE));
     }
 
     // Senders on macOS send NFD names (e.g. Korean as separate jamo). Normalize
@@ -301,6 +307,7 @@ pub(crate) async fn prepare_upload(
         cert_fingerprint: client_info.cert_fingerprint(),
         files: payload.files.clone(),
         pin_tag,
+        token_authenticated,
         decision_tx,
     };
     if v2.event_tx.send(event).await.is_err() {
@@ -364,6 +371,7 @@ pub(crate) async fn prepare_upload(
         .map(|(id, file)| (id.clone(), file.token.clone()))
         .collect();
 
+    let activity = Arc::new(std::sync::Mutex::new(tokio::time::Instant::now()));
     {
         let mut slot = v2.session.lock().await;
         if cancelled.is_cancelled() {
@@ -372,11 +380,40 @@ pub(crate) async fn prepare_upload(
         *slot = Some(SessionStateV2::Active(UploadSessionV2 {
             session_id: session_id.clone(),
             sender_ip: client_info.ip,
-            cancel: cancelled,
+            cancel: cancelled.clone(),
+            activity: activity.clone(),
             files,
         }));
     }
     pending_guard.disarm();
+    let weak = Arc::downgrade(&v2);
+    let idle = v2.limits.session_idle_timeout;
+    let expiry_id = session_id.clone();
+    tokio::spawn(async move {
+        loop {
+            let deadline = *activity.lock().unwrap() + idle;
+            tokio::select! {
+                _ = cancelled.cancelled() => return,
+                _ = tokio::time::sleep_until(deadline) => {}
+            }
+            let Some(state) = weak.upgrade() else { return };
+            let mut slot = state.session.lock().await;
+            if !matches!(slot.as_ref(), Some(SessionStateV2::Active(session)) if session.session_id == expiry_id) {
+                return;
+            }
+            if activity.lock().unwrap().elapsed() < idle {
+                continue;
+            }
+            cancelled.cancel();
+            *slot = None;
+            drop(slot);
+            let _ = state.event_tx.send(ServerEventV2::SessionEnd {
+                session_id: expiry_id,
+                reason: SessionEndReasonV2::Cancelled,
+            }).await;
+            return;
+        }
+    });
 
     tracing::info!("Upload session created: {session_id}");
 
@@ -410,7 +447,7 @@ pub(crate) async fn upload(
     };
 
     // Validate the request and mark the file as in progress.
-    let (file_dto, cancel) = {
+    let (file_dto, cancel, activity) = {
         let mut slot = v2.session.lock().await;
         let Some(SessionStateV2::Active(session)) = slot.as_mut() else {
             return Err(invalid_token_error());
@@ -426,7 +463,8 @@ pub(crate) async fn upload(
         }
         file.status = FileStatusV2::InProgress;
         file.attempts = file.attempts.saturating_add(1);
-        (file.dto.clone(), session.cancel.clone())
+        *session.activity.lock().unwrap() = tokio::time::Instant::now();
+        (file.dto.clone(), session.cancel.clone(), session.activity.clone())
     };
 
     // Marks the file as failed if this request is aborted mid-transfer.
@@ -457,7 +495,11 @@ pub(crate) async fn upload(
         return Err(AppError::Status(StatusCode::INTERNAL_SERVER_ERROR));
     }
 
-    let Ok(target) = target_rx.await else {
+    let target = tokio::select! {
+        target = target_rx => target.ok(),
+        _ = cancel.cancelled() => None,
+    };
+    let Some(target) = target else {
         upload_guard.finish(SaveResult::Failed).await;
         return Err(AppError::Status(StatusCode::INTERNAL_SERVER_ERROR));
     };
@@ -469,6 +511,7 @@ pub(crate) async fn upload(
         expected_sha256.as_deref(),
         timestamps,
         cancel.clone(),
+        || *activity.lock().unwrap() = tokio::time::Instant::now(),
     )
     .await;
 
@@ -706,8 +749,10 @@ async fn finalize_file(v2: &V2State, session_id: &str, file_id: &str, result: Sa
                 };
             }
         }
+        *session.activity.lock().unwrap() = tokio::time::Instant::now();
         match session.is_complete() {
             true => {
+                session.cancel.cancel();
                 *slot = None;
                 true
             }

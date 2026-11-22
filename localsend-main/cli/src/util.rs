@@ -118,7 +118,8 @@ fn unique_sanitized_path(dir: &Path, name: &str) -> PathBuf {
 /// Resolves a sender-supplied relative path (e.g. `MyFolder/sub/file.txt`) inside `dir`,
 /// sanitizing each path component individually and stripping any `.` or `..` segments
 /// so folder hierarchy is preserved safely without path traversal.
-pub fn unique_nested_path(dir: &Path, file_name: &str, preserve_line_breaks: bool) -> PathBuf {
+pub fn unique_nested_path(dir: &Path, file_name: &str, preserve_line_breaks: bool) -> std::io::Result<PathBuf> {
+    ensure_directory_chain(dir)?;
     let rules = filename::Rules::current();
     let segments: Vec<String> = file_name
         .split(['/', '\\'])
@@ -150,17 +151,51 @@ pub fn unique_nested_path(dir: &Path, file_name: &str, preserve_line_breaks: boo
         .collect();
 
     if segments.is_empty() {
-        return unique_path(dir, file_name);
+        return Ok(unique_path(dir, file_name));
     }
 
     let mut parent = dir.to_path_buf();
     for seg in &segments[..segments.len() - 1] {
         parent.push(seg);
+        ensure_directory_chain(&parent)?;
     }
-    let _ = std::fs::create_dir_all(&parent);
 
     let last = &segments[segments.len() - 1];
-    unique_sanitized_path(&parent, last)
+    Ok(unique_sanitized_path(&parent, last))
+}
+
+fn ensure_directory_chain(dir: &Path) -> std::io::Result<()> {
+    let mut ancestors: Vec<_> = dir.ancestors().filter(|path| !path.as_os_str().is_empty()).collect();
+    while let Some(path) = ancestors.pop() {
+        if std::fs::symlink_metadata(path).is_err() {
+            localsend::http::server::common::save::check_receive_path(path)?;
+            std::fs::create_dir(path)?;
+        }
+        localsend::http::server::common::save::check_receive_path(path)?;
+        if !std::fs::symlink_metadata(path)?.is_dir() {
+            return Err(std::io::Error::other("Receive parent is not a directory"));
+        }
+    }
+    Ok(())
+}
+
+pub fn read_bounded_line(input: &mut impl std::io::BufRead, limit: usize) -> std::io::Result<Option<String>> {
+    use std::io::{BufRead, Read};
+    let mut bytes = Vec::new();
+    let count = input.take((limit + 2) as u64).read_until(b'\n', &mut bytes)?;
+    if count == 0 {
+        return Ok(None);
+    }
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    }
+    if bytes.len() > limit {
+        return Err(std::io::Error::other("stdin line exceeds limit"));
+    }
+    String::from_utf8(bytes).map(Some).map_err(std::io::Error::other)
 }
 
 /// Estimates the transfer speed from cumulative byte counts, smoothed with an
@@ -201,6 +236,25 @@ impl SpeedMeter {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn nested_receive_rejects_symlink_parent() {
+        let base = std::env::temp_dir().join(format!("localsend-link-test-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("outside")).unwrap();
+        std::fs::create_dir_all(base.join("receive")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside"), base.join("receive/link")).unwrap();
+        assert!(unique_nested_path(&base.join("receive"), "link/sub/file", false).is_err());
+        assert!(!base.join("outside/sub").exists());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn stdin_line_limit_rejects_oversized_input() {
+        let mut input = std::io::Cursor::new(b"1234\r\n12345\n");
+        assert_eq!(read_bounded_line(&mut input, 4).unwrap().as_deref(), Some("1234"));
+        assert!(read_bounded_line(&mut input, 4).is_err());
+    }
+
     #[test]
     fn unique_nested_path_preserves_subdirectories_and_strips_traversal() {
         let base = std::env::temp_dir().join(format!(
@@ -210,11 +264,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
 
-        let p1 = unique_nested_path(&base, "MyFolder/sub/hello.txt", false);
+        let p1 = unique_nested_path(&base, "MyFolder/sub/hello.txt", false).unwrap();
         assert_eq!(p1, base.join("MyFolder").join("sub").join("hello.txt"));
         assert!(base.join("MyFolder").join("sub").is_dir());
 
-        let p2 = unique_nested_path(&base, "../../EvilFolder/../safe.txt", false);
+        let p2 = unique_nested_path(&base, "../../EvilFolder/../safe.txt", false).unwrap();
         assert_eq!(p2, base.join("EvilFolder").join("safe.txt"));
 
         let _ = std::fs::remove_dir_all(&base);

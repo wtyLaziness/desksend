@@ -34,6 +34,8 @@ pub(crate) struct UploadSessionV2 {
     pub(crate) sender_ip: PeerIp,
     pub(crate) cancel: CancellationToken,
 
+    pub(crate) activity: std::sync::Arc<std::sync::Mutex<tokio::time::Instant>>,
+
     /// The accepted files, mapped by file ID.
     pub(crate) files: HashMap<String, SessionFileV2>,
 }

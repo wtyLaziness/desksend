@@ -17,6 +17,35 @@ const UPLOAD_CHANNEL_CAPACITY: usize = 16;
 /// TLS record, ~16 KiB) into larger file writes.
 const WRITE_BUFFER_SIZE: usize = 512 * 1024;
 
+/// Rejects links and Windows reparse points before accessing an upload path.
+pub fn check_receive_path(path: &std::path::Path) -> std::io::Result<()> {
+    let mut chain: Vec<_> = path.ancestors().filter(|part| !part.as_os_str().is_empty()).collect();
+    while let Some(part) = chain.pop() {
+        let metadata = match std::fs::symlink_metadata(part) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && part == path => continue,
+            Err(err) => return Err(err),
+        };
+        #[cfg(windows)]
+        let reparse = {
+            use std::os::windows::fs::MetadataExt;
+            metadata.file_attributes() & 0x400 != 0
+        };
+        #[cfg(not(windows))]
+        let reparse = false;
+        #[cfg(target_os = "macos")]
+        if metadata.file_type().is_symlink() && matches!(part.to_str(), Some("/var" | "/tmp"))
+            && std::fs::read_link(part)? == std::path::PathBuf::from(format!("private{}", part.display()))
+        {
+            continue;
+        }
+        if metadata.file_type().is_symlink() || reparse {
+            return Err(std::io::Error::other("Link or reparse point in receive path"));
+        }
+    }
+    Ok(())
+}
+
 /// Where the content of an uploaded file should go, decided by the application.
 #[derive(Debug)]
 pub enum FileUploadTarget {
@@ -123,6 +152,7 @@ pub(crate) async fn save_req_to_target(
     expected_sha256: Option<&str>,
     timestamps: FileTimestamps,
     cancel: CancellationToken,
+    on_progress: impl Fn(),
 ) -> SaveResult {
     use sha2::{Digest, Sha256};
 
@@ -153,6 +183,9 @@ pub(crate) async fn save_req_to_target(
             let opened = staged_file.clone();
             let (binary_tx, result_rx) = spawn_file_writer(
                 async move {
+                    if opened.is_some() {
+                        check_receive_path(&path).map_err(|err| err.to_string())?;
+                    }
                     let file = match &opened {
                         Some(_) => tokio::fs::File::create_new(&path).await,
                         None => tokio::fs::File::create(&path).await,
@@ -216,6 +249,7 @@ pub(crate) async fn save_req_to_target(
                 if data.is_empty() {
                     continue;
                 }
+                on_progress();
                 if let Some(hasher) = &mut hasher {
                     hasher.update(&data);
                 }
@@ -319,7 +353,7 @@ impl Drop for StagedFile {
         if !self.remove.load(Ordering::Relaxed) {
             return;
         }
-        if let Err(error) = std::fs::remove_file(&self.path) {
+        if let Err(error) = check_receive_path(&self.path).and_then(|()| std::fs::remove_file(&self.path)) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 tracing::warn!("Could not remove incomplete upload {}: {error}", self.path.display());
             }
@@ -376,7 +410,7 @@ async fn write_file_from_receiver(
     let mut file = tokio::io::BufWriter::with_capacity(WRITE_BUFFER_SIZE, open.await?);
     let mut written: u64 = 0;
     while let Some(chunk) = rx.recv().await {
-        written += chunk.len() as u64;
+        written = written.checked_add(chunk.len() as u64).ok_or("Upload size overflow")?;
         if written > expected_size {
             return Err(format!(
                 "Expected {expected_size} bytes, received at least {written}"

@@ -52,7 +52,24 @@ pub struct ServerConfigV2 {
 }
 
 /// Runtime state of the v2 protocol endpoints.
+pub struct V2Limits {
+    pub require_token: bool,
+    pub max_session_bytes: Option<u64>,
+    pub session_idle_timeout: std::time::Duration,
+}
+
+impl Default for V2Limits {
+    fn default() -> Self {
+        Self {
+            require_token: false,
+            max_session_bytes: None,
+            session_idle_timeout: std::time::Duration::from_secs(60),
+        }
+    }
+}
+
 pub(crate) struct V2State {
+    limits: V2Limits,
     /// Optional PIN required for prepare-upload requests.
     pub(crate) pin: Option<String>,
 
@@ -102,15 +119,21 @@ impl AppState {
         internal_config: Option<InternalConfig>,
         v2_config: Option<ServerConfigV2>,
         web_config: WebConfig,
+        limits: V2Limits,
     ) -> Self {
         let v2 = v2_config.map(|config| {
+            let mut token_gate = TokenGate::default();
+            if limits.require_token {
+                token_gate.enable();
+            }
             Arc::new(V2State {
                 pin: config.pin,
                 verify_checksums: config.verify_checksums,
                 event_tx: config.event_tx,
                 session: Mutex::new(None),
                 pin_attempts: Mutex::new(LruCache::new(NonZeroUsize::new(200).unwrap())),
-                token_gate: Mutex::new(TokenGate::default()),
+                token_gate: Mutex::new(token_gate),
+                limits,
             })
         });
 
@@ -256,13 +279,26 @@ pub async fn start_with_port(
     web_config: WebConfig,
     stop_rx: oneshot::Receiver<()>,
 ) -> anyhow::Result<ServerHandle> {
+    start_with_port_and_limits(port, tls_config, info, internal_config, v2_config, web_config, stop_rx, V2Limits::default()).await
+}
+
+pub async fn start_with_port_and_limits(
+    port: u16,
+    tls_config: Option<TlsConfig>,
+    info: ClientInfo,
+    internal_config: Option<InternalConfig>,
+    v2_config: Option<ServerConfigV2>,
+    web_config: WebConfig,
+    stop_rx: oneshot::Receiver<()>,
+    limits: V2Limits,
+) -> anyhow::Result<ServerHandle> {
     // Installed before returning, so that a client built right after (which
     // skips the install when a provider exists) does not race the accept task.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let ipv4_socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
     let info = Arc::new(Mutex::new(info));
-    let state = AppState::new(info.clone(), internal_config, v2_config, web_config);
+    let state = AppState::new(info.clone(), internal_config, v2_config, web_config, limits);
 
     let ipv4_listener = tokio::net::TcpListener::bind(ipv4_socket_addr).await?;
     // With port 0, the IPv6 listener must reuse the port the IPv4 listener got.
@@ -525,12 +561,13 @@ async fn serve_connection(
 ) {
     let res = match tls_acceptor {
         Some(tls_acceptor) => {
-            let tls_stream = match tls_acceptor.accept(tcp_stream).await {
-                Ok(tls_stream) => tls_stream,
-                Err(err) => {
+            let tls_stream = match tokio::time::timeout(std::time::Duration::from_secs(10), tls_acceptor.accept(tcp_stream)).await {
+                Ok(Ok(tls_stream)) => tls_stream,
+                Ok(Err(err)) => {
                     tracing::warn!("TLS handshake error: {err:#}");
                     return;
                 }
+                Err(_) => return,
             };
 
             let client_info = {

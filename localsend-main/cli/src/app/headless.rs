@@ -12,10 +12,10 @@ use crate::storage::Repository;
 use crate::ui::{Category, Ui};
 use crate::util;
 use localsend::discovery::{DiscoveryEvent, DiscoveryHandle};
+use localsend::http::server::V2Limits;
 use localsend::http::server::common::save::FileUploadTarget;
 use localsend::http::server::v2::{PrepareUploadDecisionV2, ServerEventV2, SessionEndReasonV2};
 use std::collections::{HashMap, HashSet};
-use std::io::BufRead;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,8 +36,12 @@ pub(super) async fn run(
         let cancel = cancel.clone();
         // 使用独立线程读管道，正常发送完成时无需等待父进程关闭标准输入。
         std::thread::spawn(move || {
-            if std::io::stdin().lock().lines().map_while(Result::ok).any(|line| line == "CANCEL") {
-                cancel.cancel();
+            let mut input = std::io::stdin().lock();
+            while let Ok(Some(line)) = util::read_bounded_line(&mut input, 1024) {
+                if line == "CANCEL" {
+                    cancel.cancel();
+                    break;
+                }
             }
         });
     }
@@ -52,7 +56,7 @@ pub(super) async fn run(
         discovery,
         mut discovery_rx,
         discovery_stop_tx,
-    } = start_network(&storage.identity).await?;
+    } = start_network(&storage.identity, V2Limits::default()).await?;
     Arc::make_mut(&mut storage.identity).port = server.port();
     let identity = storage.identity.clone();
 
@@ -389,6 +393,13 @@ pub(super) async fn run_receive(
     auth_stdin: bool,
     received_paths_hex: bool,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(!received_paths_hex || storage.destination.to_str().is_some(), "Invalid UTF-8 receive destination");
+    let max_session_bytes = match std::env::var("DESKSEND_MAX_RECEIVE_BYTES") {
+        Ok(value) => Some(value.parse::<u64>()?),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(err) => return Err(err.into()),
+    };
+    let limits = V2Limits { require_token: auth_stdin, max_session_bytes, ..V2Limits::default() };
     let identity = storage.identity.clone();
     let (events_tx, mut events_rx) = mpsc::channel::<AppEvent>(64);
     let Network {
@@ -399,17 +410,14 @@ pub(super) async fn run_receive(
         discovery,
         mut discovery_rx,
         discovery_stop_tx,
-    } = start_network(&identity).await?;
+    } = start_network(&identity, limits).await?;
 
     let mut auth_rx = if auth_stdin {
-        server.enable_v2_token_gate().await;
         let (tx, rx) = mpsc::channel::<AuthCommand>(64);
         std::thread::spawn(move || {
             let stdin = std::io::stdin();
-            for line in std::io::BufReader::new(stdin.lock()).lines() {
-                let Ok(line) = line else {
-                    break;
-                };
+            let mut input = stdin.lock();
+            while let Ok(Some(line)) = util::read_bounded_line(&mut input, 1024) {
                 if let Some(cmd) = parse_auth_command(&line)
                     && tx.blocking_send(cmd).is_err()
                 {
@@ -488,15 +496,17 @@ pub(super) async fn run_receive(
                         cert_fingerprint,
                         files,
                         pin_tag,
+                        token_authenticated,
                         decision_tx,
                     } => {
                         let has_client_cert = cert_fingerprint.is_some();
                         let fp = cert_fingerprint.unwrap_or_else(|| info.fingerprint.clone());
                         let paired = !auth_stdin && storage.paired.contains(&fp);
                         let ip_str = ip.to_string();
-                        let authorized = (!auth_stdin || has_client_cert)
+                        let authorized = (!auth_stdin || (has_client_cert && token_authenticated && pin_tag.is_some()))
                             && is_ip_allowed(&ip_str, auto_accept_from.as_deref(), paired);
-                        if authorized {
+                        let total = files.values().try_fold(0u64, |sum, file| sum.checked_add(file.size));
+                        if let (true, Some(total)) = (authorized, total) {
                             let ids: HashSet<String> = files.keys().cloned().collect();
                             if decision_tx.send(PrepareUploadDecisionV2::Accept(ids)).is_ok() {
                                 match pin_tag.as_deref() {
@@ -515,7 +525,7 @@ pub(super) async fn run_receive(
                                     ),
                                 }
                                 let state = ReceiveProgress {
-                                    total: files.values().map(|f| f.size).sum(),
+                                    total,
                                     pending: files.len(),
                                     sender: auth_stdin.then(|| SenderTarget {
                                         host: ip_str,
@@ -543,7 +553,16 @@ pub(super) async fn run_receive(
                         if !active_sessions.contains(&session_id) {
                             continue;
                         }
-                        let path = util::unique_nested_path(&storage.destination, &file.file_name, received_paths_hex);
+                        let path = match util::unique_nested_path(&storage.destination, &file.file_name, received_paths_hex) {
+                            Ok(path) => path,
+                            Err(err) => {
+                                println!("RECEIVE_FILE_FAILED::{}", sanitize::single_line(&err.to_string()));
+                                if let Some(state) = progress.get_mut(&session_id) {
+                                    state.pending = state.pending.saturating_sub(1);
+                                }
+                                continue;
+                            }
+                        };
                         file_paths.insert((session_id.clone(), file_id.clone()), path.clone());
                         let (result_tx, result_rx) = oneshot::channel::<Result<(), String>>();
                         let bytes = Arc::new(AtomicU64::new(0));
@@ -577,11 +596,7 @@ pub(super) async fn run_receive(
                                 })
                                 .await;
                         });
-                        let target = if auth_stdin {
-                            FileUploadTarget::StagedPath { path, result_tx, progress_tx: Some(progress_tx) }
-                        } else {
-                            FileUploadTarget::Path { path, result_tx, progress_tx: Some(progress_tx) }
-                        };
+                        let target = FileUploadTarget::StagedPath { path, result_tx, progress_tx: Some(progress_tx) };
                         let _ = target_tx.send(target);
                     }
                     ServerEventV2::SessionEnd { session_id, reason } => {
