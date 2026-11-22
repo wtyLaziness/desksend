@@ -343,7 +343,9 @@ bool parseDragStartMessage(std::string_view info, std::string &outToken)
   if (!startsWith(info, kStartPrefix)) {
     return false;
   }
-  const auto token = info.substr(kStartPrefix.size());
+  // START 首行携带凭据，后续行是旧版文件名元数据。
+  const auto body = info.substr(kStartPrefix.size());
+  const auto token = body.substr(0, body.find('\n'));
   if (!validWireToken(token)) {
     return false;
   }

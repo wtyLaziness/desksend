@@ -1898,7 +1898,6 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
   int32_t targetY = 0;
   std::string tokenTag;
   std::string token;
-  const std::string_view startHeader = std::string_view(info).substr(0, info.find('\n'));
   if (fileCount != 0 && parseDragDropMessage(info, targetX, targetY, tokenTag)) {
     DropAgentCommand hideCmd;
     hideCmd.type = DropAgentCommandType::HideHover;
@@ -1916,7 +1915,7 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
     dropCmd.y = targetY;
     dropCmd.text = std::move(tokenTag);
     exec->execute(dropCmd);
-  } else if (fileCount != 0 && parseDragStartMessage(startHeader, token)) {
+  } else if (fileCount != 0 && parseDragStartMessage(info, token)) {
     DropAgentCommand activeCmd;
     activeCmd.type = DropAgentCommandType::SetDragActive;
     activeCmd.dragActive = true;

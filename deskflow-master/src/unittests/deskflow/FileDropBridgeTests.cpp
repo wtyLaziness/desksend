@@ -536,7 +536,12 @@ private Q_SLOTS:
     QCOMPARE(token, std::string("secretTok99"));
     QCOMPARE(target, std::string("2001:db8::42"));
 
-    QVERIFY(!deskflow::parseDragStartMessage("DESKSEND_START:tok\nextra", token));
+    QVERIFY(deskflow::parseDragStartMessage("DESKSEND_START:tok\nfirst.txt\nsecond.txt", token));
+    QCOMPARE(token, std::string("tok"));
+    QVERIFY(!deskflow::parseDragStartMessage("DESKSEND_START:bad token\nfirst.txt", token));
+    QVERIFY(!deskflow::parseDragStartMessage("DESKSEND_START:bad\rtoken", token));
+    QVERIFY(!deskflow::parseDragStartMessage("DESKSEND_START:\nfirst.txt", token));
+    QCOMPARE(token, std::string("tok"));
     QVERIFY(!deskflow::parseDragCancelMessage("DESKSEND_CANCEL:", token));
     QVERIFY(!deskflow::parseSendCancelMessage("DESKSEND_SEND_CANCEL:tok\r", token));
     QVERIFY(!deskflow::parseSendDropMessage("DESKSEND_SEND_DROP:1,2:tok:host\nother", x, y, token, target));
