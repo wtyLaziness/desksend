@@ -422,7 +422,7 @@ pub(super) async fn run_receive(
         None
     };
 
-    println!("LOCALSEND_RECEIVER_READY port={} dest={}", identity.port, storage.destination.display());
+    println!("LOCALSEND_RECEIVER_READY port={} dest={}", server.port(), storage.destination.display());
 
     let mut active_sessions: HashSet<String> = HashSet::new();
     let mut file_paths: HashMap<(String, String), PathBuf> = HashMap::new();

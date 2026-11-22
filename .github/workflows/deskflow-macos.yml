@@ -51,14 +51,14 @@ jobs:
               deadline = time.monotonic() + timeout
               while time.monotonic() < deadline:
                   output = log.read_text(encoding="utf-8", errors="replace")
-                  if predicate(output):
-                      return
+                  if match := predicate(output):
+                      return match
                   if receiver.poll() is not None:
                       raise RuntimeError(f"Receiver exited with {receiver.returncode}")
                   time.sleep(0.1)
               raise TimeoutError(f"Receiver condition not met within {timeout}s")
 
-          def transfer(root, files, rx_port, tx_port, authenticated=False, hex_paths=False):
+          def transfer(root, files, authenticated=False, hex_paths=False):
               root.mkdir()
               dest = root / "received"
               dest.mkdir()
@@ -66,9 +66,9 @@ jobs:
               tx_log = root / "sender.log"
               rx_env = dict(os.environ, XDG_CONFIG_HOME=str(root / "rx-config"))
               tx_env = dict(os.environ, XDG_CONFIG_HOME=str(root / "tx-config"))
-              rx_args = [cli, "--port", str(rx_port), "--destination", str(dest),
+              rx_args = [cli, "--port", "0", "--destination", str(dest),
                          "receive", "--auto-accept-from", "127.0.0.1"]
-              tx_args = [cli, "--port", str(tx_port), "send", "--to", f"127.0.0.1:{rx_port}"]
+              tx_args = [cli, "--port", "0", "send"]
               sender_input = None
               token = "e2e-secret-token-1234"
               if authenticated:
@@ -91,7 +91,12 @@ jobs:
                       stdin=subprocess.PIPE if authenticated else subprocess.DEVNULL,
                   )
                   try:
-                      wait_for(receiver, rx_log, lambda log: "LOCALSEND_RECEIVER_READY" in log, 30)
+                      ready = wait_for(
+                          receiver, rx_log,
+                          lambda log: re.search(r"^LOCALSEND_RECEIVER_READY port=([1-9]\d*) ", log, re.MULTILINE),
+                          30,
+                      )
+                      tx_args[4:4] = ["--to", f"127.0.0.1:{ready.group(1)}"]
                       if authenticated:
                           receiver.stdin.write(f"GRANT {token}\n")
                           receiver.stdin.flush()
@@ -137,11 +142,11 @@ jobs:
               files[0].write_text("hello from desksend", encoding="utf-8")
               files[1].write_text("second file 12345", encoding="utf-8")
               files[2].write_bytes(bytes(range(256)) * (32 * 1024 * 1024 // 256))
-              transfer(root / "plain", files, 53318, 53319)
-              transfer(root / "authenticated", files[:2], 53320, 53321, authenticated=True)
+              transfer(root / "plain", files)
+              transfer(root / "authenticated", files[:2], authenticated=True)
               special = root / "line\r\nbreak.txt"
               special.write_bytes(b"line-break path")
-              transfer(root / "hex-paths", [special], 53322, 53323, authenticated=True, hex_paths=True)
+              transfer(root / "hex-paths", [special], authenticated=True, hex_paths=True)
           PY
       - name: Install macOS build dependencies
         run: brew install ninja openssl@3
