@@ -515,8 +515,10 @@ pub(crate) async fn upload(
     )
     .await;
 
+    // 正常结束会话也会取消令牌，以唤醒空闲计时任务。
+    let was_cancelled = cancel.is_cancelled();
     upload_guard.finish(result).await;
-    if cancel.is_cancelled() && result != SaveResult::Success {
+    if was_cancelled && result != SaveResult::Success {
         return Err(AppError::Status(StatusCode::GONE));
     }
 

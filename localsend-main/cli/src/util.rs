@@ -172,7 +172,8 @@ fn ensure_directory_chain(dir: &Path) -> std::io::Result<()> {
             std::fs::create_dir(path)?;
         }
         localsend::http::server::common::save::check_receive_path(path)?;
-        if !std::fs::symlink_metadata(path)?.is_dir() {
+        // 路径检查已拒绝普通链接，这里检查获准的系统链接所指向的目录。
+        if !std::fs::metadata(path)?.is_dir() {
             return Err(std::io::Error::other("Receive parent is not a directory"));
         }
     }
