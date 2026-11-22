@@ -533,7 +533,12 @@ void CoreProcess::start(std::optional<ProcessMode> processModeOption)
 
           // queued so a modal dialog opened by a handler can't block readyRead and strand later messages
           connect(
-              m_coreIpcClient, &ipc::CoreIpcClient::commandReceived, this, &CoreProcess::onCoreIpcMessageReceived,
+              m_coreIpcClient, &ipc::CoreIpcClient::commandReceived, this,
+              [this, client = m_coreIpcClient](const QString &command, const QString &args) {
+                if (m_coreIpcClient == client && client->isConnected()) {
+                  onCoreIpcMessageReceived(command, args);
+                }
+              },
               Qt::QueuedConnection
           );
           connect(m_coreIpcClient, &ipc::CoreIpcClient::connected, this, [this, client = m_coreIpcClient] {
@@ -542,7 +547,10 @@ void CoreProcess::start(std::optional<ProcessMode> processModeOption)
               client->requestTransferPeers();
             }
           });
-          connect(m_coreIpcClient, &ipc::CoreIpcClient::connectionFailed, this, [] {
+          connect(m_coreIpcClient, &ipc::CoreIpcClient::connectionFailed, this, [this, client = m_coreIpcClient] {
+            if (m_coreIpcClient == client) {
+              setConnectionState(ConnectionState::Disconnected);
+            }
             qWarning("failed to establish core ipc connection");
           });
           connect(m_coreIpcClient, &ipc::CoreIpcClient::serverShutdown, this, [this, client = m_coreIpcClient] {
@@ -550,7 +558,7 @@ void CoreProcess::start(std::optional<ProcessMode> processModeOption)
             client->deleteLater();
             if (m_coreIpcClient == client) {
               m_coreIpcClient = nullptr;
-              setTransferPeers({});
+              setConnectionState(ConnectionState::Disconnected);
             }
           });
 
@@ -798,7 +806,7 @@ bool CoreProcess::sendFiles(const QString &targetPeer, const QStringList &paths)
   if (!m_coreIpcClient || m_connectionState != ConnectionState::Connected || paths.isEmpty()) {
     return false;
   }
-  return m_coreIpcClient->sendFiles(targetPeer, paths);
+  return m_transferPeers.contains(targetPeer) && m_coreIpcClient->sendFiles(targetPeer, paths);
 }
 
 void CoreProcess::setTransferPeers(const QStringList &peers)
@@ -818,6 +826,9 @@ void CoreProcess::setConnectionState(ConnectionState state)
   }
   if (changed) {
     Q_EMIT connectionStateChanged(state);
+    if (state == ConnectionState::Connected && m_coreIpcClient) {
+      m_coreIpcClient->requestTransferPeers();
+    }
   }
 }
 
@@ -847,18 +858,30 @@ void CoreProcess::onCoreIpcMessageReceived(const QString &command, const QString
     }
     setConnectionState(state);
   } else if (command == QStringLiteral("transferPeers")) {
-    const auto json = QJsonDocument::fromJson(QByteArray::fromBase64(args.toUtf8()));
-    if (json.isArray()) {
-      QStringList peers;
-      const auto array = json.array();
-      for (const auto &value : array) {
-        const auto peer = value.toString();
-        if (!peer.isEmpty()) {
-          peers.append(peer);
-        }
-      }
-      setTransferPeers(peers);
+    if (m_connectionState != ConnectionState::Connected) {
+      return;
     }
+    const auto decoded = args.size() < 128 * 1024
+                             ? QByteArray::fromBase64Encoding(args.toLatin1(), QByteArray::AbortOnBase64DecodingErrors)
+                             : QByteArray::FromBase64Result{};
+    const auto json = !args.isEmpty() && decoded ? QJsonDocument::fromJson(decoded.decoded) : QJsonDocument{};
+    QStringList peers;
+    if (!json.isArray()) {
+      qWarning("invalid transfer peers IPC payload");
+    } else {
+      for (const auto &value : json.array()) {
+        const auto peer = value.toString();
+        if (peer.isEmpty() || peer.contains(QChar::Null) || peers.contains(peer)) {
+          peers.clear();
+          qWarning("invalid peer entry in transfer peers IPC payload");
+          break;
+        }
+        peers.append(peer);
+      }
+    }
+    setTransferPeers(peers);
+  } else if (command == QStringLiteral("error") && args == QStringLiteral("sendFilesFailed")) {
+    Q_EMIT sendFilesFailed();
   } else if (command == "connectedClients") {
     const auto clients = args.isEmpty() ? QStringList() : args.split(",");
     Q_EMIT connectedClientsChanged(clients);

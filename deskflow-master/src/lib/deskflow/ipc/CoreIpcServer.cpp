@@ -12,6 +12,7 @@
 #include "deskflow/FileDropBridge.h"
 
 #include <QByteArray>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -61,21 +62,26 @@ void CoreIpcServer::processCommand(QLocalSocket *clientSocket, const QString &co
     return;
   }
   if (command == QStringLiteral("sendFiles")) {
-    if (parts.size() >= 2) {
-      const auto json = QJsonDocument::fromJson(QByteArray::fromBase64(parts.at(1).toUtf8()));
+    if (parts.size() == 2 && parts.at(1).size() < 128 * 1024) {
+      const auto decoded = QByteArray::fromBase64Encoding(parts.at(1).toLatin1(), QByteArray::AbortOnBase64DecodingErrors);
+      const auto json = decoded ? QJsonDocument::fromJson(decoded.decoded) : QJsonDocument{};
       if (json.isObject()) {
         const auto object = json.object();
-        const auto target = object.value(QStringLiteral("target")).toString().toStdString();
+        const auto target = object.value(QStringLiteral("target"));
         const auto jsonPaths = object.value(QStringLiteral("paths")).toArray();
         std::vector<std::string> paths;
         paths.reserve(static_cast<size_t>(jsonPaths.size()));
         for (const auto &value : jsonPaths) {
           const auto path = value.toString();
-          if (!path.isEmpty()) {
-            paths.push_back(path.toStdString());
+          const QFileInfo file(path);
+          if (path.contains(QChar::Null) || !file.isAbsolute() || (!file.isFile() && !file.isDir())) {
+            paths.clear();
+            break;
           }
+          paths.push_back(path.toStdString());
         }
-        if (!paths.empty() && FileDropBridge::instance().requestDirectFileSend(target, paths)) {
+        if (target.isString() && !target.toString().isEmpty() && !target.toString().contains(QChar::Null) &&
+            !paths.empty() && FileDropBridge::instance().requestDirectFileSend(target.toString().toStdString(), paths)) {
           writeToClientSocket(clientSocket, QStringLiteral("ok"));
           return;
         }

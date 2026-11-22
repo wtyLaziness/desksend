@@ -40,6 +40,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QInputDialog>
 #include <QLocalServer>
 #include <QLocalSocket>
@@ -90,7 +91,7 @@ MainWindow::MainWindow()
       m_networkMonitor{new NetworkMonitor(this)}
 {
   ui->setupUi(this);
-  setAcceptDrops(true);
+  setAcceptDrops(false);
 
   setWindowIcon(QIcon(":/branding/desksend.png"));
 
@@ -291,6 +292,9 @@ void MainWindow::connectSlots()
 
   connect(m_actionSendFiles, &QAction::triggered, this, &MainWindow::sendFilesDialog);
   connect(&m_coreProcess, &CoreProcess::transferPeersChanged, this, &MainWindow::updateSendFilesAction);
+  connect(&m_coreProcess, &CoreProcess::sendFilesFailed, this, [this] {
+    QMessageBox::information(this, kAppName, tr("Could not start sending files."));
+  });
   connect(&m_coreProcess, &CoreProcess::connectedClientsChanged, this, &MainWindow::serverClientsChanged);
   connect(&m_coreProcess, &CoreProcess::unrecognisedClient, this, &MainWindow::handleUnrecognisedClient);
   connect(&m_coreProcess, &CoreProcess::connectionRefused, this, &MainWindow::handleConnectionRefused);
@@ -1015,7 +1019,9 @@ bool MainWindow::canSendFiles() const
 
 void MainWindow::updateSendFilesAction()
 {
-  m_actionSendFiles->setEnabled(canSendFiles());
+  const bool enabled = canSendFiles();
+  m_actionSendFiles->setEnabled(enabled);
+  setAcceptDrops(enabled);
 }
 
 void MainWindow::sendFilesDialog()
@@ -1035,23 +1041,37 @@ void MainWindow::sendFilesToPeer(const QStringList &paths)
 
   const auto peers = m_coreProcess.transferPeers();
   if (peers.size() == 1) {
-    m_coreProcess.sendFiles(peers.first(), paths);
+    if (!m_coreProcess.sendFiles(peers.first(), paths)) {
+      QMessageBox::information(this, kAppName, tr("Could not start sending files."));
+    }
     return;
   }
 
   QStringList labels;
   for (const auto &peer : peers) {
-    labels.append(peer == QLatin1String("__SERVER__") ? tr("Host computer") : peer);
+    labels.append(QStringLiteral("%1. %2").arg(labels.size() + 1).arg(
+        peer == QLatin1String("__SERVER__") ? tr("Host computer") : peer));
   }
   bool ok = false;
   const auto choice = QInputDialog::getItem(
       this, tr("Send Files"), tr("Choose destination computer:"), labels, 0, false, &ok
   );
   const auto index = labels.indexOf(choice);
-  if (ok && index >= 0) {
-    m_coreProcess.sendFiles(peers.at(index), paths);
+  if (ok && index >= 0 && !m_coreProcess.sendFiles(peers.at(index), paths)) {
+    QMessageBox::information(this, kAppName, tr("Could not start sending files."));
   }
 }
+
+namespace {
+bool isTransferPath(const QString &path)
+{
+  if (path.isEmpty() || path.contains(QChar::Null)) {
+    return false;
+  }
+  const QFileInfo entry(path);
+  return entry.isAbsolute() && (entry.isFile() || entry.isDir());
+}
+} // namespace
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 {
@@ -1061,7 +1081,7 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
   }
   const auto urls = mime->urls();
   for (const auto &url : urls) {
-    if (url.isLocalFile() && !url.toLocalFile().isEmpty()) {
+    if (url.isLocalFile() && url.host().isEmpty() && isTransferPath(url.toLocalFile())) {
       event->acceptProposedAction();
       return;
     }
@@ -1077,9 +1097,9 @@ void MainWindow::dropEvent(QDropEvent *event)
   QStringList paths;
   const auto urls = mime->urls();
   for (const auto &url : urls) {
-    if (url.isLocalFile()) {
+    if (url.isLocalFile() && url.host().isEmpty()) {
       const auto path = url.toLocalFile();
-      if (!path.isEmpty()) {
+      if (isTransferPath(path)) {
         paths.append(path);
       }
     }

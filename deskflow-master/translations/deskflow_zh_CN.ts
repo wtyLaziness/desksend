@@ -948,6 +948,10 @@ Are you sure you want to continue?</source>
         <translation>主机电脑</translation>
     </message>
     <message>
+        <source>Could not start sending files.</source>
+        <translation>无法开始发送文件。</translation>
+    </message>
+    <message>
         <source>Connect to another computer before sending files.</source>
         <translation>请先连接到另一台电脑后再发送文件。</translation>
     </message>

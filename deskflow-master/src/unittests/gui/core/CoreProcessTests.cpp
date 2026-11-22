@@ -54,6 +54,43 @@ private Q_SLOTS:
     QCOMPARE(coreProcess.processState(), deskflow::core::ProcessState::Stopped);
   }
 
+  void transferPeersFollowConnectionAndRejectMalformedPayload()
+  {
+    ServerConfig serverConfig;
+    deskflow::gui::CoreProcess coreProcess(serverConfig);
+    const auto update = [&coreProcess](const QByteArray &payload) {
+      coreProcess.onCoreIpcMessageReceived(QStringLiteral("transferPeers"), QString::fromLatin1(payload));
+    };
+    coreProcess.setMode(Settings::CoreMode::Server);
+    const QByteArray peers = QByteArray(R"(["__SERVER__","peer"])").toBase64();
+    update(peers);
+    QVERIFY(coreProcess.transferPeers().isEmpty());
+    coreProcess.setConnectionState(deskflow::core::ConnectionState::Connected);
+    update(peers);
+    QCOMPARE(coreProcess.transferPeers().size(), 2);
+    update(peers + "!");
+    QVERIFY(coreProcess.transferPeers().isEmpty());
+    update(peers);
+    update(QByteArray(R"(["peer",42])").toBase64());
+    QVERIFY(coreProcess.transferPeers().isEmpty());
+    update(peers);
+    coreProcess.setMode(Settings::CoreMode::Client);
+    QVERIFY(coreProcess.transferPeers().isEmpty());
+    update(peers);
+    coreProcess.setConnectionState(deskflow::core::ConnectionState::Disconnected);
+    update(peers);
+    QVERIFY(coreProcess.transferPeers().isEmpty());
+  }
+
+  void sendFilesFailureIsForwarded()
+  {
+    ServerConfig serverConfig;
+    deskflow::gui::CoreProcess coreProcess(serverConfig);
+    QSignalSpy failure(&coreProcess, &deskflow::gui::CoreProcess::sendFilesFailed);
+    coreProcess.onCoreIpcMessageReceived(QStringLiteral("error"), QStringLiteral("sendFilesFailed"));
+    QCOMPARE(failure.count(), 1);
+  }
+
   void activeTransfersUpdatedViaCoreIpc()
   {
     ServerConfig serverConfig;

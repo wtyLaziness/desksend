@@ -94,7 +94,10 @@ public:
   }
   void setMode(Settings::CoreMode mode)
   {
-    m_mode = mode;
+    if (m_mode != mode) {
+      m_mode = mode;
+      setTransferPeers({});
+    }
   }
 
 Q_SIGNALS:
@@ -106,6 +109,7 @@ Q_SIGNALS:
   void daemonIpcClientConnectionFailed();
   void connectedClientsChanged(const QStringList &clients);
   void transferPeersChanged(const QStringList &peers);
+  void sendFilesFailed();
   void securityLevelChanged(QString securityLevel);
   void unrecognisedClient(const QString &clientName);
   void connectionRefused(deskflow::core::ConnectionRefusal reason);
