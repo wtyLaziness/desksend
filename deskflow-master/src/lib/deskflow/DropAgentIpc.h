@@ -8,12 +8,15 @@
 
 #include "deskflow/DragProtocol.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace deskflow {
+
+inline constexpr std::size_t kMaxDropAgentLineBytes = 1024 * 1024;
 
 enum class DropAgentCommandType
 {

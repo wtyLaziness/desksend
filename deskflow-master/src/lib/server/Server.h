@@ -20,6 +20,7 @@
 
 #include <climits>
 #include <map>
+#include <memory>
 #include <set>
 #include <unordered_set>
 #include <vector>
@@ -428,6 +429,7 @@ private:
   // all clients (including the primary client) indexed by name
   using ClientList = std::map<std::string, BaseClientProxy *>;
   using ClientSet = std::set<BaseClientProxy *>;
+  std::shared_ptr<char> m_directSendEventTarget = std::make_shared<char>();
   ClientList m_clients;
   ClientSet m_clientSet;
 

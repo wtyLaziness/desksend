@@ -25,6 +25,8 @@
 #include <QWidget>
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <functional>
 #include <mutex>
 
@@ -349,17 +351,20 @@ QPoint clampDragHoverPosition(
     const QPoint &cursorPos, const QSize &widgetSize, const QRect &screenBounds, const QPoint &offset
 )
 {
-  int x = cursorPos.x() + offset.x();
-  int y = cursorPos.y() + offset.y();
+  auto x = int64_t{cursorPos.x()} + offset.x();
+  auto y = int64_t{cursorPos.y()} + offset.y();
   if (!screenBounds.isEmpty()) {
-    const int w = std::max(0, widgetSize.width());
-    const int h = std::max(0, widgetSize.height());
-    const int maxX = std::max(screenBounds.left(), screenBounds.left() + screenBounds.width() - w);
-    const int maxY = std::max(screenBounds.top(), screenBounds.top() + screenBounds.height() - h);
-    x = std::clamp(x, screenBounds.left(), maxX);
-    y = std::clamp(y, screenBounds.top(), maxY);
+    const int64_t left = screenBounds.left();
+    const int64_t top = screenBounds.top();
+    const auto maxX = std::max(left, int64_t{screenBounds.right()} + 1 - std::max(0, widgetSize.width()));
+    const auto maxY = std::max(top, int64_t{screenBounds.bottom()} + 1 - std::max(0, widgetSize.height()));
+    x = std::clamp(x, left, maxX);
+    y = std::clamp(y, top, maxY);
   }
-  return QPoint(x, y);
+  const auto bounded = [](int64_t value) {
+    return static_cast<int>(std::clamp<int64_t>(value, std::numeric_limits<int>::min(), std::numeric_limits<int>::max()));
+  };
+  return QPoint(bounded(x), bounded(y));
 }
 
 struct DragHoverIndicator::Impl

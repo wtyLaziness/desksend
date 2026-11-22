@@ -208,6 +208,10 @@ int runDropAgentMain()
           if (nl == std::string::npos) {
             break;
           }
+          if (nl - pos > kMaxDropAgentLineBytes) {
+            exitRequested = true;
+            break;
+          }
           std::string line = buffer.substr(pos, nl - pos);
           pos = nl + 1;
           if (!line.empty() && line.back() == '\r') {
@@ -227,9 +231,10 @@ int runDropAgentMain()
             );
           }
         }
-        if (pos > 0) {
+        if (pos > 0)
           buffer.erase(0, pos);
-        }
+        if (buffer.size() > kMaxDropAgentLineBytes)
+          break;
       }
 
       stopping.store(true);

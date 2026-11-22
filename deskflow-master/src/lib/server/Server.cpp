@@ -38,6 +38,19 @@
 
 using namespace deskflow::server;
 
+namespace {
+struct DirectSendEvent final : EventData
+{
+  DirectSendEvent(std::shared_ptr<char> route, const std::string &target, const std::vector<std::string> &paths)
+      : eventTarget(std::move(route)), peer(target), files(paths)
+  {
+  }
+  std::shared_ptr<char> eventTarget;
+  std::string peer;
+  std::vector<std::string> files;
+};
+}
+
 //
 // Server
 //
@@ -150,10 +163,33 @@ Server::Server(ServerConfig &config, PrimaryClient *primaryClient, deskflow::Com
     LOG_INFO("default computer lock is on, locking cursor to computer");
     m_lockedToComputer = true;
   }
+  // 独立事件目标将直发请求交给拥有客户端代理的线程。
+  m_events->addHandler(EventTypes::ServerConnected, m_directSendEventTarget.get(), [this](const Event &event) {
+    const auto &request = *static_cast<const DirectSendEvent *>(event.getDataObject());
+    BaseClientProxy *target = nullptr;
+    if (request.peer.empty() && m_clients.size() == 2) {
+      for (const auto &entry : m_clients) {
+        if (entry.second != m_primaryClient)
+          target = entry.second;
+      }
+    } else if (const auto it = m_clients.find(request.peer); it != m_clients.end() && it->second != m_primaryClient) {
+      target = it->second;
+    }
+    if (!deskflow::FileDropBridge::instance().sendDirectFilesToActiveClient(target, request.files))
+      ipcSendToClient("error", "sendFilesFailed");
+  });
+  deskflow::FileDropBridge::instance().setServerDirectSend([this](const auto &peer, const auto &files) {
+    m_events->addEvent(Event(
+        EventTypes::ServerConnected, m_directSendEventTarget.get(), new DirectSendEvent(m_directSendEventTarget, peer, files)
+    ));
+    return true;
+  });
 }
 
 Server::~Server()
 {
+  deskflow::FileDropBridge::instance().setServerDirectSend({});
+  m_events->removeHandlers(m_directSendEventTarget.get());
   deskflow::FileDropBridge::instance().setServerPeerHosts({});
   deskflow::FileDropBridge::instance().shutdownSentinels();
   // remove event handlers and timers

@@ -28,6 +28,7 @@
 #include <QStringList>
 #include <QThread>
 #include <QTimer>
+#include <QUuid>
 
 #include <algorithm>
 #include <array>
@@ -2621,15 +2622,9 @@ void InProcessDropExecutor::handleReceiveSessionStarted(
           m_pendingDropTargets.begin(), m_pendingDropTargets.end(),
           [&tokenTag](const DropTargetEntry &entry) { return entry.tokenTag == tokenTag; }
       );
-      if (it == m_pendingDropTargets.end()) {
-        it = std::find_if(
-            m_pendingDropTargets.begin(), m_pendingDropTargets.end(),
-            [](const DropTargetEntry &entry) { return entry.tokenTag.empty(); }
-        );
-      }
       if (it != m_pendingDropTargets.end()) {
         m_activeSessionTarget = std::move(*it);
-        m_pendingDropTargets.erase(m_pendingDropTargets.begin(), std::next(it));
+        m_pendingDropTargets.erase(it);
       } else {
         m_activeSessionTarget = DropTargetEntry{};
         LOG_WARN("FileDropBridge: no matching pending drop target for token tag; files will remain in staging");
@@ -2769,15 +2764,12 @@ void InProcessDropExecutor::handleReceivedFileLine(const std::string &filePath)
   std::string stagingDirStr;
   {
     std::scoped_lock lock(m_mutex);
-    if (!m_activeSessionTarget.dir.empty()) {
-      targetDir = m_activeSessionTarget.dir;
-    } else if (!m_pendingDropTargets.empty()) {
-      targetDir = m_pendingDropTargets.front().dir;
-    }
+    targetDir = m_activeSessionTarget.dir;
     stagingDirStr = m_stagingDir;
   }
   if (targetDir.empty()) {
     LOG_WARN("FileDropBridge: no authorized drop target for received file; keeping in staging");
+    handleReceiveFileFailedLine();
     return;
   }
 
@@ -2879,7 +2871,7 @@ struct OutOfProcessDropExecutor::PlatformState
   HANDLE hStdoutRead = nullptr;
   std::thread readerThread;
 
-  void closePipeAndProcess(bool terminateIfRunning, std::mutex &writeMutex)
+  void closePipeAndProcess(std::mutex &writeMutex)
   {
     {
       std::scoped_lock wlock(writeMutex);
@@ -2889,7 +2881,7 @@ struct OutOfProcessDropExecutor::PlatformState
       }
     }
     if (hProcess) {
-      if (WaitForSingleObject(hProcess, 500) != WAIT_OBJECT_0 && terminateIfRunning) {
+      if (WaitForSingleObject(hProcess, 500) != WAIT_OBJECT_0) {
         TerminateProcess(hProcess, 0);
         WaitForSingleObject(hProcess, 1000);
       }
@@ -2900,6 +2892,9 @@ struct OutOfProcessDropExecutor::PlatformState
       if (readerThread.get_id() == std::this_thread::get_id()) {
         readerThread.detach();
       } else {
+        const auto thread = static_cast<HANDLE>(readerThread.native_handle());
+        while (WaitForSingleObject(thread, 20) == WAIT_TIMEOUT)
+          CancelSynchronousIo(thread);
         readerThread.join();
       }
     }
@@ -2922,13 +2917,7 @@ OutOfProcessDropExecutor::~OutOfProcessDropExecutor()
     std::scoped_lock lock(m_mutex);
     m_shuttingDown = true;
   }
-  DropAgentCommand shutdownCmd;
-  shutdownCmd.type = DropAgentCommandType::Shutdown;
-  {
-    std::scoped_lock wlock(m_writeMutex);
-    writeCommandLocked(shutdownCmd);
-  }
-  m_platform->closePipeAndProcess(true, m_writeMutex);
+  m_platform->closePipeAndProcess(m_writeMutex);
 }
 
 void OutOfProcessDropExecutor::setHost(IDropExecutorHost *host)
@@ -3030,11 +3019,7 @@ void OutOfProcessDropExecutor::execute(const DropAgentCommand &cmd)
         std::scoped_lock lock(m_mutex);
         m_shuttingDown = true;
       }
-      {
-        std::scoped_lock wlock(m_writeMutex);
-        writeCommandLocked(cmd);
-      }
-      m_platform->closePipeAndProcess(true, m_writeMutex);
+      m_platform->closePipeAndProcess(m_writeMutex);
     }
     return;
   default:
@@ -3085,16 +3070,31 @@ void OutOfProcessDropExecutor::writeCommandLocked(const DropAgentCommand &cmd)
     return;
   }
   std::string line = serializeDropAgentCommand(cmd);
+  if (line.size() > kMaxDropAgentLineBytes)
+    return;
   line.push_back('\n');
-  DWORD totalWritten = 0;
-  const DWORD toWrite = static_cast<DWORD>(line.size());
-  while (totalWritten < toWrite) {
-    DWORD written = 0;
-    if (!WriteFile(m_platform->hStdinWrite, line.data() + totalWritten, toWrite - totalWritten, &written, nullptr) ||
-        written == 0) {
-      break;
+  OVERLAPPED operation{};
+  operation.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!operation.hEvent)
+    return;
+  DWORD written = 0;
+  const auto length = static_cast<DWORD>(line.size());
+  bool success = WriteFile(m_platform->hStdinWrite, line.data(), length, &written, &operation);
+  if (!success && GetLastError() == ERROR_IO_PENDING) {
+    if (WaitForSingleObject(operation.hEvent, 250) == WAIT_OBJECT_0) {
+      success = GetOverlappedResult(m_platform->hStdinWrite, &operation, &written, FALSE);
+    } else {
+      CancelIoEx(m_platform->hStdinWrite, &operation);
+      GetOverlappedResult(m_platform->hStdinWrite, &operation, &written, TRUE);
     }
-    totalWritten += written;
+  }
+  CloseHandle(operation.hEvent);
+  if (!success || written != length) {
+    // 未完整的帧不能与后续命令拼接。
+    CloseHandle(m_platform->hStdinWrite);
+    m_platform->hStdinWrite = nullptr;
+    if (m_platform->hProcess)
+      TerminateProcess(m_platform->hProcess, 1);
   }
 }
 
@@ -3141,7 +3141,7 @@ void OutOfProcessDropExecutor::ensureAgentRunning()
     return;
   }
   if (m_platform->hProcess != nullptr || m_platform->readerThread.joinable()) {
-    m_platform->closePipeAndProcess(false, m_writeMutex);
+    m_platform->closePipeAndProcess(m_writeMutex);
     std::scoped_lock lock(m_mutex);
     m_agentReady = false;
   }
@@ -3195,8 +3195,20 @@ void OutOfProcessDropExecutor::ensureAgentRunning()
       CloseHandle(childStderr);
   };
 
-  if (!CreatePipe(&childStdinRead, &parentStdinWrite, &sa, 0) ||
-      !CreatePipe(&parentStdoutRead, &childStdoutWrite, &sa, 0)) {
+  const auto pipeName = (QStringLiteral(R"(\\.\pipe\DeskSendDrop-)") +
+                         QUuid::createUuid().toString(QUuid::Id128)).toStdWString();
+  parentStdinWrite = CreateNamedPipeW(
+      pipeName.c_str(), PIPE_ACCESS_OUTBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+      PIPE_TYPE_BYTE | PIPE_REJECT_REMOTE_CLIENTS, 1, 0, 0, 0, nullptr
+  );
+  if (parentStdinWrite != INVALID_HANDLE_VALUE) {
+    childStdinRead = CreateFileW(pipeName.c_str(), GENERIC_READ, 0, &sa, OPEN_EXISTING, 0, nullptr);
+    if (childStdinRead == INVALID_HANDLE_VALUE)
+      childStdinRead = nullptr;
+  } else {
+    parentStdinWrite = nullptr;
+  }
+  if (!childStdinRead || !CreatePipe(&parentStdoutRead, &childStdoutWrite, &sa, 0)) {
     CloseHandle(userToken);
     cleanupPipes();
     return;
@@ -3365,9 +3377,14 @@ void OutOfProcessDropExecutor::readerLoop(uint32_t expectedGeneration)
     }
     buffer.append(chunk.data(), bytesRead);
     size_t pos = 0;
+    bool oversized = false;
     while (true) {
       const size_t nl = buffer.find('\n', pos);
       if (nl == std::string::npos) {
+        break;
+      }
+      if (nl - pos > kMaxDropAgentLineBytes) {
+        oversized = true;
         break;
       }
       std::string line = buffer.substr(pos, nl - pos);
@@ -3381,9 +3398,10 @@ void OutOfProcessDropExecutor::readerLoop(uint32_t expectedGeneration)
         }
       }
     }
-    if (pos > 0) {
+    if (pos > 0)
       buffer.erase(0, pos);
-    }
+    if (oversized || buffer.size() > kMaxDropAgentLineBytes)
+      break;
   }
 
   postToMainThread([this, expectedGeneration]() { handleAgentPipeClosed(expectedGeneration); });
@@ -3402,7 +3420,7 @@ void OutOfProcessDropExecutor::handleAgentPipeClosed(uint32_t expectedGeneration
         return;
       }
     }
-    m_platform->closePipeAndProcess(false, m_writeMutex);
+    m_platform->closePipeAndProcess(m_writeMutex);
     {
       std::scoped_lock lock(m_mutex);
       m_agentReady = false;

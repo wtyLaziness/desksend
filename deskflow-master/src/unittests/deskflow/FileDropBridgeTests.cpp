@@ -663,6 +663,42 @@ private Q_SLOTS:
     qunsetenv("DESKSEND_DEFAULT_DROP_DIR");
   }
 
+  void unmatchedTokenKeepsFilesInStagingAndPreservesQueuedTargets()
+  {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const auto target = dir.filePath(QStringLiteral("target"));
+    QVERIFY(QDir().mkpath(target));
+    qputenv("DESKSEND_DEFAULT_DROP_DIR", target.toUtf8());
+    deskflow::InProcessDropExecutor executor(false);
+    deskflow::DropAgentCommand drop;
+    drop.type = deskflow::DropAgentCommandType::DropTarget;
+    drop.fileCount = 1;
+    drop.text = "first";
+    executor.execute(drop);
+    drop.text = "second";
+    executor.execute(drop);
+    qunsetenv("DESKSEND_DEFAULT_DROP_DIR");
+
+    const auto receive = [&](const char *name, const char *tag) {
+      const auto path = dir.filePath(QString::fromLatin1(name));
+      QFile file(path);
+      QVERIFY(file.open(QIODevice::WriteOnly));
+      file.write("payload");
+      file.close();
+      executor.handleReceiveSessionStarted(1, tag);
+      executor.handleReceivedFileLine(path.toStdString());
+      executor.handleReceiveSessionFinished(false);
+    };
+
+    receive("missing.txt", "missing");
+    QVERIFY(QFileInfo::exists(dir.filePath(QStringLiteral("missing.txt"))));
+    receive("second.txt", "second");
+    QVERIFY(QFileInfo::exists(QDir(target).filePath(QStringLiteral("second.txt"))));
+    receive("first.txt", "first");
+    QVERIFY(QFileInfo::exists(QDir(target).filePath(QStringLiteral("first.txt"))));
+  }
+
   void platformDropSupport_urlsAndClipboardPayloads()
   {
     using namespace deskflow::platform_drop;
@@ -948,6 +984,9 @@ private Q_SLOTS:
       QCOMPARE(*parsed, ev);
     }
 
+    const std::string oversize(deskflow::kMaxDropAgentLineBytes, ' ');
+    QVERIFY(!deserializeDropAgentCommand(oversize + "{\"type\":\"shutdown\"}").has_value());
+    QVERIFY(!deserializeDropAgentEvent(oversize + "{\"type\":\"ready\"}").has_value());
     QVERIFY(!deserializeDropAgentCommand("").has_value());
     QVERIFY(!deserializeDropAgentCommand("{bad json").has_value());
     QVERIFY(!deserializeDropAgentEvent("").has_value());
@@ -1757,6 +1796,17 @@ private Q_SLOTS:
       const auto &[count, payload] = uplink.at(index);
       bridge.onServerReceiveClientDragInfo(&clientA, static_cast<uint16_t>(count), payload);
     };
+
+    bool dispatched = false;
+    bridge.setServerDirectSend([&](const auto &peer, const auto &paths) {
+      dispatched = peer == "clientA" && paths == files;
+      return dispatched;
+    });
+    const bool queued = bridge.requestDirectFileSend("clientA", files);
+    bridge.setServerDirectSend({});
+    QVERIFY(queued);
+    QVERIFY(dispatched);
+    QCOMPARE(clientA.dragMessages.size(), size_t{2});
 
     // Client A 直发给服务端，再直发给 Client B。
     for (const std::string peer : {"__SERVER__", "clientB"}) {

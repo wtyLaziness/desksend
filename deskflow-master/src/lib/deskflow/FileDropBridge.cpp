@@ -214,6 +214,7 @@ void FileDropBridge::setDropExecutorForTesting(std::unique_ptr<IDropExecutor> ex
   std::shared_ptr<IDropExecutor> oldExec;
   {
     std::scoped_lock lock(m_mutex);
+    m_testExecutor = bool(executor);
     oldExec = std::move(m_executor);
     m_executor = shareExecutor(executor ? std::move(executor) : createDefaultDropExecutor());
     if (m_executor) {
@@ -297,6 +298,12 @@ std::string FileDropBridge::encodeTransferTargetsForIpc(const std::vector<std::s
   return QJsonDocument(array).toJson(QJsonDocument::Compact).toBase64().toStdString();
 }
 
+void FileDropBridge::setServerDirectSend(ServerDirectSend dispatch)
+{
+  std::scoped_lock lock(m_mutex);
+  m_serverDirectSend = std::move(dispatch);
+}
+
 bool FileDropBridge::requestDirectFileSend(const std::string &targetPeer, const std::vector<std::string> &files)
 {
   if (files.empty() || files.size() > UINT16_MAX || !hasTransferableFiles(files)) {
@@ -321,6 +328,10 @@ bool FileDropBridge::requestDirectFileSend(const std::string &targetPeer, const 
       }
       sender = m_clientDragSender;
       m_clientDirectPending.push_back({requestId, files, now + 30000});
+    } else if (m_serverDirectSend) {
+      return m_serverDirectSend(targetPeer, files);
+    } else if (!m_testExecutor) {
+      return false;
     } else if (targetPeer.empty() && m_serverClients.size() == 1) {
       target = m_serverClients.front().second;
     } else {
@@ -340,6 +351,12 @@ bool FileDropBridge::requestDirectFileSend(const std::string &targetPeer, const 
     return true;
   }
 
+  return sendDirectFilesToActiveClient(target, files);
+}
+
+bool FileDropBridge::sendDirectFilesToActiveClient(BaseClientProxy *target, const std::vector<std::string> &files)
+{
+  const auto fileCount = static_cast<uint16_t>(files.size());
   auto exec = executor();
   if (!target || !exec) {
     return false;

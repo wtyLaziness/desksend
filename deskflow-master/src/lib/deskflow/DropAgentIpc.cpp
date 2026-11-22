@@ -283,6 +283,8 @@ std::string serializeDropAgentCommand(const DropAgentCommand &cmd)
 
 std::optional<DropAgentCommand> deserializeDropAgentCommand(const std::string &line)
 {
+  if (line.size() > kMaxDropAgentLineBytes)
+    return std::nullopt;
   const QByteArray raw = QByteArray::fromStdString(line).trimmed();
   if (raw.isEmpty() || !raw.startsWith('{')) {
     return std::nullopt;
@@ -394,6 +396,8 @@ std::string serializeDropAgentEvent(const DropAgentEvent &ev)
 
 std::optional<DropAgentEvent> deserializeDropAgentEvent(const std::string &line)
 {
+  if (line.size() > kMaxDropAgentLineBytes)
+    return std::nullopt;
   const QByteArray raw = QByteArray::fromStdString(line).trimmed();
   if (raw.isEmpty() || !raw.startsWith('{')) {
     return std::nullopt;

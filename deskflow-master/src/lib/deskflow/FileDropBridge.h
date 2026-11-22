@@ -37,6 +37,9 @@ public:
   // --- Server-side (coordinator & primary computer) hooks ---
   void updatePrimaryShape(int32_t x, int32_t y, int32_t w, int32_t h);
   void setPrimaryEdgeSegments(std::vector<DragEdgeSegment> segments);
+  using ServerDirectSend = std::function<bool(const std::string &, const std::vector<std::string> &)>;
+  void setServerDirectSend(ServerDirectSend dispatch);
+  bool sendDirectFilesToActiveClient(BaseClientProxy *target, const std::vector<std::string> &files);
   void setServerClientProxies(const std::vector<BaseClientProxy *> &clients);
   std::vector<std::string> availableTransferTargets() const;
   static std::string encodeTransferTargetsForIpc(const std::vector<std::string> &targets);
@@ -189,6 +192,8 @@ private:
   uint64_t m_nextDirectSendSeq = 0;
   std::vector<PendingDirectSend> m_clientDirectPending;
   std::vector<std::string> m_clientTransferTargets;
+  bool m_testExecutor = false;
+  ServerDirectSend m_serverDirectSend;
   std::vector<std::pair<std::string, BaseClientProxy *>> m_serverClients;
   std::vector<std::string> m_serverPeerHosts;
 
