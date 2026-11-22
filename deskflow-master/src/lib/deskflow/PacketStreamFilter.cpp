@@ -24,6 +24,27 @@ PacketStreamFilter::PacketStreamFilter(IEventQueue *events, deskflow::IStream *s
   // do nothing
 }
 
+PacketStreamFilter::ReadFrame::ReadFrame(deskflow::IStream *stream)
+    : m_filter(dynamic_cast<PacketStreamFilter *>(stream))
+{
+  if (m_filter) {
+    std::scoped_lock lock{m_filter->m_mutex};
+    ++m_filter->m_readFrameDepth;
+  }
+}
+
+PacketStreamFilter::ReadFrame::~ReadFrame()
+{
+  if (!m_filter)
+    return;
+  std::scoped_lock lock{m_filter->m_mutex};
+  if (--m_filter->m_readFrameDepth == 0 && m_filter->m_size == 0) {
+    m_filter->readPacketSize();
+    if (m_filter->m_inputShutdown && m_filter->m_size == 0)
+      m_filter->m_events->addEvent(Event(EventTypes::StreamInputShutdown, m_filter->getEventTarget()));
+  }
+}
+
 void PacketStreamFilter::close()
 {
   std::scoped_lock lock{m_mutex};
@@ -61,7 +82,7 @@ uint32_t PacketStreamFilter::read(void *buffer, uint32_t n)
   // there's enough data to do so.
   readPacketSize();
 
-  if (m_inputShutdown && m_size == 0) {
+  if (m_readFrameDepth == 0 && m_inputShutdown && m_size == 0) {
     m_events->addEvent(Event(EventTypes::StreamInputShutdown, getEventTarget()));
   }
 
@@ -119,14 +140,14 @@ uint32_t PacketStreamFilter::getSize() const
 
 bool PacketStreamFilter::isReadyNoLock() const
 {
-  return (m_size != 0 && m_buffer.getSize() >= m_size);
+  return m_size != 0 && m_size <= PROTOCOL_MAX_MESSAGE_LENGTH && m_buffer.getSize() >= m_size;
 }
 
 bool PacketStreamFilter::readPacketSize()
 {
   // note -- m_mutex must be locked on entry
 
-  if (m_size == 0 && m_buffer.getSize() >= 4) {
+  if (m_readFrameDepth == 0 && m_size == 0 && m_buffer.getSize() >= 4) {
     uint8_t buffer[4];
     memcpy(buffer, m_buffer.peek(sizeof(buffer)), sizeof(buffer));
     m_buffer.pop(sizeof(buffer));

@@ -19,6 +19,7 @@
 #include "deskflow/OptionTypes.h"
 #include "deskflow/ProtocolTypes.h"
 #include "deskflow/ProtocolUtil.h"
+#include "deskflow/PacketStreamFilter.h"
 #include "deskflow/StreamChunker.h"
 #include "io/IStream.h"
 
@@ -82,8 +83,11 @@ void ServerProxy::handleData()
 {
   // handle messages until there are no more.  first read message code.
   uint8_t code[4];
-  uint32_t n = m_stream->read(code, 4);
-  while (n != 0) {
+  for (;;) {
+    const PacketStreamFilter::ReadFrame frame(m_stream);
+    const auto n = m_stream->read(code, 4);
+    if (n == 0)
+      break;
     // verify we got an entire code
     if (n != 4) {
       LOG_ERR("incomplete message from server: %d bytes", n);
@@ -101,11 +105,8 @@ void ServerProxy::handleData()
 
       case Unknown:
         LOG_ERR("invalid message from server: %c%c%c%c", code[0], code[1], code[2], code[3]);
-        // not possible to determine message boundaries
-        // read the whole stream to discard unkonwn data
-        while (m_stream->read(nullptr, 4))
-          ;
-        break;
+        requestDisconnect("unknown message from server");
+        return;
 
       case Disconnect:
         return;
@@ -116,9 +117,6 @@ void ServerProxy::handleData()
       requestDisconnect("invalid message from server");
       return;
     }
-
-    // next message
-    n = m_stream->read(code, 4);
   }
 
   flushCompressedMouse();
@@ -170,7 +168,9 @@ ServerProxy::ConnectionResult ServerProxy::parseHandshakeMessage(const uint8_t *
   else if (memcmp(code, kMsgEIncompatible, 4) == 0) {
     int32_t major;
     int32_t minor;
-    ProtocolUtil::readf(m_stream, kMsgEIncompatible + 4, &major, &minor);
+    if (!ProtocolUtil::readf(m_stream, kMsgEIncompatible + 4, &major, &minor)) {
+      throw BadClientException("Incomplete server message");
+    }
     LOG_ERR("server has incompatible version %d.%d", major, minor);
     requestRefuseConnection(IncompatibleVersion, "server has incompatible version");
     return Disconnect;
@@ -224,7 +224,9 @@ ServerProxy::ConnectionResult ServerProxy::parseMessage(const uint8_t *code)
     uint16_t id = 0;
     uint16_t mask = 0;
     uint16_t button = 0;
-    ProtocolUtil::readf(m_stream, kMsgDKeyDown1_1 + 4, &id, &mask, &button);
+    if (!ProtocolUtil::readf(m_stream, kMsgDKeyDown1_1 + 4, &id, &mask, &button)) {
+      throw BadClientException("Incomplete server message");
+    }
     LOG_VERBOSE("recv key down id=0x%08x, mask=0x%04x, button=0x%04x", id, mask, button);
 
     keyDown(id, mask, button, "");
@@ -247,7 +249,9 @@ ServerProxy::ConnectionResult ServerProxy::parseMessage(const uint8_t *code)
     uint16_t mask = 0;
     uint16_t count = 0;
     uint16_t button = 0;
-    ProtocolUtil::readf(m_stream, kMsgDKeyRepeat1_1 + 4, &id, &mask, &count, &button);
+    if (!ProtocolUtil::readf(m_stream, kMsgDKeyRepeat1_1 + 4, &id, &mask, &count, &button)) {
+      throw BadClientException("Incomplete server message");
+    }
     LOG_VERBOSE("recv key repeat id=0x%08x, mask=0x%04x, count=%d, button=0x%04x", id, mask, count, button);
 
     keyRepeat(id, mask, count, button, "");
@@ -513,7 +517,9 @@ void ServerProxy::enter()
   int16_t y;
   uint16_t mask;
   uint32_t seqNum;
-  ProtocolUtil::readf(m_stream, kMsgCEnter + 4, &x, &y, &seqNum, &mask);
+  if (!ProtocolUtil::readf(m_stream, kMsgCEnter + 4, &x, &y, &seqNum, &mask)) {
+    throw BadClientException("Incomplete server message");
+  }
   LOG_VERBOSE("recv enter, %d,%d %d %04x", x, y, seqNum, mask);
 
   // discard old compressed mouse motion, if any
@@ -564,7 +570,7 @@ void ServerProxy::setClipboard()
 
     LOG_INFO("clipboard was updated");
   } else if (r == TransferState::Error) {
-    requestDisconnect("invalid clipboard data from server");
+    throw BadClientException("Invalid clipboard data from server");
   }
 }
 
@@ -573,7 +579,9 @@ void ServerProxy::grabClipboard()
   // parse
   ClipboardID id;
   uint32_t seqNum;
-  ProtocolUtil::readf(m_stream, kMsgCClipboard + 4, &id, &seqNum);
+  if (!ProtocolUtil::readf(m_stream, kMsgCClipboard + 4, &id, &seqNum)) {
+    throw BadClientException("Incomplete server message");
+  }
   LOG_DEBUG("recv grab clipboard %d", id);
 
   // validate
@@ -618,7 +626,9 @@ void ServerProxy::keyUp()
   uint16_t id;
   uint16_t mask;
   uint16_t button;
-  ProtocolUtil::readf(m_stream, kMsgDKeyUp + 4, &id, &mask, &button);
+  if (!ProtocolUtil::readf(m_stream, kMsgDKeyUp + 4, &id, &mask, &button)) {
+    throw BadClientException("Incomplete server message");
+  }
   LOG_VERBOSE("recv key up id=0x%08x, mask=0x%04x, button=0x%04x", id, mask, button);
 
   // translate
@@ -638,7 +648,9 @@ void ServerProxy::mouseDown()
 
   // parse
   int8_t id;
-  ProtocolUtil::readf(m_stream, kMsgDMouseDown + 4, &id);
+  if (!ProtocolUtil::readf(m_stream, kMsgDMouseDown + 4, &id)) {
+    throw BadClientException("Incomplete server message");
+  }
   LOG_VERBOSE("recv mouse down id=%d", id);
 
   // forward
@@ -652,7 +664,9 @@ void ServerProxy::mouseUp()
 
   // parse
   int8_t id;
-  ProtocolUtil::readf(m_stream, kMsgDMouseUp + 4, &id);
+  if (!ProtocolUtil::readf(m_stream, kMsgDMouseUp + 4, &id)) {
+    throw BadClientException("Incomplete server message");
+  }
   LOG_VERBOSE("recv mouse up id=%d", id);
 
   // forward
@@ -665,7 +679,9 @@ void ServerProxy::mouseMove()
   bool ignore;
   int16_t x;
   int16_t y;
-  ProtocolUtil::readf(m_stream, kMsgDMouseMove + 4, &x, &y);
+  if (!ProtocolUtil::readf(m_stream, kMsgDMouseMove + 4, &x, &y)) {
+    throw BadClientException("Incomplete server message");
+  }
 
   // note if we should ignore the move
   ignore = m_ignoreMouse;
@@ -698,7 +714,9 @@ void ServerProxy::mouseRelativeMove()
   bool ignore;
   int16_t dx;
   int16_t dy;
-  ProtocolUtil::readf(m_stream, kMsgDMouseRelMove + 4, &dx, &dy);
+  if (!ProtocolUtil::readf(m_stream, kMsgDMouseRelMove + 4, &dx, &dy)) {
+    throw BadClientException("Incomplete server message");
+  }
 
   // note if we should ignore the move
   ignore = m_ignoreMouse;
@@ -730,7 +748,9 @@ void ServerProxy::mouseWheel()
   // parse
   int16_t xDelta;
   int16_t yDelta;
-  ProtocolUtil::readf(m_stream, kMsgDMouseWheel + 4, &xDelta, &yDelta);
+  if (!ProtocolUtil::readf(m_stream, kMsgDMouseWheel + 4, &xDelta, &yDelta)) {
+    throw BadClientException("Incomplete server message");
+  }
   LOG_VERBOSE("recv mouse wheel %+d,%+d", xDelta, yDelta);
 
   // forward
@@ -741,7 +761,9 @@ void ServerProxy::screensaver()
 {
   // parse
   int8_t on;
-  ProtocolUtil::readf(m_stream, kMsgCScreenSaver + 4, &on);
+  if (!ProtocolUtil::readf(m_stream, kMsgCScreenSaver + 4, &on)) {
+    throw BadClientException("Incomplete server message");
+  }
   LOG_VERBOSE("recv screen saver on=%d", on);
 
   // forward
@@ -769,12 +791,13 @@ void ServerProxy::setOptions()
 {
   // parse
   OptionsList options;
-  ProtocolUtil::readf(m_stream, kMsgDSetOptions + 4, &options);
+  if (!ProtocolUtil::readf(m_stream, kMsgDSetOptions + 4, &options)) {
+    throw BadClientException("Incomplete server message");
+  }
   LOG_VERBOSE("recv set options size=%d", options.size());
 
   if (options.size() % 2 != 0) {
-    LOG_ERR("options are the incorrect size, can not process them");
-    return;
+    throw BadClientException("Invalid server option list");
   }
 
   // forward

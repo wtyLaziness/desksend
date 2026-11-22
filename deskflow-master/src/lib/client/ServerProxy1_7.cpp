@@ -7,6 +7,7 @@
 #include "client/ServerProxy1_7.h"
 
 #include "base/Log.h"
+#include "deskflow/DeskflowException.h"
 #include "deskflow/ProtocolTypes.h"
 #include "deskflow/ProtocolUtil.h"
 
@@ -32,6 +33,8 @@ ServerProxy::ConnectionResult ServerProxy1_7::parseMessage(const uint8_t *code)
 void ServerProxy1_7::secureInputNotification() const
 {
   std::string app;
-  ProtocolUtil::readf(getStream(), kMsgDSecureInputNotification + 4, &app);
+  if (!ProtocolUtil::readf(getStream(), kMsgDSecureInputNotification + 4, &app)) {
+    throw BadClientException("Incomplete server message");
+  }
   LOG_INFO("application \"%s\" is blocking the keyboard", app.c_str());
 }

@@ -15,6 +15,7 @@
 #include "deskflow/PacketStreamFilter.h"
 #include "net/IDataSocket.h"
 #include "net/IListenSocket.h"
+#include "net/SecureSocket.h"
 #include "net/ISocketFactory.h"
 #include "net/SocketException.h"
 #include "server/ClientProxy.h"
@@ -99,6 +100,7 @@ void ClientListener::stop()
     m_events->removeHandler(ClientProxyDisconnected, client);
     delete client;
   }
+  m_newClients.clear();
 
   // discard waiting clients
   ClientProxy *client = getNextClient();
@@ -130,6 +132,10 @@ void ClientListener::handleClientConnecting()
   if (!socket)
     return;
 
+  constexpr size_t maxTlsHandshakes = 32;
+  if (m_securityLevel != SecurityLevel::PlainText && m_tlsHandshakes.size() >= maxTlsHandshakes)
+    return;
+
   auto rawSocketPointer = socket.release();
   m_clientSockets.insert(rawSocketPointer);
 
@@ -150,11 +156,25 @@ void ClientListener::handleClientConnecting()
   // has to call secure accept which may require retry
   if (m_securityLevel == SecurityLevel::PlainText) {
     m_events->addEvent(Event(EventTypes::ClientListenerAccepted, rawSocketPointer->getEventTarget()));
+  } else {
+    auto *timer = m_events->newOneShotTimer(10.0, nullptr);
+    m_tlsHandshakes.emplace(rawSocketPointer, timer);
+    m_events->addHandler(EventTypes::Timer, timer, [this, rawSocketPointer](const auto &) {
+      LOG_WARN("TLS handshake timed out");
+      removeClientSocket(rawSocketPointer);
+    });
+    if (auto *secure = dynamic_cast<SecureSocket *>(rawSocketPointer))
+      secure->secureAccept();
   }
 }
 
 void ClientListener::handleClientAccepted(IDataSocket *socket)
 {
+  if (!m_clientSockets.contains(socket))
+    return;
+  clearTlsHandshakeTimer(socket);
+  m_events->removeHandler(EventTypes::ClientListenerAccepted, socket->getEventTarget());
+  m_events->removeHandler(EventTypes::ClientListenerDisconnectedOnAccept, socket->getEventTarget());
   LOG_INFO("accepted client connection");
 
   // filter socket messages, including a packetizing filter
@@ -219,17 +239,30 @@ void ClientListener::handleClientDisconnected(ClientProxy *client)
 
       // pull out the socket before deleting the client so
       // we know which socket we no longer need
-      auto *socket = static_cast<IDataSocket *>(client->getStream());
+      const auto *filter = dynamic_cast<StreamFilter *>(client->getStream());
+      auto *socket = filter && !filter->adoptedStream() ? dynamic_cast<IDataSocket *>(filter->getStream()) : nullptr;
       delete client;
-      removeClientSocket(socket);
+      if (socket)
+        removeClientSocket(socket);
 
       break;
     }
   }
 }
 
+void ClientListener::clearTlsHandshakeTimer(IDataSocket *socket)
+{
+  const auto it = m_tlsHandshakes.find(socket);
+  if (it == m_tlsHandshakes.end())
+    return;
+  m_events->removeHandlers(it->second);
+  m_events->deleteTimer(it->second);
+  m_tlsHandshakes.erase(it);
+}
+
 void ClientListener::removeClientSocket(IDataSocket *socket)
 {
+  clearTlsHandshakeTimer(socket);
   m_clientSockets.erase(socket);
   m_events->removeHandlers(socket->getEventTarget());
   delete socket;
@@ -242,8 +275,6 @@ void ClientListener::cleanupListenSocket()
 
 void ClientListener::cleanupClientSockets()
 {
-  for (auto client : m_clientSockets) {
-    delete client;
-  }
-  m_clientSockets.clear();
+  while (!m_clientSockets.empty())
+    removeClientSocket(*m_clientSockets.begin());
 }

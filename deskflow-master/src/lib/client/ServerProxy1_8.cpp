@@ -7,6 +7,7 @@
 #include "client/ServerProxy1_8.h"
 
 #include "base/Log.h"
+#include "deskflow/DeskflowException.h"
 #include "deskflow/ProtocolTypes.h"
 #include "deskflow/ProtocolUtil.h"
 #include "deskflow/ipc/CoreIpc.h"
@@ -40,7 +41,9 @@ ServerProxy::ConnectionResult ServerProxy1_8::parseMessage(const uint8_t *code)
     uint16_t mask = 0;
     uint16_t button = 0;
     std::string lang;
-    ProtocolUtil::readf(getStream(), kMsgDKeyDown + 4, &id, &mask, &button, &lang);
+    if (!ProtocolUtil::readf(getStream(), kMsgDKeyDown + 4, &id, &mask, &button, &lang)) {
+      throw BadClientException("Incomplete server message");
+    }
     LOG_VERBOSE("recv key down id=0x%08x, mask=0x%04x, button=0x%04x, lang=\"%s\"", id, mask, button, lang.c_str());
 
     setActiveServerLayout(lang);
@@ -51,7 +54,9 @@ ServerProxy::ConnectionResult ServerProxy1_8::parseMessage(const uint8_t *code)
     uint16_t count = 0;
     uint16_t button = 0;
     std::string lang;
-    ProtocolUtil::readf(getStream(), kMsgDKeyRepeat + 4, &id, &mask, &count, &button, &lang);
+    if (!ProtocolUtil::readf(getStream(), kMsgDKeyRepeat + 4, &id, &mask, &count, &button, &lang)) {
+      throw BadClientException("Incomplete server message");
+    }
     LOG_VERBOSE(
         "recv key repeat id=0x%08x, mask=0x%04x, count=%d, button=0x%04x, lang=\"%s\"", id, mask, count, button,
         lang.c_str()
@@ -71,7 +76,9 @@ ServerProxy::ConnectionResult ServerProxy1_8::parseMessage(const uint8_t *code)
 void ServerProxy1_8::setServerLayouts()
 {
   std::string serverLayouts;
-  ProtocolUtil::readf(getStream(), kMsgDLanguageSynchronisation + 4, &serverLayouts);
+  if (!ProtocolUtil::readf(getStream(), kMsgDLanguageSynchronisation + 4, &serverLayouts)) {
+    throw BadClientException("Incomplete server message");
+  }
   m_layoutManager.setRemoteLayouts(serverLayouts);
 
   if (const auto missingLayouts = m_layoutManager.getMissedLayouts(); !missingLayouts.empty()) {

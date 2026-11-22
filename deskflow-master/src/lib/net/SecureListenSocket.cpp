@@ -50,8 +50,6 @@ std::unique_ptr<IDataSocket> SecureListenSocket::accept()
       return nullptr;
     }
 
-    secureSocket->secureAccept();
-
     return secureSocket;
   } catch (ArchNetworkException &) {
     if (secureSocket) {

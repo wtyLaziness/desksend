@@ -508,6 +508,34 @@ void ServerProxyTests::handleKeepAliveAlarm_timeout_queuesDisconnectRequest()
   QCOMPARE(QString::fromUtf8(request->message()), QStringLiteral("server is not responding"));
 }
 
+void ServerProxyTests::truncatedHelloClosesConnection()
+{
+  RecordingEventQueue events;
+  auto *computer = new deskflow::Computer(new StubPlatformComputer(&events), &events);
+  Client client(&events, "client", NetworkAddress("127.0.0.1", 24800), new NoopSocketFactory(), computer);
+  auto *stream = new FakeStream;
+  stream->push("Synergy");
+  client.m_stream = stream;
+
+  client.handleHello();
+
+  QVERIFY(client.m_stream == nullptr);
+  QVERIFY(!events.addedEvents().empty());
+  QVERIFY(events.addedEvents().back().getType() == EventTypes::ClientConnectionFailed);
+}
+
+void ServerProxyTests::truncatedOptionsDoNotCompleteHandshake()
+{
+  RecordingEventQueue events;
+  FakeStream stream;
+  stream.push(std::string(kMsgDSetOptions, 4));
+  ServerProxy proxy(undereferenceableClient(), &stream, &events);
+
+  QVERIFY(events.dispatchEvent(Event(EventTypes::StreamInputReady, stream.getEventTarget())));
+  QVERIFY(disconnectRequest(events) != nullptr);
+  QCOMPARE(stream.takeWritten(), std::string(kMsgEBad, 4));
+}
+
 void ServerProxyTests::handleData_incompleteMessage_queuesDisconnectRequest()
 {
   RecordingEventQueue events;

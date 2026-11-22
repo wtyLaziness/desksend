@@ -716,7 +716,12 @@ void Client::handleHello()
   // we cannot re-use `readf` to check for various hello messages,
   // as `readf` eats bytes (advances the stream position reference).
   std::string protocolName;
-  ProtocolUtil::readf(m_stream, kMsgHello, &protocolName, &serverMajor, &serverMinor);
+  if (!ProtocolUtil::readf(m_stream, kMsgHello, &protocolName, &serverMajor, &serverMinor)) {
+    sendConnectionFailedEvent("got incomplete hello message from server");
+    cleanupTimer();
+    cleanupConnection();
+    return;
+  }
 
   if (const auto proto = networkProtocolFromString(QString::fromStdString(protocolName));
       proto == NetworkProtocol::Unknown) {

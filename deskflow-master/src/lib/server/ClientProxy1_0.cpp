@@ -11,6 +11,7 @@
 #include "base/IEventQueue.h"
 #include "base/Log.h"
 #include "deskflow/DeskflowException.h"
+#include "deskflow/PacketStreamFilter.h"
 #include "deskflow/ProtocolUtil.h"
 #include "io/IStream.h"
 
@@ -122,8 +123,11 @@ void ClientProxy1_0::handleData()
 {
   // handle messages until there are no more.  first read message code.
   uint8_t code[4];
-  uint32_t n = getStream()->read(code, 4);
-  while (n != 0) {
+  for (;;) {
+    const PacketStreamFilter::ReadFrame frame(getStream());
+    const auto n = getStream()->read(code, 4);
+    if (n == 0)
+      break;
     // verify we got an entire code
     if (n != 4) {
       LOG_ERR("incomplete message from \"%s\": %d bytes", getName().c_str(), n);
@@ -139,19 +143,14 @@ void ClientProxy1_0::handleData()
             (CLOG_ERR "invalid message from client \"%s\": %c%c%c%c", getName().c_str(), code[0], code[1], code[2],
              code[3])
         );
-        // not possible to determine message boundaries
-        // read the whole stream to discard unkonwn data
-        while (getStream()->read(nullptr, 4))
-          ;
+        disconnect();
+        return;
       }
     } catch (const BadClientException &e) {
       LOG_ERR("protocol error from client \"%s\": %s", getName().c_str(), e.what());
       disconnect();
       return;
     }
-
-    // next message
-    n = getStream()->read(code, 4);
   }
 
   // restart heartbeat timer

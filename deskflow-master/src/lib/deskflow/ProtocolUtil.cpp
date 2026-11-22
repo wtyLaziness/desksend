@@ -9,6 +9,7 @@
 #include "deskflow/ProtocolUtil.h"
 #include "base/Log.h"
 #include "deskflow/DeskflowException.h"
+#include "deskflow/PacketStreamFilter.h"
 #include "deskflow/ProtocolTypes.h"
 #include "io/IStream.h"
 #include <array>
@@ -91,8 +92,11 @@ bool ProtocolUtil::readf(deskflow::IStream *stream, const char *fmt, ...)
     va_list args;
     va_start(args, fmt);
     try {
+      const PacketStreamFilter::ReadFrame frame(stream);
       vreadf(stream, fmt, args);
       result = true;
+    } catch (const BadClientException &) {
+      result = false;
     } catch (IOException &) {
       result = false;
     } catch (const std::bad_alloc &) {

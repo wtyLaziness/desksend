@@ -24,6 +24,18 @@ public:
   PacketStreamFilter(IEventQueue *events, deskflow::IStream *stream, bool adoptStream = true);
   ~PacketStreamFilter() override = default;
 
+  class ReadFrame
+  {
+  public:
+    explicit ReadFrame(deskflow::IStream *stream);
+    ~ReadFrame();
+    ReadFrame(const ReadFrame &) = delete;
+    ReadFrame &operator=(const ReadFrame &) = delete;
+
+  private:
+    PacketStreamFilter *m_filter;
+  };
+
   // IStream overrides
   void close() override;
   uint32_t read(void *buffer, uint32_t n) override;
@@ -44,6 +56,7 @@ private:
 private:
   mutable std::mutex m_mutex;
   uint32_t m_size = 0;
+  unsigned m_readFrameDepth = 0;
   StreamBuffer m_buffer;
   bool m_inputShutdown = false;
   IEventQueue *m_events = nullptr;

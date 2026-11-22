@@ -13,6 +13,7 @@
 
 #include <deque>
 #include <memory>
+#include <map>
 #include <set>
 
 class ClientProxy;
@@ -22,6 +23,7 @@ class IListenSocket;
 class ISocketFactory;
 class Server;
 class IEventQueue;
+class EventQueueTimer;
 class IDataSocket;
 
 class ClientListener
@@ -71,6 +73,7 @@ private:
   void handleUnknownClient(ClientProxyUnknown *unknownClient);
   void handleClientDisconnected(ClientProxy *client);
 
+  void clearTlsHandshakeTimer(IDataSocket *socket);
   void removeClientSocket(IDataSocket *socket);
   void cleanupListenSocket();
   void cleanupClientSockets();
@@ -91,5 +94,6 @@ private:
   IEventQueue *m_events;
   SecurityLevel m_securityLevel;
   ClientSockets m_clientSockets;
+  std::map<IDataSocket *, EventQueueTimer *> m_tlsHandshakes;
   NetworkAddress m_address;
 };

@@ -191,6 +191,7 @@ public:
   std::string getName() const override;
 
 private:
+  friend class ServerProxyTests;
   void saveRelativeRestorePosition();
   void sendClipboard(ClipboardID);
   void sendEvent(deskflow::EventTypes);

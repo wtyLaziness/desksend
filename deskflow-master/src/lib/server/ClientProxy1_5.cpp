@@ -9,6 +9,7 @@
 #include "base/Log.h"
 #include "deskflow/DragProtocol.h"
 #include "deskflow/ProtocolUtil.h"
+#include "deskflow/DeskflowException.h"
 #include "deskflow/StreamChunker.h"
 #include "io/IStream.h"
 #include "server/Server.h"
@@ -61,8 +62,7 @@ void ClientProxy1_5::dragInfoReceived()
   uint16_t fileCount = 0;
   std::string dragInfo;
   if (!ProtocolUtil::readf(getStream(), kMsgDDragInfo + 4, &fileCount, &dragInfo)) {
-    LOG_WARN("failed to read drag info from client \"%s\"", getName().c_str());
-    return;
+    throw BadClientException("Incomplete client drag info");
   }
   LOG_INFO(
       "recv client \"%s\" drag info count=%u info=\"%s\"", getName().c_str(), fileCount,

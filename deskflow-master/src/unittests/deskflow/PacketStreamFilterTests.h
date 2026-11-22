@@ -17,6 +17,7 @@ class PacketStreamFilterTests : public QObject
 private Q_SLOTS:
   void initTestCase();
   void packetStreamFilterWriteWritesSingleFrame();
+  void truncatedFieldDoesNotConsumeNextFrame();
 
 private:
   Log m_log;

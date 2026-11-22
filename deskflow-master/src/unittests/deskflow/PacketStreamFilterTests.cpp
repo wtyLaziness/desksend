@@ -8,6 +8,7 @@
 
 #include "MockEventQueue.h"
 #include "deskflow/PacketStreamFilter.h"
+#include "deskflow/ProtocolUtil.h"
 #include "io/IStream.h"
 
 #include <QByteArray>
@@ -121,6 +122,35 @@ void PacketStreamFilterTests::packetStreamFilterWriteWritesSingleFrame()
   QCOMPARE(stream.chunks().front().size(), 5004);
   QCOMPARE(stream.chunks().front().left(4), QByteArray("\x00\x00\x13\x88", 4));
   QCOMPARE(stream.chunks().front().mid(4), QByteArray(largePayload.data(), 5000));
+}
+
+void PacketStreamFilterTests::truncatedFieldDoesNotConsumeNextFrame()
+{
+  class TestFilter final : public PacketStreamFilter
+  {
+  public:
+    using PacketStreamFilter::PacketStreamFilter;
+    using PacketStreamFilter::filterEvent;
+  };
+
+  MockEventQueue events;
+  RecordingStream stream;
+  TestFilter filter(&events, &stream, false);
+  filter.write("code", 4);
+  filter.write("next", 4);
+  filter.filterEvent(Event(EventTypes::StreamInputReady, stream.getEventTarget()));
+
+  {
+    const PacketStreamFilter::ReadFrame frame(&filter);
+    char code[4]{};
+    QCOMPARE(filter.read(code, sizeof(code)), uint32_t{4});
+    uint32_t field = 0;
+    QVERIFY(!ProtocolUtil::readf(&filter, "%4i", &field));
+    QCOMPARE(filter.getSize(), uint32_t{0});
+  }
+  char next[4]{};
+  QCOMPARE(filter.read(next, sizeof(next)), uint32_t{4});
+  QCOMPARE(QByteArray(next, sizeof(next)), QByteArray("next"));
 }
 
 QTEST_MAIN(PacketStreamFilterTests)
