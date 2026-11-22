@@ -25,6 +25,12 @@ constexpr std::string_view kSendDropPrefix = "DESKSEND_SEND_DROP:";
 constexpr std::string_view kSendCancelExact = "DESKSEND_SEND_CANCEL";
 constexpr std::string_view kSendCancelPrefix = "DESKSEND_SEND_CANCEL:";
 
+bool validWireToken(std::string_view token)
+{
+  return !token.empty() && token.size() <= 256 &&
+         token.find_first_of(std::string_view(" \t\r\n\0:", 6)) == std::string_view::npos;
+}
+
 bool parseInt32(std::string_view s, int32_t &out)
 {
   if (s.empty()) {
@@ -142,7 +148,7 @@ std::vector<DragEdgeSegment> clipEdgeSegmentsForCorners(
   for (const auto &seg : segments) {
     const int32_t extent =
         (seg.side == DragEdgeSide::Left || seg.side == DragEdgeSide::Right) ? screenHeight : screenWidth;
-    if (extent <= 2 * margin) {
+    if (int64_t(extent) <= 2 * int64_t(margin)) {
       continue;
     }
     const int32_t lo = std::max(seg.start, margin);
@@ -334,12 +340,8 @@ bool parseDragStartMessage(std::string_view info, std::string &outToken)
   if (!startsWith(info, kStartPrefix)) {
     return false;
   }
-  std::string_view token = info.substr(kStartPrefix.size());
-  const size_t lineEnd = token.find_first_of("\r\n");
-  if (lineEnd != std::string_view::npos) {
-    token = token.substr(0, lineEnd);
-  }
-  if (token.empty() || token.find_first_of(" \t") != std::string_view::npos) {
+  const auto token = info.substr(kStartPrefix.size());
+  if (!validWireToken(token)) {
     return false;
   }
   outToken.assign(token);
@@ -395,7 +397,11 @@ bool parseDragCancelMessage(std::string_view info, std::string &outToken)
     return true;
   }
   if (startsWith(info, kCancelPrefix)) {
-    outToken.assign(info.substr(kCancelPrefix.size()));
+    const auto token = info.substr(kCancelPrefix.size());
+    if (!validWireToken(token)) {
+      return false;
+    }
+    outToken.assign(token);
     return true;
   }
   return false;
@@ -434,7 +440,9 @@ bool parseSendDropMessage(
   const std::string_view coords = body.substr(0, firstColon);
   const std::string_view token = body.substr(firstColon + 1, secondColon - firstColon - 1);
   const std::string_view target = body.substr(secondColon + 1);
-  if (token.empty() || target.empty() || !parseCoords(coords, outX, outY)) {
+  if (!validWireToken(token) || target.empty() ||
+      target.find_first_of(std::string_view(" \t\r\n\0", 5)) != std::string_view::npos ||
+      !parseCoords(coords, outX, outY)) {
     return false;
   }
   outToken.assign(token);
@@ -459,7 +467,11 @@ bool parseSendCancelMessage(std::string_view info, std::string &outToken)
     return true;
   }
   if (startsWith(info, kSendCancelPrefix)) {
-    outToken.assign(info.substr(kSendCancelPrefix.size()));
+    const auto token = info.substr(kSendCancelPrefix.size());
+    if (!validWireToken(token)) {
+      return false;
+    }
+    outToken.assign(token);
     return true;
   }
   return false;

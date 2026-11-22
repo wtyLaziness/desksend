@@ -16,7 +16,9 @@
 #include "server/BaseClientProxy.h"
 
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QDir>
+#include <QThread>
 #include <QDirIterator>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -127,7 +129,22 @@ uint32_t activeSidesMaskFromSegments(const std::vector<DragEdgeSegment> &segment
   return mask;
 }
 
-void applyReceiverHosts(IDropExecutor *exec, const std::vector<std::string> &hosts)
+std::shared_ptr<IDropExecutor> shareExecutor(std::unique_ptr<IDropExecutor> executor)
+{
+  return std::shared_ptr<IDropExecutor>(executor.release(), [](IDropExecutor *value) {
+    if (dynamic_cast<InProcessDropExecutor *>(value)) {
+      auto *app = QCoreApplication::instance();
+      if (app && QThread::currentThread() != app->thread()) {
+        const auto owned = std::shared_ptr<IDropExecutor>(value);
+        QMetaObject::invokeMethod(app, [owned] {}, Qt::QueuedConnection);
+        return;
+      }
+    }
+    delete value;
+  });
+}
+
+void applyReceiverHosts(const std::shared_ptr<IDropExecutor> &exec, const std::vector<std::string> &hosts)
 {
   if (!exec) {
     return;
@@ -161,7 +178,7 @@ FileDropBridge &FileDropBridge::instance()
 }
 
 FileDropBridge::FileDropBridge()
-    : m_executor(createDefaultDropExecutor())
+    : m_executor(shareExecutor(createDefaultDropExecutor()))
 {
   if (m_executor) {
     m_executor->setHost(this);
@@ -170,7 +187,7 @@ FileDropBridge::FileDropBridge()
 
 FileDropBridge::~FileDropBridge()
 {
-  std::unique_ptr<IDropExecutor> exec;
+  std::shared_ptr<IDropExecutor> exec;
   {
     std::scoped_lock lock(m_mutex);
     exec = std::move(m_executor);
@@ -183,19 +200,19 @@ FileDropBridge::~FileDropBridge()
   }
 }
 
-IDropExecutor *FileDropBridge::executor() const
+std::shared_ptr<IDropExecutor> FileDropBridge::executor() const
 {
   std::scoped_lock lock(m_mutex);
-  return m_executor.get();
+  return m_executor;
 }
 
 void FileDropBridge::setDropExecutorForTesting(std::unique_ptr<IDropExecutor> executor)
 {
-  std::unique_ptr<IDropExecutor> oldExec;
+  std::shared_ptr<IDropExecutor> oldExec;
   {
     std::scoped_lock lock(m_mutex);
     oldExec = std::move(m_executor);
-    m_executor = executor ? std::move(executor) : createDefaultDropExecutor();
+    m_executor = shareExecutor(executor ? std::move(executor) : createDefaultDropExecutor());
     if (m_executor) {
       m_executor->setHost(this);
     }
@@ -208,14 +225,14 @@ void FileDropBridge::setDropExecutorForTesting(std::unique_ptr<IDropExecutor> ex
   }
 }
 
-InProcessDropExecutor *FileDropBridge::inProcessExecutorForTesting() const
+std::shared_ptr<InProcessDropExecutor> FileDropBridge::inProcessExecutorForTesting() const
 {
-  return dynamic_cast<InProcessDropExecutor *>(executor());
+  return std::dynamic_pointer_cast<InProcessDropExecutor>(executor());
 }
 
 void FileDropBridge::updatePrimaryShape(int32_t x, int32_t y, int32_t w, int32_t h)
 {
-  if (auto *exec = executor()) {
+  if (auto exec = executor()) {
     DropAgentCommand cmd;
     cmd.type = DropAgentCommandType::UpdatePrimaryShape;
     cmd.x = x;
@@ -312,7 +329,7 @@ bool FileDropBridge::requestDirectFileSend(const std::string &targetPeer, const 
     return true;
   }
 
-  auto *exec = executor();
+  auto exec = executor();
   if (!target || !exec) {
     return false;
   }
@@ -406,7 +423,7 @@ void FileDropBridge::shutdownSentinels()
     m_preCapturedClientTimestampMs = 0;
     m_activeDrag = {};
   }
-  if (auto *exec = executor()) {
+  if (auto exec = executor()) {
     DropAgentCommand cmd;
     cmd.type = DropAgentCommandType::ShutdownSentinels;
     exec->execute(cmd);
@@ -440,7 +457,7 @@ void FileDropBridge::onPrimaryMouseMove(
   }
 
   if (hoveringOnPrimary) {
-    if (auto *exec = executor()) {
+    if (auto exec = executor()) {
       if (shouldHideForHover) {
         DropAgentCommand hideCmd;
         hideCmd.type = DropAgentCommandType::HideSentinels;
@@ -475,7 +492,7 @@ void FileDropBridge::onPrimaryMouseMove(
       }
     }
     if (shouldHide) {
-      if (auto *exec = executor()) {
+      if (auto exec = executor()) {
         DropAgentCommand cmd;
         cmd.type = DropAgentCommandType::HideSentinels;
         exec->execute(cmd);
@@ -491,7 +508,7 @@ void FileDropBridge::onPrimaryMouseMove(
     std::scoped_lock lock(m_mutex);
     m_visibleSentinelEdgeMask = visibleMask;
   }
-  if (auto *exec = executor()) {
+  if (auto exec = executor()) {
     DropAgentCommand cmd;
     cmd.type = DropAgentCommandType::PrimaryMouseMove;
     cmd.x = x;
@@ -522,7 +539,7 @@ void FileDropBridge::clearPendingDragOnMouseLeaveOrRelease()
     m_dragCancellationComplete = false;
     m_visibleSentinelEdgeMask = 0;
   }
-  if (auto *exec = executor()) {
+  if (auto exec = executor()) {
     DropAgentCommand cmd;
     cmd.type = DropAgentCommandType::LeftMouseUp;
     cmd.flag = false;
@@ -554,7 +571,7 @@ void FileDropBridge::onPrimaryLeftMouseDown()
     m_dragCancellationComplete = false;
     m_lastCapturedSide = 0;
   }
-  if (auto *exec = executor()) {
+  if (auto exec = executor()) {
     DropAgentCommand cmd;
     cmd.type = DropAgentCommandType::PrimaryLeftMouseDown;
     exec->execute(cmd);
@@ -575,7 +592,7 @@ void FileDropBridge::onLeftMouseUp(bool onSecondary)
     m_dragCancellationComplete = false;
     m_visibleSentinelEdgeMask = 0;
   }
-  if (auto *exec = executor()) {
+  if (auto exec = executor()) {
     DropAgentCommand cmd;
     cmd.type = DropAgentCommandType::LeftMouseUp;
     cmd.flag = onSecondary && releaseSourceButton;
@@ -600,7 +617,7 @@ bool FileDropBridge::canSwitchFromPrimary()
     }
   }
   if (needCancel) {
-    if (auto *exec = executor()) {
+    if (auto exec = executor()) {
       DropAgentCommand cmd;
       cmd.type = DropAgentCommandType::CancelNativeDrag;
       cmd.sideIndex = sideToCancel;
@@ -642,7 +659,7 @@ bool FileDropBridge::hasActiveDragFiles() const
 
 bool FileDropBridge::hasActiveTransfers() const
 {
-  if (auto *exec = executor()) {
+  if (auto exec = executor()) {
     return exec->hasActiveTransfers();
   }
   return false;
@@ -682,7 +699,7 @@ void FileDropBridge::onPendingDragCaptured(std::vector<std::string> files, int s
     std::scoped_lock lock(m_mutex);
     m_lastCapturedSide = sideIndex;
   }
-  if (auto *exec = executor()) {
+  if (auto exec = executor()) {
     DropAgentCommand cmd;
     cmd.type = DropAgentCommandType::NudgeAcrossEdge;
     cmd.sideIndex = sideIndex;
@@ -702,7 +719,7 @@ void FileDropBridge::onDragCancellationCompleted(bool stillPressed)
   }
   if (clientHandoffCompleted) {
     LOG_INFO("FileDropBridge: client native drag cancellation completed for handoff");
-    if (auto *exec = executor()) {
+    if (auto exec = executor()) {
       DropAgentCommand hideCmd;
       hideCmd.type = DropAgentCommandType::HideSentinels;
       exec->execute(hideCmd);
@@ -756,7 +773,7 @@ void FileDropBridge::onPendingDragCleared()
     if (senderToNotify) {
       senderToNotify(0, std::string(kMsgDragClientPreCaptureClear));
     }
-    if (auto *exec = executor()) {
+    if (auto exec = executor()) {
       DropAgentCommand cmd;
       cmd.type = DropAgentCommandType::LeftMouseUp;
       cmd.flag = false;
@@ -788,7 +805,7 @@ std::string FileDropBridge::buildDragStartPayload(const std::string &token, cons
 }
 
 void FileDropBridge::activateTargetScreen(
-    IDropExecutor *exec, BaseClientProxy *target, BaseClientProxy *origin, uint32_t fileCount,
+    const std::shared_ptr<IDropExecutor> &exec, BaseClientProxy *target, BaseClientProxy *origin, uint32_t fileCount,
     const std::vector<std::string> &primaryFiles, const std::string &token, int32_t entryX, int32_t entryY,
     bool sendHoverEnter
 ) const
@@ -834,7 +851,7 @@ void FileDropBridge::activateTargetScreen(
 }
 
 void FileDropBridge::cancelTargetEndpoint(
-    IDropExecutor *exec, BaseClientProxy *target, const std::string &token, bool cancelPreparing
+    const std::shared_ptr<IDropExecutor> &exec, BaseClientProxy *target, const std::string &token, bool cancelPreparing
 ) const
 {
   if (target == nullptr) {
@@ -908,7 +925,7 @@ void FileDropBridge::prepareScreenSwitch(BaseClientProxy *fromScreen, BaseClient
   }
 
   if (fromScreen == nullptr) {
-    if (auto *exec = executor()) {
+    if (auto exec = executor()) {
       DropAgentCommand hideCmd;
       hideCmd.type = DropAgentCommandType::HideSentinels;
       exec->execute(hideCmd);
@@ -951,7 +968,7 @@ void FileDropBridge::performScreenSwitch(
       m_visibleSentinelEdgeMask = 0;
     }
     if (shouldHideSentinels) {
-      if (auto *exec = executor()) {
+      if (auto exec = executor()) {
         DropAgentCommand hideCmd;
         hideCmd.type = DropAgentCommandType::HideSentinels;
         exec->execute(hideCmd);
@@ -959,7 +976,7 @@ void FileDropBridge::performScreenSwitch(
     }
   }
 
-  IDropExecutor *exec = executor();
+  auto exec = executor();
   ActiveCrossDrag newDrag;
   bool startNewDrag = false;
   bool returningToOrigin = false;
@@ -1081,7 +1098,7 @@ void FileDropBridge::onServerReceiveClientDragInfo(BaseClientProxy *client, uint
     const auto token = generateAuthToken();
     const auto tag = computeTokenTag(token);
     if (targetPeer.empty() || targetPeer == kServerPeerTargetMarker) {
-      auto *exec = executor();
+      auto exec = executor();
       if (!exec) {
         reply(serializeDirectSendCancelMessage(requestId));
         return;
@@ -1214,7 +1231,7 @@ void FileDropBridge::onClientDisconnected(BaseClientProxy *client)
     return;
   }
 
-  IDropExecutor *exec = executor();
+  auto exec = executor();
   if (disconnectedDrag.originClient == client) {
     LOG_INFO("FileDropBridge: drag origin client disconnected; cancelling target state");
     cancelTargetEndpoint(exec, disconnectedDrag.targetClient, disconnectedDrag.activeToken, true);
@@ -1277,7 +1294,7 @@ void FileDropBridge::onServerLeftMouseUp(BaseClientProxy *activeScreen, int32_t 
     }
   }
 
-  IDropExecutor *exec = executor();
+  auto exec = executor();
   if (exec && (activeScreen != nullptr || !executeDrop || releaseSourceButton)) {
     DropAgentCommand cmd;
     cmd.type = DropAgentCommandType::LeftMouseUp;
@@ -1443,7 +1460,7 @@ void FileDropBridge::stopReceiver()
     m_serverPeerHosts.clear();
   }
   notifyTransferTargetsChanged({});
-  if (auto *exec = executor()) {
+  if (auto exec = executor()) {
     DropAgentCommand cmd;
     cmd.type = DropAgentCommandType::StopReceiver;
     exec->execute(cmd);
@@ -1484,7 +1501,7 @@ void FileDropBridge::onClientMouseLeftDown()
   if (senderToNotify) {
     senderToNotify(0, std::string(kMsgDragClientPreCaptureClear));
   }
-  if (auto *exec = executor()) {
+  if (auto exec = executor()) {
     DropAgentCommand cmd;
     cmd.type = DropAgentCommandType::PrimaryLeftMouseDown;
     exec->execute(cmd);
@@ -1515,7 +1532,7 @@ void FileDropBridge::onClientMouseLeftUp()
     senderToNotify(0, std::string(kMsgDragClientPreCaptureClear));
   }
   if (shouldReleaseSentinels) {
-    if (auto *exec = executor()) {
+    if (auto exec = executor()) {
       DropAgentCommand cmd;
       cmd.type = DropAgentCommandType::LeftMouseUp;
       cmd.flag = false;
@@ -1528,7 +1545,7 @@ void FileDropBridge::onClientMouseMoveWithShape(
     int32_t x, int32_t y, int32_t ax, int32_t ay, int32_t aw, int32_t ah
 )
 {
-  auto *exec = executor();
+  auto exec = executor();
   if (!exec) {
     return;
   }
@@ -1612,7 +1629,7 @@ void FileDropBridge::onClientLeave()
     wasSentinelVisible = m_clientSentinelVisible;
     m_clientSentinelVisible = false;
   }
-  if (auto *exec = executor()) {
+  if (auto exec = executor()) {
     if (exec->isHoverVisible()) {
       DropAgentCommand hideHoverCmd;
       hideHoverCmd.type = DropAgentCommandType::HideHover;
@@ -1628,7 +1645,7 @@ void FileDropBridge::onClientLeave()
 
 void FileDropBridge::onClientMouseMove(int32_t x, int32_t y)
 {
-  auto *exec = executor();
+  auto exec = executor();
   if (!exec || !exec->isHoverVisible()) {
     return;
   }
@@ -1641,37 +1658,38 @@ void FileDropBridge::onClientMouseMove(int32_t x, int32_t y)
 
 bool FileDropBridge::isClientHoverVisible() const
 {
-  auto *exec = executor();
+  auto exec = executor();
   return exec ? exec->isHoverVisible() : false;
 }
 
 uint32_t FileDropBridge::clientHoverFileCount() const
 {
-  auto *exec = executor();
+  auto exec = executor();
   return exec ? exec->hoverFileCount() : 0;
 }
 
 QPoint FileDropBridge::clientHoverCursorPos() const
 {
-  auto *exec = executor();
+  auto exec = executor();
   return exec ? exec->hoverCursorPos() : QPoint{};
 }
 
 TransferStatusOverlay::Phase FileDropBridge::receiverOverlayPhase() const
 {
-  auto *exec = executor();
+  auto exec = executor();
   return exec ? exec->receiverOverlayPhase() : TransferStatusOverlay::Phase::Idle;
 }
 
 uint32_t FileDropBridge::receiverPreparingFileCount() const
 {
-  auto *exec = executor();
+  auto exec = executor();
   return exec ? exec->receiverPreparingFileCount() : 0;
 }
 
-TransferStatusOverlay &FileDropBridge::overlayFor(bool receiving)
+std::shared_ptr<TransferStatusOverlay> FileDropBridge::overlayFor(bool receiving)
 {
-  return executor()->overlayFor(receiving);
+  const auto exec = executor();
+  return exec ? std::shared_ptr<TransferStatusOverlay>(exec, &exec->overlayFor(receiving)) : nullptr;
 }
 
 void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::string &info)
@@ -1702,7 +1720,7 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
       m_clientDirectPending.erase(pending);
       cmd.text = directTargetIp == kServerPeerTargetMarker ? m_clientServerHost : directTargetIp;
     }
-    if (auto *exec = executor(); exec && !cmd.text.empty() && hasTransferableFiles(cmd.items)) {
+    if (auto exec = executor(); exec && !cmd.text.empty() && hasTransferableFiles(cmd.items)) {
       cmd.type = DropAgentCommandType::SendFiles;
       cmd.authToken = std::move(directToken);
       exec->execute(cmd);
@@ -1715,7 +1733,7 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
     return;
   }
 
-  auto *exec = executor();
+  auto exec = executor();
   if (!exec) {
     return;
   }
@@ -1930,14 +1948,14 @@ void FileDropBridge::onClientReceiveDragInfo(uint16_t fileCount, const std::stri
 
 void FileDropBridge::handleReceiveSessionStarted(size_t expectedFiles, const std::string &tokenTag)
 {
-  if (auto *ip = inProcessExecutorForTesting()) {
+  if (auto ip = inProcessExecutorForTesting()) {
     ip->handleReceiveSessionStarted(expectedFiles, tokenTag);
   }
 }
 
 void FileDropBridge::handleReceiveSessionFinished(bool cancelled)
 {
-  if (auto *ip = inProcessExecutorForTesting()) {
+  if (auto ip = inProcessExecutorForTesting()) {
     ip->handleReceiveSessionFinished(cancelled);
   }
 }

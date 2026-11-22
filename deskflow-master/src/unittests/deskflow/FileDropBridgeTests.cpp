@@ -209,6 +209,21 @@ private Q_SLOTS:
     bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(std::make_shared<RecordedExecutorState>()));
   }
 
+  void overlayRetainsExecutorAcrossReplacement()
+  {
+    auto &bridge = deskflow::FileDropBridge::instance();
+    auto state = std::make_shared<RecordedExecutorState>();
+    std::weak_ptr<RecordedExecutorState> lifetime = state;
+    bridge.setDropExecutorForTesting(std::make_unique<RecordingDropExecutor>(std::move(state)));
+
+    auto overlay = bridge.overlayFor(true);
+    bridge.setDropExecutorForTesting(nullptr);
+    QVERIFY(overlay);
+    QVERIFY(!lifetime.expired());
+    overlay.reset();
+    QVERIFY(lifetime.expired());
+  }
+
   void uniqueDestinationPathPreservesDotfilesAndMultiExtensions()
   {
     QTemporaryDir tempDir;
@@ -334,7 +349,7 @@ private Q_SLOTS:
 
     auto &bridge = deskflow::FileDropBridge::instance();
     bridge.stopReceiver();
-    auto *exec = bridge.inProcessExecutorForTesting();
+    auto exec = bridge.inProcessExecutorForTesting();
     QVERIFY(exec != nullptr);
     {
       std::scoped_lock lock(exec->m_mutex);
@@ -494,6 +509,10 @@ private Q_SLOTS:
     QCOMPARE(token, std::string("secretTok99"));
     QCOMPARE(target, std::string("2001:db8::42"));
 
+    QVERIFY(!deskflow::parseDragStartMessage("DESKSEND_START:tok\nextra", token));
+    QVERIFY(!deskflow::parseDragCancelMessage("DESKSEND_CANCEL:", token));
+    QVERIFY(!deskflow::parseSendCancelMessage("DESKSEND_SEND_CANCEL:tok\r", token));
+    QVERIFY(!deskflow::parseSendDropMessage("DESKSEND_SEND_DROP:1,2:tok:host\nother", x, y, token, target));
     QVERIFY(deskflow::parseDragCancelMessage("DESKSEND_CANCEL", token));
     QVERIFY(token.empty());
     QVERIFY(deskflow::parseDragCancelMessage("DESKSEND_CANCEL:tokA", token));
@@ -603,7 +622,7 @@ private Q_SLOTS:
     QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Active);
     bridge.handleReceiveSessionFinished(false);
     QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Active);
-    auto *inProcExec = bridge.inProcessExecutorForTesting();
+    auto inProcExec = bridge.inProcessExecutorForTesting();
     QVERIFY(inProcExec != nullptr);
     inProcExec->handleReceivedFileLine(stagedPath.toStdString());
     QCOMPARE(bridge.receiverOverlayPhase(), deskflow::TransferStatusOverlay::Phase::Finished);

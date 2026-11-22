@@ -100,7 +100,7 @@ public:
   QPoint clientHoverCursorPos() const;
   TransferStatusOverlay::Phase receiverOverlayPhase() const;
   uint32_t receiverPreparingFileCount() const;
-  TransferStatusOverlay &overlayFor(bool receiving);
+  std::shared_ptr<TransferStatusOverlay> overlayFor(bool receiving);
 
   // Resolves the Explorer folder or Desktop directory under (screenX, screenY) on Windows
   static std::string resolveDropTargetDirectory(
@@ -121,7 +121,7 @@ public:
 
   // Testing hooks
   void setDropExecutorForTesting(std::unique_ptr<IDropExecutor> executor);
-  InProcessDropExecutor *inProcessExecutorForTesting() const;
+  std::shared_ptr<InProcessDropExecutor> inProcessExecutorForTesting() const;
 
 private:
   friend class ::FileDropBridgeTests;
@@ -146,7 +146,7 @@ private:
   void onActiveTransfersChanged(bool active) override;
   void onExecutorLog(int level, const std::string &message) override;
 
-  IDropExecutor *executor() const;
+  std::shared_ptr<IDropExecutor> executor() const;
   void handleReceiveSessionStarted(size_t expectedFiles, const std::string &tokenTag = {});
   void handleReceiveSessionFinished(bool cancelled);
   void setDragCancellationState(bool inProgress, bool complete);
@@ -156,16 +156,16 @@ private:
       BaseClientProxy *fromScreen, BaseClientProxy *toScreen, int32_t entryX, int32_t entryY, bool sendHoverEnter
   );
   void activateTargetScreen(
-      IDropExecutor *exec, BaseClientProxy *target, BaseClientProxy *origin, uint32_t fileCount,
+      const std::shared_ptr<IDropExecutor> &exec, BaseClientProxy *target, BaseClientProxy *origin, uint32_t fileCount,
       const std::vector<std::string> &primaryFiles, const std::string &token, int32_t entryX, int32_t entryY,
       bool sendHoverEnter
   ) const;
-  void cancelTargetEndpoint(IDropExecutor *exec, BaseClientProxy *target, const std::string &token, bool cancelPreparing) const;
+  void cancelTargetEndpoint(const std::shared_ptr<IDropExecutor> &exec, BaseClientProxy *target, const std::string &token, bool cancelPreparing) const;
   void refreshClientReceiverHosts();
   static std::string buildDragStartPayload(const std::string &token, const std::vector<std::string> &files);
 
   mutable std::mutex m_mutex;
-  std::unique_ptr<IDropExecutor> m_executor;
+  std::shared_ptr<IDropExecutor> m_executor;
 
   // Server/Primary pre-capture & sentinel state
   std::vector<std::string> m_pendingFiles;
