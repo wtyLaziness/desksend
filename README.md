@@ -8,7 +8,7 @@
     <a href="https://github.com/wtyLaziness/desksend/actions/workflows/localsend-cli-win.yml"><img src="https://github.com/wtyLaziness/desksend/actions/workflows/localsend-cli-win.yml/badge.svg" alt="文件传输组件构建"></a>
   </p>
   <p>
-    <a href="https://github.com/wtyLaziness/desksend-releases/releases/latest">下载 Windows x64 完整包</a> ·
+    <a href="https://github.com/wtyLaziness/desksend-releases/releases/latest">下载最新发布包</a> ·
     <a href="docs/使用指南.md">使用指南</a> ·
     <a href="docs/构建与发布.md">构建与发布</a> ·
     <a href="docs/发布与更新.md">更新说明</a> ·
@@ -34,13 +34,16 @@ DeskSend 将 [Deskflow](https://github.com/deskflow/deskflow) 的键鼠共享与
 
 ### 1. 下载完整包
 
-从[最新发布页](https://github.com/wtyLaziness/desksend-releases/releases/latest)下载 `DeskSend-<版本>-windows-x64.zip`。两台电脑使用同一版本，完整解压到可写目录后运行 `DeskSend.exe`。
+从[最新发布页](https://github.com/wtyLaziness/desksend-releases/releases/latest)下载对应系统的构建包（不同系统电脑之间可直接配合使用同一版本）：
 
-需要操作副机 UAC 弹窗时，在副机使用同一发布页的 `DeskSend-<版本>-windows-x64.msi` 安装版，并开启后台服务及系统身份运行。[UAC 设置步骤](docs/使用指南.md#副机的-uac-弹窗无法点击)
+- **Windows x64 便携版**：`DeskSend-<版本>-windows-x64.zip`，完整解压到可写目录后运行 `DeskSend.exe`（不要在压缩包预览中直接运行，也不要只复制 EXE，需保留同目录中的 `deskflow-core.exe`、`localsend-cli.exe`、Qt DLL、插件和 `translations/`）。
+- **Windows x64 安装版**：`DeskSend-<版本>-windows-x64.msi`，需要在副机操作 UAC 弹窗或登录界面时安装并开启后台服务及系统身份运行。[UAC 设置步骤](docs/使用指南.md#副机的-uac-弹窗无法点击)
+- **macOS arm64（Apple Silicon）**：`DeskSend-<版本>-macos-arm64.tar.gz`，解压出 `DeskSend.app` 后放入“应用程序”或本地可写目录使用（CI 构建采用 ad-hoc 签名；启用跨屏拖拽需在“系统设置 → 隐私与安全性 → 辅助功能”授权）。
+- **Linux x64**：`DeskSend-<版本>-linux-x64.tar.gz`，CI 构建归档（包含 `deskflow`、`deskflow-core`、`localsend-cli` 与许可证；需匹配系统的 Qt6/OpenSSL/`libei`/`libportal`/X11 运行库，如环境差异较大可按[构建与发布](docs/构建与发布.md)从源码构建）。
 
-如果打开 Geek Uninstaller 等管理员程序后无法跨屏，请在出现问题的电脑上以管理员身份启动 DeskSend。[排查步骤](docs/使用指南.md#打开管理员程序后无法跨屏)
+如果打开 Geek Uninstaller 等管理员程序后无法跨屏，请在出现问题的 Windows 电脑上以管理员身份启动 DeskSend。[排查步骤](docs/使用指南.md#打开管理员程序后无法跨屏)
 
-不要在压缩包预览中直接运行，也不要只复制 EXE。请保留同目录中的 `deskflow-core.exe`、`localsend-cli.exe`、Qt DLL、插件和 `translations/`。`DeskSend-<版本>-source.zip` 是源码归档，不是运行包。
+`DeskSend-<版本>-source.zip` 是对应源码归档，不是运行包。
 
 ### 2. 连接主机和副机
 
@@ -88,7 +91,7 @@ Windows、macOS 和 Linux 之间可互传文件。
 
 ## 当前范围
 
-- 提供 **Windows x64 便携版与 MSI 安装版**。副机的 MSI 安装版可启用系统服务，用于操作 Windows 登录界面和 UAC 安全桌面。自 1.0.9 起，后台服务按需启动，随「退出」停止。
+- 发布页提供 **Windows x64（便携 ZIP 与 MSI 安装版）、macOS arm64（`DeskSend.app` tar.gz，ad-hoc 签名）与 Linux x64（CI tar.gz 归档）**。Windows 副机的 MSI 安装版可启用系统服务，用于操作登录界面和 UAC 安全桌面；自 1.0.9 起，后台服务按需启动，随「退出」停止。内置自动更新目前仅支持 Windows x64。
 - 双向及多机拖文件继续使用**主机共享的鼠标**；副机自己的实体鼠标不能独立发起跨屏切换。
 - 支持文件与嵌套文件夹；空文件夹和空子目录不会在接收方创建。跨屏发送会保留源文件。
 - 主机停止或重启后，保持运行的副机会等待重连。
@@ -100,7 +103,7 @@ Windows、macOS 和 Linux 之间可互传文件。
 | --- | --- |
 | [`deskflow-master/`](deskflow-master/) | DeskSend GUI、键鼠核心、跨屏拖拽和更新器；版本由 [`DeskSendVersion.cmake`](deskflow-master/cmake/DeskSendVersion.cmake) 定义。 |
 | [`localsend-main/`](localsend-main/) | Rust 文件传输 CLI 和核心协议工作区。 |
-| [`scripts/package-release.py`](scripts/package-release.py) | 组装完整 Windows 包、对应源码和 `SHA256SUMS.txt`。 |
+| [`scripts/package-release.py`](scripts/package-release.py) | 组装三端发布产物（完整 Windows ZIP/MSI、可选 macOS/Linux 归档）、对应源码与 `SHA256SUMS.txt`。 |
 | [`.github/workflows/`](.github/workflows/) | Windows、macOS 和 Linux 的构建、测试及产物。 |
 | [`docs/`](docs/) | 使用、构建、发布与更新说明。 |
 

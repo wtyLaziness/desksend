@@ -11,6 +11,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--deskflow-zip', required=True, type=Path)
 parser.add_argument('--deskflow-msi', type=Path)
 parser.add_argument('--localsend-exe', required=True, type=Path)
+parser.add_argument('--macos-tar', type=Path)
+parser.add_argument('--linux-tar', type=Path)
 parser.add_argument('--build-commit', required=True)
 parser.add_argument('--out', required=True, type=Path)
 args = parser.parse_args()
@@ -19,6 +21,9 @@ version = (repo / 'deskflow-master/cmake/DeskSendVersion.cmake').read_text(encod
 installer_name = f'DeskSend-{version}-windows-x64.msi'
 if args.deskflow_msi and (args.deskflow_msi.name != installer_name or not args.deskflow_msi.is_file()):
     parser.error(f'--deskflow-msi 必须指向 {installer_name}')
+for label, tar_path in (('--macos-tar', args.macos_tar), ('--linux-tar', args.linux_tar)):
+    if tar_path and not tar_path.is_file():
+        parser.error(f'{label} 指向的文件不存在：{tar_path}')
 build_commit = subprocess.check_output(['git', 'rev-parse', args.build_commit], cwd=repo, text=True).strip()
 source_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
 subprocess.run(['git', 'diff', '--exit-code', build_commit, source_commit, '--', 'deskflow-master', 'localsend-main'], cwd=repo, check=True)
@@ -96,5 +101,13 @@ if args.deskflow_msi:
     installer = args.out / installer_name
     shutil.copy2(args.deskflow_msi, installer)
     release_assets.append(installer)
+if args.macos_tar:
+    macos_asset = args.out / f'DeskSend-{version}-macos-arm64.tar.gz'
+    shutil.copy2(args.macos_tar, macos_asset)
+    release_assets.append(macos_asset)
+if args.linux_tar:
+    linux_asset = args.out / f'DeskSend-{version}-linux-x64.tar.gz'
+    shutil.copy2(args.linux_tar, linux_asset)
+    release_assets.append(linux_asset)
 (args.out / 'SHA256SUMS.txt').write_text(''.join(f'{hash_file(p)}  {p.name}\n' for p in release_assets), encoding='utf-8')
-print(json.dumps({'binary': str(binary_zip), 'source': str(source_zip), 'version': version, 'files': len(files)}, ensure_ascii=False))
+print(json.dumps({'binary': str(binary_zip), 'source': str(source_zip), 'version': version, 'files': len(files), 'assets': [p.name for p in release_assets]}, ensure_ascii=False))

@@ -2,26 +2,27 @@
 
 <img src="desksend.png" width="104" alt="DeskSend 图标">
 
-**多台 Windows 电脑共用一套键鼠，文件也能随鼠标双向跨屏拖动。**
+**多台 Windows、macOS、Linux 电脑共用一套键鼠，文件与文件夹也能跨系统互传。**
 
-DeskSend 整合 Deskflow 键鼠共享与 LocalSend 局域网文件传输。两端运行完整包即可使用，无需单独安装或启动 LocalSend。
+DeskSend 整合 Deskflow 键鼠共享与 LocalSend 局域网文件传输。各端运行同版本 DeskSend 即可使用，无需单独安装或启动 LocalSend。
 
-[下载最新 Windows x64 完整包](https://github.com/wtyLaziness/desksend-releases/releases/latest) · [源码仓库](https://github.com/wtyLaziness/desksend) · [使用指南](https://github.com/wtyLaziness/desksend/blob/main/docs/使用指南.md) · [更新说明](https://github.com/wtyLaziness/desksend/blob/main/docs/发布与更新.md)
+[下载最新版本](https://github.com/wtyLaziness/desksend-releases/releases/latest) · [源码仓库](https://github.com/wtyLaziness/desksend) · [使用指南](https://github.com/wtyLaziness/desksend/blob/main/docs/使用指南.md) · [更新说明](https://github.com/wtyLaziness/desksend/blob/main/docs/发布与更新.md)
 
 ## 主要功能
 
 - **共享键鼠**：按屏幕位置配置主机与副机，使用主机键鼠跨屏操作。
 - **键鼠网络优先级**：Windows 会为键鼠连接请求更高优先级，文件传输无固定速率上限。
-- **双向拖文件**：支持主机 → 副机、副机 → 主机；多台副机连接同一主机时，也可从副机 A 拖过主机屏幕，到副机 B 松手。全程使用主机共享的鼠标，文件由源电脑直传最终接收电脑。
-- **落点与反馈**：支持桌面和资源管理器文件夹落点，显示松手接收提示、准备接收、传输进度及结果；松手前可按 `Esc` 或拖回源屏取消，传输期间可在任一端进度窗点击「取消传输」。落在其他窗口时，保存到默认接收目录并提供文件剪贴板回退。
-- **内置更新**：下载完整包并校验 SHA-256，安装前备份待覆盖程序，保留配置、证书和配对。
+- **跨屏拖拽与直传**：Windows、macOS 与 Linux X11 支持使用主机共享鼠标双向跨屏拖放（含副机 A 经主机直传副机 B）；三端（含 Linux Wayland）均支持“文件 → 发送文件...”及将文件/文件夹拖入 DeskSend 主窗口直接发送，文件由源电脑直传目标电脑。
+- **落点与反馈**：支持桌面和文件管理器落点识别（Windows 资源管理器/桌面、macOS Finder 窗口/桌面、Linux X11 桌面），未命中特定窗口或使用直传时保存到默认“下载”目录并提供剪贴板回退；传输期间显示接收提示、进度与结果，支持取消。
+- **内置更新**：Windows 版内置更新器可下载完整包并校验 SHA-256，安装前备份待覆盖程序，保留配置、证书和配对。
 
 ## 下载与使用
 
-1. 下载 `DeskSend-<版本>-windows-x64.zip`，两端使用同一版本。
-2. 将完整目录解压到可写位置，再运行 **`DeskSend.exe`**。不要只复制 EXE，也不要在压缩包预览中直接运行。
-3. 主机共享实体键鼠并配置副机屏幕；副机填入主机局域网 IP。首次 TLS 连接时核对证书指纹。
-4. 防火墙允许主机入站 **TCP 24800**；使用双向传文件时，**主机和副机均需允许入站 TCP 53318**。
+1. **Windows x64**：下载完整便携包 `DeskSend-<版本>-windows-x64.zip` 完整解压到可写目录后运行 **`DeskSend.exe`**（不要只复制 EXE，也不要在压缩包预览中运行）；或下载安装版 `DeskSend-<版本>-windows-x64.msi`。
+2. **macOS arm64**：下载 `DeskSend-<版本>-macos-arm64.tar.gz`，解压获得 `DeskSend.app`（CI ad-hoc 签名；启用跨屏拖拽需在“辅助功能”中授权）。
+3. **Linux x64**：下载 `DeskSend-<版本>-linux-x64.tar.gz`（CI 归档；需系统具备匹配运行库，否则请按源码仓库构建文档自行编译）。
+4. 主机共享实体键鼠并配置副机屏幕；副机填入主机局域网 IP。首次 TLS 连接时核对证书指纹。
+5. 防火墙允许主机入站 **TCP 24800**；使用文件传输时，**所有参与接收的主机和副机均需允许入站 TCP 53318**。
 
 需要从主机操作副机的 UAC 弹窗时，在副机安装 `DeskSend-<版本>-windows-x64.msi`，并开启后台服务和系统身份运行。[UAC 设置步骤](https://github.com/wtyLaziness/desksend/blob/main/docs/使用指南.md#副机的-uac-弹窗无法点击)
 
@@ -41,6 +42,6 @@ DeskSend 整合 Deskflow 键鼠共享与 LocalSend 局域网文件传输。两�
 
 ## 源码与许可证
 
-本仓库提供公开版本与更新渠道；开发源码位于 [wtyLaziness/desksend](https://github.com/wtyLaziness/desksend)。自 1.0.8 起，Release 提供完整便携 ZIP、MSI 安装包、对应构建源码 `DeskSend-<版本>-source.zip` 和 `SHA256SUMS.txt`。便携包的构建提交及文件哈希记录在 `desksend-build.json` 中。
+本仓库提供公开版本与更新渠道；开发源码位于 [wtyLaziness/desksend](https://github.com/wtyLaziness/desksend)。自 1.0.8 起，Release 提供 Windows 完整便携 ZIP、MSI 安装包、对应构建源码 `DeskSend-<版本>-source.zip` 和 `SHA256SUMS.txt`；自 1.1.0 起，同步附带 `DeskSend-<版本>-macos-arm64.tar.gz` 与 `DeskSend-<版本>-linux-x64.tar.gz`。Windows 便携包的构建提交及文件哈希记录在 `desksend-build.json` 中。
 
 Deskflow 核心、GUI 及对应修改使用 `GPL-2.0-only WITH LicenseRef-OpenSSL-Exception`；LocalSend 组件及对应修改使用 `Apache-2.0`。保留原作者版权与许可文本，详见[许可证索引](https://github.com/wtyLaziness/desksend/blob/main/LICENSE.md)。
