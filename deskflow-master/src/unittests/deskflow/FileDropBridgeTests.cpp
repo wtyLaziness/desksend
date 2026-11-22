@@ -409,14 +409,23 @@ private Q_SLOTS:
       exec->m_pendingDropTargets[1].timestampMs = now;
     }
 
-    // Session for token C arrives even though orphaned tag B never started: jumps to C and discards B
+    // 会话 C 先到，只取走匹配的落点，B 仍可等待自己的会话或取消。
     bridge.handleReceiveSessionStarted(2, tagC);
     {
       std::scoped_lock lock(exec->m_mutex);
       QCOMPARE(exec->m_activeSessionTarget.dir, dirC.path().toStdString());
       QCOMPARE(exec->m_activeSessionTarget.tokenTag, tagC);
       QVERIFY(!exec->m_activeSessionTarget.copyToClipboard);
+      QCOMPARE(exec->m_pendingDropTargets.size(), size_t{1});
+      QCOMPARE(exec->m_pendingDropTargets.front().tokenTag, tagB);
+      QCOMPARE(exec->m_pendingDropTargets.front().dir, dirB.path().toStdString());
+    }
+
+    bridge.onClientReceiveDragInfo(0, "DESKSEND_CANCEL:" + tokenB);
+    {
+      std::scoped_lock lock(exec->m_mutex);
       QVERIFY(exec->m_pendingDropTargets.empty());
+      QCOMPARE(exec->m_activeSessionTarget.tokenTag, tagC);
     }
 
     bridge.stopReceiver();
