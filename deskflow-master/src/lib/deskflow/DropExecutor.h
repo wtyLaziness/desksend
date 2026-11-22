@@ -192,7 +192,16 @@ private:
   void onSentinelCancellationCompleted(bool stillPressed);
 
   const bool m_enableSentinels;
-  std::shared_ptr<std::atomic<bool>> m_alive = std::make_shared<std::atomic<bool>>(true);
+  struct Lifetime
+  {
+    std::recursive_mutex mutex;
+    std::atomic_bool active{true};
+    bool load() const { return active.load(); }
+    void store(bool value) { active.store(value); }
+  };
+  void stopProcessesForShutdown();
+  void bindProcessToApplication(QProcess *process);
+  std::shared_ptr<Lifetime> m_alive = std::make_shared<Lifetime>();
   std::atomic<IDropExecutorHost *> m_host{nullptr};
   std::unique_ptr<SentinelBridge> m_sentinels;
 

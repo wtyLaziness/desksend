@@ -224,6 +224,33 @@ private Q_SLOTS:
     QVERIFY(lifetime.expired());
   }
 
+  void shutdownRejectsLaterOverlayCommands()
+  {
+    deskflow::InProcessDropExecutor executor(false);
+    deskflow::DropAgentCommand cmd;
+    cmd.type = deskflow::DropAgentCommandType::Shutdown;
+    executor.execute(cmd);
+    executor.execute(cmd);
+
+    cmd.type = deskflow::DropAgentCommandType::TransferBegin;
+    cmd.text = "late update";
+    executor.execute(cmd);
+    QCOMPARE(executor.overlayFor(false).phase(), deskflow::TransferStatusOverlay::Phase::Idle);
+  }
+
+  void independentExecutorDiscardsQueuedReceiverStartOnDestruction()
+  {
+    auto executor = std::make_unique<deskflow::InProcessDropExecutor>(false);
+    std::thread worker([owned = std::move(executor)] {
+      deskflow::DropAgentCommand cmd;
+      cmd.type = deskflow::DropAgentCommandType::StartReceiver;
+      cmd.items = {"127.0.0.1"};
+      owned->execute(cmd);
+    });
+    worker.join();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+  }
+
   void uniqueDestinationPathPreservesDotfilesAndMultiExtensions()
   {
     QTemporaryDir tempDir;

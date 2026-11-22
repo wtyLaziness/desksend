@@ -35,6 +35,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#include <utility>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -786,7 +787,9 @@ struct InProcessDropExecutor::SentinelBridge
   {
     bool needUpdateGeometry = false;
     if (!initialized) {
-      OleInitialize(nullptr);
+      if (FAILED(OleInitialize(nullptr))) {
+        return;
+      }
       WNDCLASSW wc = {};
       wc.lpfnWndProc = DefWindowProcW;
       wc.hInstance = GetModuleHandleW(nullptr);
@@ -800,10 +803,13 @@ struct InProcessDropExecutor::SentinelBridge
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE, wc.lpszClassName, L"DeskflowSentinel",
             WS_POPUP, 0, 0, kThickness, kThickness, nullptr, nullptr, wc.hInstance, nullptr
         );
+        if (hwnd && FAILED(RegisterDragDrop(hwnd, &dropTargets[i]))) {
+          DestroyWindow(hwnd);
+          continue;
+        }
         if (hwnd) {
           SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
           SetLayeredWindowAttributes(hwnd, 0, 1, LWA_ALPHA);
-          RegisterDragDrop(hwnd, &dropTargets[i]);
           hwnds[i] = hwnd;
         }
       }
@@ -942,6 +948,7 @@ struct InProcessDropExecutor::SentinelBridge
     }
     for (size_t i = 0; i < 4; ++i) {
       if (hwnds[i]) {
+        SetWindowLongPtrW(hwnds[i], GWLP_USERDATA, 0);
         RevokeDragDrop(hwnds[i]);
         DestroyWindow(hwnds[i]);
         hwnds[i] = nullptr;
@@ -975,18 +982,21 @@ struct InProcessDropExecutor::SentinelBridge
   explicit SentinelBridge(InProcessDropExecutor *owner)
   {
     host.setCallbacks({
-        [owner, alive = alive](int sideIndex, std::vector<std::string> files, int32_t x, int32_t y) {
-          if (*alive) {
+        [owner, alive = owner->m_alive](int sideIndex, std::vector<std::string> files, int32_t x, int32_t y) {
+          std::scoped_lock lock(alive->mutex);
+          if (alive->load()) {
             owner->onSentinelDragEnter(sideIndex, std::move(files), x, y);
           }
         },
-        [owner, alive = alive]() {
-          if (*alive) {
+        [owner, alive = owner->m_alive]() {
+          std::scoped_lock lock(alive->mutex);
+          if (alive->load()) {
             owner->onSentinelDragLeave();
           }
         },
-        [this, owner, alive = alive](bool stillPressed) {
-          if (*alive) {
+        [this, owner, alive = owner->m_alive](bool stillPressed) {
+          std::scoped_lock lock(alive->mutex);
+          if (alive->load()) {
             cancellingNativeDrag.store(false);
             nativeDragCancellationComplete.store(true);
             owner->onSentinelCancellationCompleted(stillPressed);
@@ -997,7 +1007,6 @@ struct InProcessDropExecutor::SentinelBridge
 
   ~SentinelBridge()
   {
-    *alive = false;
     shutdown();
   }
 
@@ -1041,7 +1050,6 @@ struct InProcessDropExecutor::SentinelBridge
 
   std::atomic<bool> cancellingNativeDrag{false};
   std::atomic<bool> nativeDragCancellationComplete{false};
-  std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>>(true);
   platform_drop::QtEdgeSentinelHost host;
 #endif
 };
@@ -1054,32 +1062,113 @@ InProcessDropExecutor::InProcessDropExecutor(bool enableSentinels)
 {
 }
 
+namespace {
+void disposeProcess(QProcess *process)
+{
+  process->disconnect();
+  if (process->state() != QProcess::NotRunning) {
+    process->kill();
+    process->waitForFinished(1000);
+  }
+  delete process;
+}
+} // namespace
+
 InProcessDropExecutor::~InProcessDropExecutor()
 {
-  m_alive->store(false);
-  stopReceiver();
-  QProcess *sendProc = nullptr;
-  {
-    std::scoped_lock lock(m_mutex);
-    sendProc = m_activeSendProcess;
-    m_activeSendProcess = nullptr;
-  }
-  if (sendProc) {
-    sendProc->disconnect();
-    sendProc->kill();
-    sendProc->waitForFinished(1000);
-    delete sendProc;
-  }
+  stopProcessesForShutdown();
   handleShutdownSentinels();
+}
+
+void InProcessDropExecutor::bindProcessToApplication(QProcess *process)
+{
+  auto *app = QCoreApplication::instance();
+  if (!app) {
+    return;
+  }
+  const auto cleanup = [this, alive = m_alive, process] {
+    {
+      std::scoped_lock lock(alive->mutex);
+      if (alive->load()) {
+        std::scoped_lock stateLock(m_mutex);
+        if (m_receiverProcess == process) {
+          m_receiverProcess = nullptr;
+        }
+        if (m_activeSendProcess == process) {
+          m_activeSendProcess = nullptr;
+        }
+      }
+    }
+    disposeProcess(process);
+  };
+  QObject::connect(app, &QCoreApplication::aboutToQuit, process, cleanup);
+  QObject::connect(app, &QObject::destroyed, process, cleanup);
+}
+
+void InProcessDropExecutor::stopProcessesForShutdown()
+{
+  const auto alive = m_alive;
+  std::unique_lock lock(alive->mutex);
+  alive->store(false);
+  QProcess *receiver;
+  QProcess *sender;
+  {
+    std::scoped_lock stateLock(m_mutex);
+    receiver = std::exchange(m_receiverProcess, nullptr);
+    sender = std::exchange(m_activeSendProcess, nullptr);
+  }
+  std::array<QProcess *, 2> localProcesses{};
+  std::size_t localCount = 0;
+  for (auto *process : {receiver, sender}) {
+    if (!process) {
+      continue;
+    }
+    if (QThread::currentThread() == process->thread()) {
+      localProcesses[localCount++] = process;
+    } else {
+      QMetaObject::invokeMethod(
+          process,
+          [alive, process] {
+            {
+              std::scoped_lock lock(alive->mutex);
+            }
+            disposeProcess(process);
+          },
+          Qt::QueuedConnection
+      );
+    }
+  }
+  lock.unlock();
+  for (std::size_t i = 0; i < localCount; ++i) {
+    disposeProcess(localProcesses[i]);
+  }
 }
 
 void InProcessDropExecutor::setHost(IDropExecutorHost *host)
 {
+  std::scoped_lock lock(m_alive->mutex);
   m_host.store(host);
 }
 
 void InProcessDropExecutor::execute(const DropAgentCommand &cmd)
 {
+  if (cmd.type == DropAgentCommandType::Shutdown) {
+    stopProcessesForShutdown();
+    handleShutdownSentinels();
+    return;
+  }
+  const auto alive = m_alive;
+  std::unique_lock<std::recursive_mutex> lifetimeLock(alive->mutex, std::defer_lock);
+#if defined(_WIN32)
+  if (!m_enableSentinels) {
+    lifetimeLock.lock();
+  }
+#else
+  lifetimeLock.lock();
+#endif
+  if (!alive->load()) {
+    return;
+  }
   switch (cmd.type) {
   case DropAgentCommandType::UpdatePrimaryShape:
     updatePrimaryShape(cmd.aw > 0 ? cmd.ax : cmd.x, cmd.aw > 0 ? cmd.ay : cmd.y, cmd.aw, cmd.ah);
@@ -1181,8 +1270,6 @@ void InProcessDropExecutor::execute(const DropAgentCommand &cmd)
     }
     break;
   case DropAgentCommandType::Shutdown:
-    stopReceiver();
-    handleShutdownSentinels();
     break;
   }
 }
@@ -1387,6 +1474,10 @@ void InProcessDropExecutor::handleCancelNativeDrag(int sideIndex)
 
 void InProcessDropExecutor::onSentinelDragEnter(int sideIndex, std::vector<std::string> files, int32_t x, int32_t y)
 {
+  std::scoped_lock lifetimeLock(m_alive->mutex);
+  if (!m_alive->load()) {
+    return;
+  }
   if (auto *host = m_host.load()) {
     host->onPendingDragCaptured(std::move(files), sideIndex, x, y);
   }
@@ -1394,6 +1485,10 @@ void InProcessDropExecutor::onSentinelDragEnter(int sideIndex, std::vector<std::
 
 void InProcessDropExecutor::onSentinelDragLeave()
 {
+  std::scoped_lock lifetimeLock(m_alive->mutex);
+  if (!m_alive->load()) {
+    return;
+  }
   if (auto *host = m_host.load()) {
     host->onPendingDragCleared();
   }
@@ -1401,6 +1496,10 @@ void InProcessDropExecutor::onSentinelDragLeave()
 
 void InProcessDropExecutor::onSentinelCancellationCompleted(bool stillPressed)
 {
+  std::scoped_lock lifetimeLock(m_alive->mutex);
+  if (!m_alive->load()) {
+    return;
+  }
   if (auto *host = m_host.load()) {
     host->onDragCancellationCompleted(stillPressed);
   }
@@ -1635,6 +1734,10 @@ void InProcessDropExecutor::notifyActiveTransfersChangedLocked(bool &outShouldNo
 
 void InProcessDropExecutor::emitActiveTransfersChanged(bool active)
 {
+  std::scoped_lock lifetimeLock(m_alive->mutex);
+  if (!m_alive->load()) {
+    return;
+  }
   LOG_INFO("FileDropBridge: activeTransfers=%d", active ? 1 : 0);
   ipcSendToClient(QStringLiteral("activeTransfers"), active ? QStringLiteral("1") : QStringLiteral("0"));
   if (auto *host = m_host.load()) {
@@ -1682,11 +1785,19 @@ void InProcessDropExecutor::startReceiverHosts(const std::vector<std::string> &h
 
 void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string> &hosts, bool isRestart)
 {
+  std::scoped_lock lifetimeLock(m_alive->mutex);
+  if (!m_alive->load()) {
+    return;
+  }
   if (auto *app = QCoreApplication::instance(); app && QThread::currentThread() != app->thread()) {
     const auto alive = m_alive;
     QMetaObject::invokeMethod(
         app,
         [this, alive, hosts, isRestart]() {
+          std::scoped_lock lifetimeLock(alive->mutex);
+          if (!alive->load()) {
+            return;
+          }
           if (alive->load()) {
             startReceiverInternal(hosts, isRestart);
           }
@@ -1778,6 +1889,7 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
        << QStringLiteral("--auto-accept-from") << allowSpec << QStringLiteral("--auth-stdin");
 
   auto *proc = new QProcess();
+  bindProcessToApplication(proc);
   proc->setProcessChannelMode(QProcess::MergedChannels);
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   const QString rxCfgDir = resolveLocalSendConfigDir("DESKSEND_RECEIVER_CONFIG_HOME", QStringLiteral("receiver"));
@@ -1794,7 +1906,11 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
     m_receiverProcess = proc;
   }
 
-  QObject::connect(proc, &QProcess::started, proc, [this, proc, generation]() {
+  QObject::connect(proc, &QProcess::started, proc, [this, alive = m_alive, proc, generation]() {
+    std::scoped_lock lifetimeLock(alive->mutex);
+    if (!alive->load()) {
+      return;
+    }
     std::deque<std::string> pending;
     {
       std::scoped_lock lock(m_mutex);
@@ -1812,7 +1928,11 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
     }
   });
 
-  QObject::connect(proc, &QProcess::errorOccurred, proc, [this, proc, generation](QProcess::ProcessError error) {
+  QObject::connect(proc, &QProcess::errorOccurred, proc, [this, alive = m_alive, proc, generation](QProcess::ProcessError error) {
+    std::scoped_lock lifetimeLock(alive->mutex);
+    if (!alive->load()) {
+      return;
+    }
     if (error == QProcess::FailedToStart) {
       bool shouldWarn = false;
       {
@@ -1839,7 +1959,11 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
   });
 
   QObject::connect(
-      proc, &QProcess::finished, proc, [this, proc, generation, normalized, hostsKey](int exitCode, QProcess::ExitStatus exitStatus) {
+      proc, &QProcess::finished, proc, [this, alive = m_alive, proc, generation, normalized, hostsKey](int exitCode, QProcess::ExitStatus exitStatus) {
+        std::scoped_lock lifetimeLock(alive->mutex);
+        if (!alive->load()) {
+          return;
+        }
         proc->deleteLater();
         int delayMs = 0;
         int attempt = 0;
@@ -1896,6 +2020,7 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
           if (auto *app = QCoreApplication::instance()) {
             const auto alive = m_alive;
             QTimer::singleShot(delayMs, app, [this, alive, generation, normalized, hostsKey]() {
+              std::scoped_lock lifetimeLock(alive->mutex);
               if (!alive->load()) {
                 return;
               }
@@ -1912,7 +2037,11 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
       }
   );
 
-  QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [this, proc, generation]() {
+  QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [this, alive = m_alive, proc, generation]() {
+    std::scoped_lock lifetimeLock(alive->mutex);
+    if (!alive->load()) {
+      return;
+    }
     while (proc->canReadLine()) {
       auto rawLine = proc->readLine();
       if (rawLine.endsWith('\n')) {
@@ -1986,11 +2115,19 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
 
 void InProcessDropExecutor::stopReceiver()
 {
+  std::scoped_lock lifetimeLock(m_alive->mutex);
+  if (!m_alive->load()) {
+    return;
+  }
   if (auto *app = QCoreApplication::instance(); app && QThread::currentThread() != app->thread()) {
     const auto alive = m_alive;
     QMetaObject::invokeMethod(
         app,
         [this, alive]() {
+          std::scoped_lock lifetimeLock(alive->mutex);
+          if (!alive->load()) {
+            return;
+          }
           if (alive->load()) {
             stopReceiver();
           }
@@ -2049,6 +2186,10 @@ void InProcessDropExecutor::queueReceiverAuthCommand(const std::string &command)
     QMetaObject::invokeMethod(
         app,
         [this, alive, command]() {
+          std::scoped_lock lifetimeLock(alive->mutex);
+          if (!alive->load()) {
+            return;
+          }
           if (alive->load()) {
             queueReceiverAuthCommand(command);
           }
@@ -2127,11 +2268,19 @@ void InProcessDropExecutor::sendFilesViaLocalSend(
     const std::string &targetIp, const std::vector<std::string> &files, const std::string &authToken
 )
 {
+  std::scoped_lock lifetimeLock(m_alive->mutex);
+  if (!m_alive->load()) {
+    return;
+  }
   if (auto *app = QCoreApplication::instance(); app && QThread::currentThread() != app->thread()) {
     const auto alive = m_alive;
     QMetaObject::invokeMethod(
         app,
         [this, alive, targetIp, files, authToken]() {
+          std::scoped_lock lifetimeLock(alive->mutex);
+          if (!alive->load()) {
+            return;
+          }
           if (alive->load()) {
             sendFilesViaLocalSend(targetIp, files, authToken);
           }
@@ -2169,6 +2318,10 @@ void InProcessDropExecutor::sendFilesViaLocalSend(
 
 void InProcessDropExecutor::processNextSendJob()
 {
+  std::scoped_lock lifetimeLock(m_alive->mutex);
+  if (!m_alive->load()) {
+    return;
+  }
   SendJob job;
   bool shouldNotify = false;
   bool notifyActive = false;
@@ -2232,6 +2385,7 @@ void InProcessDropExecutor::processNextSendJob()
   stdinPayload.append('\n');
 
   auto *proc = new QProcess();
+  bindProcessToApplication(proc);
   auto *inactivityTimer = new QTimer(proc);
   inactivityTimer->setSingleShot(true);
   const int inactivityMs = sendInactivityTimeoutMs();
@@ -2252,6 +2406,10 @@ void InProcessDropExecutor::processNextSendJob()
   m_senderOverlay.begin(
       QCoreApplication::translate("FileDropBridge", "Sending to %1").arg(destination),
       [this, alive, process = QPointer<QProcess>(proc)] {
+        std::scoped_lock lifetimeLock(alive->mutex);
+        if (!alive->load()) {
+          return;
+        }
         if (alive->load() && process) {
           cancelActiveSend(process);
         }
@@ -2271,6 +2429,7 @@ void InProcessDropExecutor::processNextSendJob()
     }
   });
   QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [this, alive, proc, inactivityTimer, inactivityMs, cancellationReported]() {
+    std::scoped_lock lifetimeLock(alive->mutex);
     if (!alive->load()) {
       return;
     }
@@ -2291,6 +2450,10 @@ void InProcessDropExecutor::processNextSendJob()
   });
 
   QObject::connect(proc, &QProcess::started, proc, [this, alive, proc, stdinPayload, inactivityTimer, inactivityMs]() {
+    std::scoped_lock lifetimeLock(alive->mutex);
+    if (!alive->load()) {
+      return;
+    }
 #if defined(_WIN32)
     configureLocalSendChildProcess(proc->processId());
 #endif
@@ -2308,6 +2471,10 @@ void InProcessDropExecutor::processNextSendJob()
   QObject::connect(
       proc, &QProcess::errorOccurred, proc,
       [this, alive, proc, inactivityTimer, destination, jobTargetIp](QProcess::ProcessError error) {
+        std::scoped_lock lifetimeLock(alive->mutex);
+        if (!alive->load()) {
+          return;
+        }
         if (!alive->load()) {
           inactivityTimer->stop();
           proc->deleteLater();
@@ -2344,6 +2511,10 @@ void InProcessDropExecutor::processNextSendJob()
       [this, alive, proc, inactivityTimer, timedOut, cancellationReported, destination, jobTargetIp](
           int exitCode, QProcess::ExitStatus status
       ) {
+        std::scoped_lock lifetimeLock(alive->mutex);
+        if (!alive->load()) {
+          return;
+        }
         inactivityTimer->stop();
         proc->deleteLater();
         if (!alive->load()) {
@@ -2472,6 +2643,10 @@ void InProcessDropExecutor::handleReceiveSessionStarted(
   std::function<void()> cancel;
   if (!sessionId.empty()) {
     cancel = [this, alive = m_alive, sessionId]() {
+      std::scoped_lock lifetimeLock(alive->mutex);
+      if (!alive->load()) {
+        return;
+      }
       if (alive->load()) {
         cancelActiveReceive(sessionId);
       }

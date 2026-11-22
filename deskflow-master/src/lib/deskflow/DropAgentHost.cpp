@@ -258,6 +258,9 @@ int runDropAgentMain()
       stdinReader.join();
     }
     executor.setHost(nullptr);
+    DropAgentCommand shutdownCmd;
+    shutdownCmd.type = DropAgentCommandType::Shutdown;
+    executor.execute(shutdownCmd);
   }
 
   CLOG->remove(logOutputter);

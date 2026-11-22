@@ -132,6 +132,7 @@ uint32_t activeSidesMaskFromSegments(const std::vector<DragEdgeSegment> &segment
 std::shared_ptr<IDropExecutor> shareExecutor(std::unique_ptr<IDropExecutor> executor)
 {
   return std::shared_ptr<IDropExecutor>(executor.release(), [](IDropExecutor *value) {
+#if defined(_WIN32)
     if (dynamic_cast<InProcessDropExecutor *>(value)) {
       auto *app = QCoreApplication::instance();
       if (app && QThread::currentThread() != app->thread()) {
@@ -140,6 +141,7 @@ std::shared_ptr<IDropExecutor> shareExecutor(std::unique_ptr<IDropExecutor> exec
         return;
       }
     }
+#endif
     delete value;
   });
 }
