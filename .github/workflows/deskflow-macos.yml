@@ -7,6 +7,11 @@ name: deskflow-macos
       - "deskflow-master/**"
       - "localsend-main/**"
       - ".github/workflows/deskflow-macos.yml"
+  pull_request:
+    paths:
+      - "deskflow-master/**"
+      - "localsend-main/**"
+      - ".github/workflows/deskflow-macos.yml"
 
 jobs:
   build:
@@ -53,7 +58,7 @@ jobs:
                   time.sleep(0.1)
               raise TimeoutError(f"Receiver condition not met within {timeout}s")
 
-          def transfer(root, files, rx_port, tx_port, authenticated=False):
+          def transfer(root, files, rx_port, tx_port, authenticated=False, hex_paths=False):
               root.mkdir()
               dest = root / "received"
               dest.mkdir()
@@ -69,7 +74,12 @@ jobs:
               if authenticated:
                   rx_args.append("--auth-stdin")
                   tx_args.extend(["--pin-stdin", "--paths-stdin"])
-                  sender_input = "\n".join([token, *map(str, files)]) + "\n"
+                  paths = [str(path) for path in files]
+                  if hex_paths:
+                      rx_args.append("--received-paths-hex")
+                      tx_args.extend(["--paths-stdin-hex", "--cancel-stdin"])
+                      paths = [path.encode("utf-8").hex() for path in paths]
+                  sender_input = "\n".join([token, *paths]) + ("\n\n" if hex_paths else "\n")
               else:
                   tx_args.extend(map(str, files))
 
@@ -98,6 +108,9 @@ jobs:
                           lambda log: re.search(rf"RECEIVE_PROGRESS:[^:\n]+:{total}:{total}(?:\n|$)", log),
                           15,
                       )
+                      if hex_paths:
+                          expected_records = {f"RECEIVED_FILE_HEX:{str(dest / p.name).encode('utf-8').hex()}" for p in files}
+                          wait_for(receiver, rx_log, lambda log: expected_records.issubset(log.splitlines()), 15)
                       for path in files:
                           expected = path.read_bytes()
                           actual = (dest / path.name).read_bytes()
@@ -126,6 +139,9 @@ jobs:
               files[2].write_bytes(bytes(range(256)) * (32 * 1024 * 1024 // 256))
               transfer(root / "plain", files, 53318, 53319)
               transfer(root / "authenticated", files[:2], 53320, 53321, authenticated=True)
+              special = root / "line\r\nbreak.txt"
+              special.write_bytes(b"line-break path")
+              transfer(root / "hex-paths", [special], 53322, 53323, authenticated=True, hex_paths=True)
           PY
       - name: Install macOS build dependencies
         run: brew install ninja openssl@3

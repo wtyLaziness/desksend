@@ -3,6 +3,8 @@ on:
   workflow_dispatch:
   push:
     paths: ["deskflow-master/**", "localsend-main/**", ".github/workflows/deskflow-win.yml"]
+  pull_request:
+    paths: ["deskflow-master/**", "localsend-main/**", ".github/workflows/deskflow-win.yml"]
 jobs:
   build:
     runs-on: windows-latest
@@ -31,7 +33,10 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $wixDir
       - name: Build LocalSend CLI for the installer
         working-directory: localsend-main
-        run: cargo build --locked --release --package localsend-cli
+        run: |
+          cargo test --locked --release --package localsend-cli
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --locked --release --package localsend-cli
       - name: Cache vcpkg_installed
         uses: actions/cache@v4
         with:
@@ -47,6 +52,8 @@ jobs:
       - name: Build
         working-directory: deskflow-master
         run: cmake --build build
+      - name: Run DeskSend unit tests
+        run: ctest --test-dir deskflow-master/build/src/unittests --no-tests=error --output-on-failure
       - name: Package portable ZIP and MSI
         working-directory: deskflow-master/build
         run: |

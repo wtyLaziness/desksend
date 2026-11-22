@@ -104,7 +104,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
   endif()
   set(OS_STRING "${DISTRO_NAME}-${CN_STRING}${BUILD_ARCHITECTURE}")
 
-elseif(${CMAKE_SYSTEM_NAME} MATCHES "|.*BSD")
+elseif(CMAKE_SYSTEM_NAME MATCHES "BSD$")
   message(STATUS "BSD packaging not yet supported")
   set(OS_STRING ${CMAKE_SYSTEM_NAME}-${BUILD_ARCHITECTURE})
 endif()
