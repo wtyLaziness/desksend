@@ -1409,8 +1409,14 @@ void InProcessDropExecutor::onSentinelCancellationCompleted(bool stillPressed)
 std::string InProcessDropExecutor::findLocalSendCliPath()
 {
   if (const char *envPath = std::getenv("DESKSEND_LOCALSEND_CLI"); envPath && envPath[0] != '\0') {
+#if defined(_WIN32)
     if (QFileInfo::exists(QString::fromUtf8(envPath))) {
       return envPath;
+#else
+    const QFileInfo overridePath(QString::fromUtf8(envPath));
+    if (overridePath.isFile() && overridePath.isExecutable()) {
+      return overridePath.absoluteFilePath().toStdString();
+#endif
     }
   }
   const QString appDir = QCoreApplication::applicationDirPath();
@@ -1420,10 +1426,19 @@ std::string InProcessDropExecutor::findLocalSendCliPath()
   const QString exeName = QStringLiteral("localsend-cli");
 #endif
   const QString candidate = QDir(appDir).filePath(exeName);
+#if defined(_WIN32)
   if (QFileInfo::exists(candidate)) {
     return candidate.toStdString();
   }
   return exeName.toStdString();
+#else
+  const QFileInfo bundled(candidate);
+  if (bundled.isFile() && bundled.isExecutable()) {
+    return candidate.toStdString();
+  }
+  const auto executable = QStandardPaths::findExecutable(exeName);
+  return executable.isEmpty() ? exeName.toStdString() : executable.toStdString();
+#endif
 }
 
 std::string InProcessDropExecutor::computeTokenTag(const std::string &token)
@@ -1457,7 +1472,7 @@ std::string InProcessDropExecutor::uniqueDestinationPath(const std::string &dstD
   const QString baseName = hasExtension ? fileName.left(lastDot) : fileName;
   const QString suffix = hasExtension ? fileName.mid(lastDot + 1) : QString();
   int counter = 1;
-  while (QFileInfo::exists(dstPath)) {
+  while (QFileInfo::exists(dstPath) || QFileInfo(dstPath).isSymLink()) {
     if (suffix.isEmpty()) {
       dstPath = dstParentDir.filePath(QStringLiteral("%1 (%2)").arg(baseName).arg(counter));
     } else {
@@ -1899,7 +1914,16 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
 
   QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [this, proc, generation]() {
     while (proc->canReadLine()) {
-      const QString line = QString::fromUtf8(proc->readLine()).trimmed();
+      auto rawLine = proc->readLine();
+      if (rawLine.endsWith('\n')) {
+        rawLine.chop(1);
+      }
+#if defined(_WIN32)
+      if (rawLine.endsWith('\r')) {
+        rawLine.chop(1);
+      }
+#endif
+      const QString line = QString::fromUtf8(rawLine);
       if (!line.startsWith(QStringLiteral("RECEIVE_PROGRESS:"))) {
         LOG_INFO("FileDropBridge [rx]: %s", line.toStdString().c_str());
       }
@@ -2578,7 +2602,9 @@ void InProcessDropExecutor::handleReceivedFileLine(const std::string &filePath)
   }
 
   QFileInfo srcInfo(QString::fromStdString(filePath));
-  if (!srcInfo.exists()) {
+  if (!srcInfo.isFile() || srcInfo.isSymLink()) {
+    LOG_WARN("FileDropBridge: received path is missing or is not a regular file: \"%s\"", filePath.c_str());
+    handleReceiveFileFailedLine();
     return;
   }
 
@@ -2586,7 +2612,8 @@ void InProcessDropExecutor::handleReceivedFileLine(const std::string &filePath)
   if (!stagingDirStr.empty()) {
     QDir stagingDir(QString::fromStdString(stagingDirStr));
     const QString candidateRel = stagingDir.relativeFilePath(srcInfo.absoluteFilePath());
-    if (!candidateRel.isEmpty() && !candidateRel.startsWith(QStringLiteral("..")) &&
+    if (!candidateRel.isEmpty() && candidateRel != QStringLiteral("..") &&
+        !candidateRel.startsWith(QStringLiteral("../")) &&
         !QDir::isAbsolutePath(candidateRel)) {
       relPath = candidateRel;
     }

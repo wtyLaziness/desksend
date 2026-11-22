@@ -50,7 +50,7 @@ QList<QUrl> buildLocalFileUrls(const std::vector<std::string> &files);
 std::vector<std::string> extractLocalFilePathsFromUrls(const QList<QUrl> &urls);
 QByteArray buildGnomeCopiedFilesPayload(const std::vector<std::string> &files);
 std::string parseFinderPathOutput(const std::string &stdoutText);
-bool copyFilesToPlatformClipboard(const std::vector<std::string> &files);
+void copyFilesToPlatformClipboard(const std::vector<std::string> &files);
 
 bool isNativeEdgeSentinelSupported();
 bool isNativeLeftMouseButtonDown(bool trackedFallback);

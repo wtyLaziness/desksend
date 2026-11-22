@@ -45,13 +45,13 @@ namespace {
 bool hasGuiApplication()
 {
   auto *app = QCoreApplication::instance();
-  return app != nullptr && app->inherits("QApplication");
+  return app != nullptr && app->inherits("QApplication") && !QCoreApplication::closingDown();
 }
 
 template <typename Fn> void runOnGuiThread(Fn &&fn)
 {
   auto *app = QCoreApplication::instance();
-  if (!app || !app->inherits("QApplication")) {
+  if (!app || !hasGuiApplication()) {
     return;
   }
   if (QThread::currentThread() != app->thread()) {
@@ -375,9 +375,11 @@ struct DragHoverIndicator::Impl
 
   ~Impl()
   {
-    if (widget && QCoreApplication::instance()) {
-      widget->deleteLater();
-    }
+    runOnGuiThread([window = std::move(widget)] {
+      if (window) {
+        window->deleteLater();
+      }
+    });
   }
 };
 
@@ -481,9 +483,11 @@ struct TransferStatusOverlay::Impl
 
   ~Impl()
   {
-    if (widget && QCoreApplication::instance()) {
-      widget->deleteLater();
-    }
+    runOnGuiThread([window = std::move(widget)] {
+      if (window) {
+        window->deleteLater();
+      }
+    });
   }
 
   TransferStatusWidget *ensureWidgetLocked(const std::weak_ptr<Impl> &weak)

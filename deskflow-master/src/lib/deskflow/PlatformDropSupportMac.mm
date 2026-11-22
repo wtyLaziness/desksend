@@ -73,6 +73,7 @@ std::string resolveNonWindowsDropTargetDirectory(int32_t x, int32_t y, const std
     }
     bool finder = false;
     bool desktop = false;
+    CGRect hitBounds{};
     for (NSDictionary *window in (__bridge NSArray *)windowList) {
       NSNumber *pid = window[(__bridge NSString *)kCGWindowOwnerPID];
       if ([pid intValue] == getpid()) {
@@ -92,6 +93,7 @@ std::string resolveNonWindowsDropTargetDirectory(int32_t x, int32_t y, const std
       finder = [owner isEqualToString:@"Finder"];
       NSNumber *layer = window[(__bridge NSString *)kCGWindowLayer];
       desktop = [layer intValue] <= CGWindowLevelForKey(kCGDesktopIconWindowLevelKey);
+      hitBounds = bounds;
       break;
     }
     CFRelease(windowList);
@@ -105,9 +107,28 @@ std::string resolveNonWindowsDropTargetDirectory(int32_t x, int32_t y, const std
     } else {
       QProcess finderQuery;
       finderQuery.start(
-          QStringLiteral("osascript"),
+          QStringLiteral("/usr/bin/osascript"),
           {QStringLiteral("-e"),
-           QStringLiteral("tell application \"Finder\" to POSIX path of (target of front Finder window as alias)")}
+           QStringLiteral(
+               "on run argv\n"
+               "set hitBounds to {}\n"
+               "repeat with coord in argv\n"
+               "set end of hitBounds to (contents of coord as integer)\n"
+               "end repeat\n"
+               "tell application id \"com.apple.finder\"\n"
+               "set matchingWindows to {}\n"
+               "repeat with candidate in Finder windows\n"
+               "if (bounds of candidate) is hitBounds then set end of matchingWindows to contents of candidate\n"
+               "end repeat\n"
+               "if (count of matchingWindows) is 1 then\n"
+               "return POSIX path of (target of item 1 of matchingWindows as alias)\n"
+               "end if\n"
+               "end tell\n"
+               "return \"\"\n"
+               "end run"),
+           QStringLiteral("--"), QString::number(qRound(CGRectGetMinX(hitBounds))),
+           QString::number(qRound(CGRectGetMinY(hitBounds))), QString::number(qRound(CGRectGetMaxX(hitBounds))),
+           QString::number(qRound(CGRectGetMaxY(hitBounds)))}
       );
       if (!finderQuery.waitForFinished(1500)) {
         if (finderQuery.state() != QProcess::NotRunning) {
@@ -117,9 +138,12 @@ std::string resolveNonWindowsDropTargetDirectory(int32_t x, int32_t y, const std
         return fallbackDir;
       }
       if (finderQuery.exitStatus() == QProcess::NormalExit && finderQuery.exitCode() == 0) {
-        path = parseFinderPathOutput(finderQuery.readAllStandardOutput().toStdString());
-        if (!QFileInfo(QString::fromStdString(path)).isDir()) {
-          path.clear();
+        auto output = finderQuery.readAllStandardOutput();
+        if (output.endsWith('\n')) {
+          output.chop(1);
+        }
+        if (output.startsWith('/') && QFileInfo(QString::fromUtf8(output)).isDir()) {
+          path = output.toStdString();
         }
       }
     }

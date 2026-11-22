@@ -11,6 +11,9 @@
 #include <QPainter>
 #include <QPointer>
 #include <QThread>
+#if defined(DESKSEND_HAVE_X11)
+#include <QScreen>
+#endif
 #include <QTimer>
 #include <QWidget>
 
@@ -39,6 +42,37 @@ template <typename F> void runOnGuiThread(F &&fn)
   }
 }
 
+#if defined(DESKSEND_HAVE_X11)
+QRect nativeScreenGeometry(const QScreen *screen)
+{
+  const auto logical = screen->geometry();
+  return {logical.topLeft(), logical.size() * screen->devicePixelRatio()};
+}
+
+QRect edgeWidgetGeometry(const QRect &native)
+{
+  QRect best;
+  const QScreen *selected = nullptr;
+  for (const auto *screen : QGuiApplication::screens()) {
+    const auto frame = nativeScreenGeometry(screen);
+    const auto part = frame.intersected(native);
+    if (part.isEmpty() || qint64(part.width()) * part.height() <= qint64(best.width()) * best.height()) {
+      continue;
+    }
+    best = part;
+    selected = screen;
+  }
+  if (!selected) {
+    return {};
+  }
+  const auto origin = selected->geometry().topLeft();
+  const auto scale = selected->devicePixelRatio();
+  const auto topLeft = origin + (best.topLeft() - origin) / scale;
+  const auto end = origin + (best.topLeft() + QPoint(best.width(), best.height()) - origin) / scale;
+  return {topLeft, QSize(qMax(1, end.x() - topLeft.x()), qMax(1, end.y() - topLeft.y()))};
+}
+#endif
+
 class EdgeWidget final : public QWidget
 {
 public:
@@ -53,6 +87,15 @@ public:
     setAcceptDrops(true);
   }
 
+  void setNativeGeometry(const QRect &native)
+  {
+#if defined(DESKSEND_HAVE_X11)
+    setGeometry(edgeWidgetGeometry(native));
+#else
+    setGeometry(native);
+#endif
+  }
+
 protected:
   void dragEnterEvent(QDragEnterEvent *event) override
   {
@@ -61,7 +104,11 @@ protected:
       event->ignore();
       return;
     }
-    const auto global = mapToGlobal(event->position().toPoint());
+    auto global = mapToGlobal(event->position().toPoint());
+#if defined(DESKSEND_HAVE_X11)
+    const auto origin = screen()->geometry().topLeft();
+    global = origin + (global - origin) * screen()->devicePixelRatio();
+#endif
     event->acceptProposedAction();
     m_callbacks.onDragEnter(m_sideIndex, std::move(files), global.x(), global.y());
   }
@@ -125,14 +172,12 @@ std::string parseFinderPathOutput(const std::string &stdoutText)
   return {};
 }
 
-bool copyFilesToPlatformClipboard(const std::vector<std::string> &files)
+void copyFilesToPlatformClipboard(const std::vector<std::string> &files)
 {
-  auto *app = guiApplication();
-  if (!app || files.empty()) {
-    return false;
+  if (files.empty()) {
+    return;
   }
-  bool copied = false;
-  auto copy = [&] {
+  runOnGuiThread([files] {
     const auto urls = buildLocalFileUrls(files);
     auto *clipboard = QApplication::clipboard();
     if (!clipboard || urls.isEmpty()) {
@@ -144,14 +189,7 @@ bool copyFilesToPlatformClipboard(const std::vector<std::string> &files)
     mimeData->setData("x-special/gnome-copied-files", buildGnomeCopiedFilesPayload(files));
 #endif
     clipboard->setMimeData(mimeData);
-    copied = true;
-  };
-  if (QThread::currentThread() == app->thread()) {
-    copy();
-  } else {
-    QMetaObject::invokeMethod(app, copy, Qt::BlockingQueuedConnection);
-  }
-  return copied;
+  });
 }
 
 struct QtEdgeSentinelHost::Impl
@@ -232,7 +270,7 @@ void QtEdgeSentinelHost::ensureInitialized(int32_t x, int32_t y, int32_t w, int3
         state.lastH = h;
         for (std::size_t idx = 0; idx < bounds.size(); ++idx) {
           if (state.edges[idx]) {
-            state.edges[idx]->setGeometry(bounds[idx]);
+            state.edges[idx]->setNativeGeometry(bounds[idx]);
           }
         }
       }
@@ -280,7 +318,7 @@ void QtEdgeSentinelHost::ensureInitialized(int32_t x, int32_t y, int32_t w, int3
       };
       auto *edge = new EdgeWidget(static_cast<int>(idx), std::move(callbacks));
       state.edges[idx] = edge;
-      edge->setGeometry(bounds[idx]);
+      edge->setNativeGeometry(bounds[idx]);
       configurePlatformOverlayWidget(edge, false);
     }
   });
@@ -294,7 +332,7 @@ void QtEdgeSentinelHost::setEdgeGeometryAndVisible(
     if (idx < state.edges.size() && state.edges[idx]) {
       auto *edge = state.edges[idx].data();
       if (rw > 0 && rh > 0) {
-        edge->setGeometry(rx, ry, rw, rh);
+        edge->setNativeGeometry(QRect(rx, ry, rw, rh));
         edge->setVisible(show);
       } else {
         edge->hide();

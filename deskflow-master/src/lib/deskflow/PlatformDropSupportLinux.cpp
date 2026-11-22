@@ -143,7 +143,7 @@ template <typename F> void withXTest(F action)
 bool isNativeEdgeSentinelSupported()
 {
 #if defined(DESKSEND_HAVE_X11)
-  return !QGuiApplication::platformName().contains(QStringLiteral("wayland"), Qt::CaseInsensitive);
+  return QGuiApplication::platformName() == QStringLiteral("xcb");
 #else
   return false;
 #endif
@@ -208,10 +208,19 @@ std::string resolveNonWindowsDropTargetDirectory(
   }
 #if defined(DESKSEND_HAVE_X11)
   if (auto display = openXDisplay()) {
-    const auto screen = DefaultScreen(display.get());
-    const Window root = RootWindow(display.get(), screen);
+    Window root = 0;
+    for (int screen = 0; screen < ScreenCount(display.get()); ++screen) {
+      const Window candidate = RootWindow(display.get(), screen);
+      Window actualRoot = 0, child = 0;
+      int rootX = 0, rootY = 0, windowX = 0, windowY = 0;
+      unsigned mask = 0;
+      if (XQueryPointer(display.get(), candidate, &actualRoot, &child, &rootX, &rootY, &windowX, &windowY, &mask)) {
+        root = candidate;
+        break;
+      }
+    }
     XWindowAttributes rootAttrs{};
-    if (XGetWindowAttributes(display.get(), root, &rootAttrs) && x >= rootAttrs.x && y >= rootAttrs.y &&
+    if (root && XGetWindowAttributes(display.get(), root, &rootAttrs) && x >= rootAttrs.x && y >= rootAttrs.y &&
         x < rootAttrs.x + rootAttrs.width && y < rootAttrs.y + rootAttrs.height && hitsDesktop(display.get(), root, x, y)) {
       const auto desktop = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
       if (!desktop.isEmpty()) {
