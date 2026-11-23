@@ -386,6 +386,25 @@ fn parse_auth_command(line: &str) -> Option<AuthCommand> {
     None
 }
 
+async fn next_receive_event(
+    server_rx: &mut mpsc::Receiver<ServerEventV2>,
+    queued_prepare: &mut Option<ServerEventV2>,
+    session_in_progress: bool,
+) -> Option<ServerEventV2> {
+    if !session_in_progress && let Some(event) = queued_prepare.take() {
+        return Some(event);
+    }
+
+    while let Some(event) = server_rx.recv().await {
+        if session_in_progress && matches!(event, ServerEventV2::PrepareUpload { .. }) {
+            *queued_prepare = Some(event);
+        } else {
+            return Some(event);
+        }
+    }
+    None
+}
+
 /// Runs the CLI in headless receive mode (no TTY/raw mode required).
 pub(super) async fn run_receive(
     storage: Repository,
@@ -435,6 +454,7 @@ pub(super) async fn run_receive(
     let mut active_sessions: HashSet<String> = HashSet::new();
     let mut file_paths: HashMap<(String, String), PathBuf> = HashMap::new();
     let mut progress: HashMap<String, ReceiveProgress> = HashMap::new();
+    let mut queued_prepare = None;
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -457,7 +477,7 @@ pub(super) async fn run_receive(
                         if active_sessions.contains(&session_id) && server.cancel_v2_session(&session_id).await {
                             let sender = progress.get(&session_id).and_then(|state| state.sender.clone());
                             active_sessions.remove(&session_id);
-                            end_receive_session(&mut progress, &file_paths, &session_id, SessionEndReasonV2::Cancelled, true);
+                            end_receive_session(&mut progress, &file_paths, &session_id, SessionEndReasonV2::Cancelled);
                             if let Some(sender) = sender {
                                 let identity = identity.clone();
                                 tokio::spawn(async move {
@@ -479,7 +499,8 @@ pub(super) async fn run_receive(
             _ = tokio::signal::ctrl_c() => {
                 break Ok(());
             }
-            Some(event) = server_rx.recv() => {
+            // 先输出上一批的结束消息和文件结果，再接受下一批。已有文件结果格式不含会话 ID。
+            Some(event) = next_receive_event(&mut server_rx, &mut queued_prepare, !active_sessions.is_empty() || !file_paths.is_empty()) => {
                 match event {
                     ServerEventV2::Register { ip, info } => {
                         discovery::device_confirmed(
@@ -601,12 +622,12 @@ pub(super) async fn run_receive(
                     }
                     ServerEventV2::SessionEnd { session_id, reason } => {
                         if active_sessions.remove(&session_id) {
-                            end_receive_session(&mut progress, &file_paths, &session_id, reason, auth_stdin);
+                            end_receive_session(&mut progress, &file_paths, &session_id, reason);
                         }
                     }
                     ServerEventV2::PrepareUploadAborted { session_id } => {
                         if active_sessions.remove(&session_id) {
-                            end_receive_session(&mut progress, &file_paths, &session_id, SessionEndReasonV2::Cancelled, auth_stdin);
+                            end_receive_session(&mut progress, &file_paths, &session_id, SessionEndReasonV2::Cancelled);
                         }
                     }
                     ServerEventV2::CancelReceived { .. } => {}
@@ -654,18 +675,13 @@ fn end_receive_session(
     file_paths: &HashMap<(String, String), PathBuf>,
     session_id: &str,
     reason: SessionEndReasonV2,
-    auth_stdin: bool,
 ) {
     if let Some(state) = progress.get_mut(session_id) {
         state.ended = true;
         if reason == SessionEndReasonV2::Cancelled {
             // 已取消的旧会话可能还有写入任务在收尾，其结果不应计入下一批。
             state.cancelled = true;
-            state.pending = if auth_stdin {
-                file_paths.keys().filter(|(id, _)| id == session_id).count()
-            } else {
-                0
-            };
+            state.pending = file_paths.keys().filter(|(id, _)| id == session_id).count();
         }
         state.report(session_id);
         if state.pending == 0 {
@@ -680,7 +696,10 @@ fn end_receive_session(
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthCommand, parse_auth_command};
+    use super::{AuthCommand, ServerEventV2, SessionEndReasonV2, mpsc, next_receive_event, oneshot, parse_auth_command};
+    use localsend::http::dto_v2::RegisterDtoV2;
+    use localsend::http::server::PeerIp;
+    use localsend::model::discovery::ProtocolType;
 
     #[test]
     fn parse_auth_command_handles_valid_and_invalid_lines() {
@@ -695,6 +714,43 @@ mod tests {
         assert_eq!(parse_auth_command("GRANT   "), None);
         assert_eq!(parse_auth_command("REVOKE"), None);
         assert_eq!(parse_auth_command("UNKNOWN abc"), None);
+    }
+
+    #[tokio::test]
+    async fn next_prepare_waits_for_previous_receive_results() {
+        let (tx, mut rx) = mpsc::channel(2);
+        let (decision_tx, _decision_rx) = oneshot::channel();
+        tx.send(ServerEventV2::PrepareUpload {
+            session_id: "next".into(),
+            ip: PeerIp { ip: "127.0.0.1".parse().unwrap(), scope_id: None },
+            info: RegisterDtoV2 {
+                alias: "test".into(),
+                version: "2.2".into(),
+                device_model: None,
+                device_type: None,
+                fingerprint: "test".into(),
+                port: 53318,
+                protocol: ProtocolType::Https,
+                download: false,
+            },
+            cert_fingerprint: None,
+            files: Default::default(),
+            pin_tag: None,
+            token_authenticated: false,
+            decision_tx,
+        }).await.unwrap();
+        tx.send(ServerEventV2::SessionEnd {
+            session_id: "previous".into(),
+            reason: SessionEndReasonV2::Finished,
+        }).await.unwrap();
+
+        let mut queued = None;
+        let end = next_receive_event(&mut rx, &mut queued, true).await;
+        assert!(matches!(end, Some(ServerEventV2::SessionEnd { session_id, .. }) if session_id == "previous"));
+        let waiting = next_receive_event(&mut rx, &mut queued, true);
+        assert!(tokio::time::timeout(std::time::Duration::ZERO, waiting).await.is_err());
+        let next = next_receive_event(&mut rx, &mut queued, false).await;
+        assert!(matches!(next, Some(ServerEventV2::PrepareUpload { session_id, .. }) if session_id == "next"));
     }
 }
 

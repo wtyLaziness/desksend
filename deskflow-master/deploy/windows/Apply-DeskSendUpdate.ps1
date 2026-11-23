@@ -44,6 +44,13 @@ function Assert-NoReparsePoint([string]$Path) {
     }
 }
 
+function Assert-UpdateFileTarget([string]$Path) {
+    Assert-NoReparsePoint $Path
+    if (Test-Path -LiteralPath $Path -PathType Container) {
+        throw ('更新需要写入文件，但该位置已有同名目录：' + $Path)
+    }
+}
+
 function Remove-UpdateDirectory([string]$Path) {
     Assert-NoReparsePoint $Path
     foreach ($item in Get-ChildItem -LiteralPath $Path -Force) {
@@ -148,11 +155,11 @@ try {
         if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ine $file.Value) { throw ('文件校验失败：' + $relative) }
         # 禁止通过已有目录链接把程序文件写到安装目录以外。
         $target = Get-ChildPath $installRoot $relative
-        Assert-NoReparsePoint $target
+        Assert-UpdateFileTarget $target
     }
     $obsoleteRelatives = [Collections.Generic.List[string]]::new()
     $prevManifestPath = Join-Path $installRoot 'desksend-build.json'
-    Assert-NoReparsePoint $prevManifestPath
+    Assert-UpdateFileTarget $prevManifestPath
     if (Test-Path -LiteralPath $prevManifestPath -PathType Leaf) {
         $prevManifest = $null
         try {
@@ -229,12 +236,15 @@ try {
     }
     $copyStarted = $true
     foreach ($file in $changed) {
-        Assert-NoReparsePoint $file.Target
         if ($file.Action -eq 'Write') {
+            Assert-UpdateFileTarget $file.Target
             $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($file.Target)) -Force
             Copy-Item -LiteralPath (Get-ChildPath $packageRoot $file.Relative) -Destination $file.Target -Force
-        } elseif ($file.Action -eq 'Delete' -and (Test-Path -LiteralPath $file.Target -PathType Leaf)) {
-            Remove-Item -LiteralPath $file.Target -Force
+        } elseif ($file.Action -eq 'Delete') {
+            Assert-NoReparsePoint $file.Target
+            if (Test-Path -LiteralPath $file.Target -PathType Leaf) {
+                Remove-Item -LiteralPath $file.Target -Force
+            }
         }
     }
     # 仅保留最近 2 次更新备份，避免长期积累占用磁盘空间。
@@ -262,6 +272,7 @@ try {
                 Assert-NoReparsePoint $file.Target
                 Assert-NoReparsePoint $file.Backup
                 if ($file.Existed) {
+                    Assert-UpdateFileTarget $file.Target
                     $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($file.Target)) -Force
                     Copy-Item -LiteralPath $file.Backup -Destination $file.Target -Force
                 }

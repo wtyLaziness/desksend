@@ -7,6 +7,7 @@
 #include "IpcServer.h"
 
 #include "base/Log.h"
+#include "common/Constants.h"
 #include "common/VersionInfo.h"
 
 #include <QLocalServer>
@@ -21,8 +22,6 @@
 #endif
 
 namespace deskflow::core::ipc {
-
-constexpr auto kMaxCommandBytes = 128 * 1024;
 
 #ifdef Q_OS_WIN
 namespace {
@@ -196,7 +195,7 @@ void IpcServer::acceptClient(QLocalSocket *clientSocket)
 
   LOG_DEBUG("%s ipc server got new connection", m_typeName.constData());
   m_clients.insert(clientSocket);
-  clientSocket->setReadBufferSize(kMaxCommandBytes);
+  clientSocket->setReadBufferSize(kMaxIpcCommandBytes);
 
   connect(clientSocket, &QLocalSocket::readyRead, this, &IpcServer::handleReadyRead);
   connect(clientSocket, &QLocalSocket::disconnected, this, &IpcServer::handleDisconnected);
@@ -230,7 +229,7 @@ void IpcServer::handleReadyRead()
         timer->stop();
     }
   }
-  if (clientSocket->bytesAvailable() >= kMaxCommandBytes) {
+  if (clientSocket->bytesAvailable() >= kMaxIpcCommandBytes) {
     LOG_WARN("%s ipc command exceeds the size limit", m_typeName.constData());
     clientSocket->abort();
   }
@@ -323,7 +322,7 @@ void IpcServer::broadcastCommand(const QString &command, const QString &args)
 {
   const auto message = args.isEmpty() ? command : QStringLiteral("%1=%2").arg(command, args);
 
-  if (message.toUtf8().size() >= kMaxCommandBytes)
+  if (message.toUtf8().size() >= kMaxIpcCommandBytes)
     return;
   if (m_readyClients.isEmpty()) {
     LOG_VERBOSE(
@@ -332,7 +331,7 @@ void IpcServer::broadcastCommand(const QString &command, const QString &args)
     qsizetype queuedBytes = message.toUtf8().size() + 1;
     for (const auto &pending : std::as_const(m_pendingMessages))
       queuedBytes += pending.toUtf8().size() + 1;
-    while (m_pendingMessages.size() >= 64 || queuedBytes > kMaxCommandBytes) {
+    while (m_pendingMessages.size() >= 64 || queuedBytes > kMaxIpcCommandBytes) {
       queuedBytes -= m_pendingMessages.takeFirst().toUtf8().size() + 1;
     }
     m_pendingMessages.append(message);
@@ -353,7 +352,7 @@ void IpcServer::broadcastCommand(const QString &command, const QString &args)
 void IpcServer::writeToClientSocket(QLocalSocket *&clientSocket, const QString &message) const
 {
   QByteArray messageData = message.toUtf8() + '\n';
-  if (messageData.size() > kMaxCommandBytes || clientSocket->bytesToWrite() > 512 * 1024 - messageData.size()) {
+  if (messageData.size() > kMaxIpcCommandBytes || clientSocket->bytesToWrite() > 512 * 1024 - messageData.size()) {
     clientSocket->abort();
     return;
   }

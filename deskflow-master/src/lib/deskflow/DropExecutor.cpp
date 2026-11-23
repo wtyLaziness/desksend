@@ -2062,7 +2062,7 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
         if (generation != m_receiverGeneration) {
           return;
         }
-        if (line.startsWith(QStringLiteral("LOCALSEND_RECEIVER_READY:"))) {
+        if (line.startsWith(QStringLiteral("LOCALSEND_RECEIVER_READY port="))) {
           m_receiverRestartAttempt = 0;
         }
       }

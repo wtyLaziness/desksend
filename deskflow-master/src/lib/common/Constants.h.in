@@ -35,6 +35,8 @@ const auto kCoreIpcName = "desksend-core";
 const auto kCoreIpcName = "@CMAKE_PROJECT_NAME@-core";
 #endif
 
+constexpr auto kMaxIpcCommandBytes = 128 * 1024;
+
 const auto kServerGridHeight = 3;
 const auto kServerGridWidth = 5;
 

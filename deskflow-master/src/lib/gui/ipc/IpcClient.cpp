@@ -6,6 +6,7 @@
 
 #include "IpcClient.h"
 
+#include "common/Constants.h"
 #include "common/VersionInfo.h"
 
 #include <QDebug>
@@ -15,15 +16,13 @@
 
 namespace deskflow::gui::ipc {
 
-constexpr qsizetype kMaxIpcLine = 128 * 1024;
-
 IpcClient::IpcClient(QObject *parent, const QString &socketName, const QString &typeName)
     : QObject(parent),
       m_socket{new QLocalSocket(this)},
       m_socketName(socketName), // NOSONAR - Qt memory
       m_typeName(typeName)
 {
-  m_socket->setReadBufferSize(kMaxIpcLine);
+  m_socket->setReadBufferSize(kMaxIpcCommandBytes);
   m_retryTimer.setSingleShot(true);
   connect(&m_retryTimer, &QTimer::timeout, this, &IpcClient::attemptConnection);
   m_helloTimer.setSingleShot(true);
@@ -159,7 +158,7 @@ void IpcClient::handleReadyRead()
 
   while (data.contains('\n')) {
     const auto index = data.indexOf('\n');
-    if (index >= kMaxIpcLine) {
+    if (index >= kMaxIpcCommandBytes) {
       disconnectFromServer();
       Q_EMIT connectionFailed();
       return;
@@ -193,7 +192,7 @@ void IpcClient::handleReadyRead()
     processCommand(parts.at(0), parts);
   }
 
-  if (data.size() >= kMaxIpcLine) {
+  if (data.size() >= kMaxIpcCommandBytes) {
     disconnectFromServer();
     Q_EMIT connectionFailed();
     return;
@@ -276,15 +275,23 @@ bool IpcClient::stopIncompatibleCore()
   return true;
 }
 
-void IpcClient::sendMessage(const QString &message)
+bool IpcClient::sendMessage(const QString &message)
 {
   if (m_state != State::Connected) {
     qWarning().noquote() << QStringLiteral("%1 cannot send command, ipc client not connected").arg(m_typeName);
-    return;
+    return false;
   }
 
-  m_socket->write(message.toUtf8() + "\n");
+  const auto data = message.toUtf8() + '\n';
+  if (data.size() > kMaxIpcCommandBytes) {
+    qWarning().noquote() << QStringLiteral("%1 ipc command exceeds the size limit").arg(m_typeName);
+    return false;
+  }
+  if (m_socket->write(data) != data.size()) {
+    return false;
+  }
   qDebug().noquote() << QStringLiteral("%1 ipc client sent message: %2").arg(m_typeName, message);
+  return true;
 }
 
 } // namespace deskflow::gui::ipc

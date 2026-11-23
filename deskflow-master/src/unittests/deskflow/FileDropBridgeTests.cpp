@@ -1531,6 +1531,7 @@ private Q_SLOTS:
 
     const QString rx2ReadyFlag = tempDir.filePath(QStringLiteral("rx_2_ready.flag"));
     QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(rx2ReadyFlag), 5000);
+    QTRY_COMPARE(executor.m_receiverRestartAttempt, 0);
 
     QFile rx2Log(tempDir.filePath(QStringLiteral("rx_2.log")));
     QVERIFY(rx2Log.open(QIODevice::ReadOnly));
@@ -1968,7 +1969,7 @@ int runMockLocalSendCli()
         logFile.close();
       }
       if (line == "GRANT tok_keep") {
-        std::cout << "LOCALSEND_RECEIVER_READY:53318\n" << std::flush;
+        std::cout << "LOCALSEND_RECEIVER_READY port=53318 dest=" << dir.path().toStdString() << '\n' << std::flush;
         QFile readyFile(dir.filePath(QStringLiteral("rx_2_ready.flag")));
         if (readyFile.open(QIODevice::WriteOnly)) {
           readyFile.close();

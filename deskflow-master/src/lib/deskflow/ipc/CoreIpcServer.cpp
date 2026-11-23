@@ -62,7 +62,7 @@ void CoreIpcServer::processCommand(QLocalSocket *clientSocket, const QString &co
     return;
   }
   if (command == QStringLiteral("sendFiles")) {
-    if (parts.size() == 2 && parts.at(1).size() < 128 * 1024) {
+    if (parts.size() == 2 && parts.at(1).size() < kMaxIpcCommandBytes) {
       const auto decoded = QByteArray::fromBase64Encoding(parts.at(1).toLatin1(), QByteArray::AbortOnBase64DecodingErrors);
       const auto json = decoded ? QJsonDocument::fromJson(decoded.decoded) : QJsonDocument{};
       if (json.isObject()) {

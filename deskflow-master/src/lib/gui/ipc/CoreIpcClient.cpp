@@ -48,8 +48,7 @@ bool CoreIpcClient::sendFiles(const QString &targetPeer, const QStringList &path
       {QStringLiteral("paths"), QJsonArray::fromStringList(cleanedPaths)},
   };
   const auto encoded = QJsonDocument(payload).toJson(QJsonDocument::Compact).toBase64();
-  sendMessage(QStringLiteral("sendFiles=%1").arg(QString::fromLatin1(encoded)));
-  return true;
+  return sendMessage(QStringLiteral("sendFiles=%1").arg(QString::fromLatin1(encoded)));
 }
 
 void CoreIpcClient::processCommand(const QString &command, const QStringList &parts)

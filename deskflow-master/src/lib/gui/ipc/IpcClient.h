@@ -56,7 +56,7 @@ protected:
     Q_UNUSED(parts)
   }
 
-  void sendMessage(const QString &message);
+  bool sendMessage(const QString &message);
 
 private:
   void attemptConnection();

@@ -209,6 +209,39 @@ private Q_SLOTS:
     QTRY_COMPARE(connected.size(), 1);
   }
 
+  void ipcRejectsOversizedCommandWithoutDroppingConnection()
+  {
+    class TestClient : public deskflow::gui::ipc::IpcClient
+    {
+    public:
+      using IpcClient::IpcClient;
+      using IpcClient::sendMessage;
+    };
+
+    const auto name = QStringLiteral("ds-limit-%1").arg(QUuid::createUuid().toString(QUuid::Id128));
+    QLocalServer server;
+    server.setSocketOptions(QLocalServer::UserAccessOption);
+    QVERIFY(server.listen(name));
+    TestClient client(nullptr, name, QStringLiteral("test"));
+    client.connectToServer();
+
+    QTRY_VERIFY(server.hasPendingConnections());
+    auto *peer = server.nextPendingConnection();
+    const auto hello = QStringLiteral("hello=%1+%2\n").arg(kVersion, kVersionGitSha).toUtf8();
+    QTRY_VERIFY(peer->canReadLine());
+    QCOMPARE(peer->readLine(), hello);
+    peer->write(hello);
+    peer->flush();
+    QTRY_VERIFY(client.isConnected());
+
+    const auto oversized = QStringLiteral("sendFiles=") + QString(kMaxIpcCommandBytes, QLatin1Char('a'));
+    QVERIFY(!client.sendMessage(oversized));
+    QVERIFY(client.sendMessage(QStringLiteral("getTransferPeers")));
+    QTRY_VERIFY(peer->canReadLine());
+    QCOMPARE(peer->readLine(), QByteArray("getTransferPeers\n"));
+    QVERIFY(client.isConnected());
+  }
+
 private:
   QTemporaryDir m_tempDir;
 };
