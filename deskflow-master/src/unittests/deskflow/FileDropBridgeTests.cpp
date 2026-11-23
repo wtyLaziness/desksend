@@ -13,6 +13,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QProcess>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -294,6 +295,11 @@ private Q_SLOTS:
     const QString nestedConflict =
         QString::fromStdString(deskflow::FileDropBridge::uniqueDestinationPath(dstDir, "sub/README"));
     QCOMPARE(QDir(tempDir.path()).relativeFilePath(nestedConflict), QStringLiteral("sub/README (1)"));
+    QVERIFY(deskflow::FileDropBridge::uniqueDestinationPath(dstDir, "../outside.txt").empty());
+    QVERIFY(deskflow::FileDropBridge::uniqueDestinationPath(dstDir, "sub/README/child.txt").empty());
+    QVERIFY(deskflow::FileDropBridge::uniqueDestinationPath(
+        dstDir, tempDir.filePath(QStringLiteral("absolute.txt")).toStdString()
+    ).empty());
   }
 
   void transferStateDefaultsAndDragCaptureGuards()
@@ -736,6 +742,59 @@ private Q_SLOTS:
     QVERIFY(QFileInfo::exists(QDir(target).filePath(QStringLiteral("second.txt"))));
     receive("first.txt", "first");
     QVERIFY(QFileInfo::exists(QDir(target).filePath(QStringLiteral("first.txt"))));
+  }
+
+  void receivedFileStaysInStagingWhenDestinationSubdirectoryIsLinked()
+  {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const auto target = dir.filePath(QStringLiteral("destination"));
+    const auto outside = dir.filePath(QStringLiteral("outside"));
+    const auto staging = dir.filePath(QStringLiteral("staging"));
+    const auto link = QDir(target).filePath(QStringLiteral("linked"));
+    QVERIFY(QDir().mkpath(target));
+    QVERIFY(QDir().mkpath(outside));
+    QVERIFY(QDir().mkpath(QDir(staging).filePath(QStringLiteral("linked"))));
+
+#ifdef Q_OS_WIN
+    QProcess mklink;
+    mklink.setWorkingDirectory(dir.path());
+    mklink.setProgram(QStringLiteral("cmd.exe"));
+    mklink.setNativeArguments(QStringLiteral("/D /V:OFF /C mklink /J destination\\linked \"%CD%\\outside\""));
+    mklink.start();
+    QVERIFY(mklink.waitForFinished());
+    QCOMPARE(mklink.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(mklink.exitCode(), 0);
+    QVERIFY(QFileInfo(link).isJunction());
+#else
+    std::error_code error;
+    std::filesystem::create_directory_symlink(
+        QFileInfo(outside).filesystemAbsoluteFilePath(), QFileInfo(link).filesystemAbsoluteFilePath(), error
+    );
+    QVERIFY2(!error, error.message().c_str());
+    QVERIFY(QFileInfo(link).isSymbolicLink());
+#endif
+
+    const auto stagedPath = QDir(staging).filePath(QStringLiteral("linked/test.txt"));
+    QFile file(stagedPath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write("payload"), qint64{7});
+    file.close();
+
+    deskflow::InProcessDropExecutor executor(false);
+    executor.m_defaultDropFallbackDir = target.toStdString();
+    executor.m_stagingDir = staging.toStdString();
+    executor.handleDropTarget(1, deskflow::kDirectSendDropCoord, deskflow::kDirectSendDropCoord, "test");
+    executor.handleReceiveSessionStarted(1, "test", "session");
+    executor.handleReceivedFileLine(stagedPath.toStdString());
+
+    QCOMPARE(executor.m_activeSessionHandledFiles, size_t{1});
+    QVERIFY(executor.m_activeSessionFailed);
+    QVERIFY(executor.m_activeSessionPlacedFiles.empty());
+    QVERIFY(QFileInfo::exists(stagedPath));
+    QVERIFY(!QFileInfo::exists(QDir(outside).filePath(QStringLiteral("test.txt"))));
+    executor.handleReceiveSessionFinished(false, "session");
+    QVERIFY(!executor.hasActiveTransfers());
   }
 
   void stagingCleanupSkipsDirectoryLinks()

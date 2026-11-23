@@ -1562,30 +1562,56 @@ std::string InProcessDropExecutor::computeTokenTag(const std::string &token)
 
 std::string InProcessDropExecutor::uniqueDestinationPath(const std::string &dstDir, const std::string &relPath)
 {
-  QDir dstRootDir(QString::fromStdString(dstDir));
-  if (!dstRootDir.exists()) {
-    dstRootDir.mkpath(QStringLiteral("."));
+  auto components = QDir::fromNativeSeparators(QString::fromStdString(relPath)).split(QLatin1Char('/'));
+  if (dstDir.empty() || std::ranges::any_of(components, [](const QString &part) {
+#ifdef Q_OS_WIN
+        if (part.contains(QLatin1Char(':')) || part.endsWith(QLatin1Char('.')) || part.endsWith(QLatin1Char(' '))) {
+          return true;
+        }
+#endif
+        return part.isEmpty() || part == QStringLiteral(".") || part == QStringLiteral("..") || part.contains(QChar::Null);
+      })) {
+    return {};
   }
 
-  QString dstPath = dstRootDir.filePath(QString::fromStdString(relPath));
-  QFileInfo dstInfo(dstPath);
-  QDir dstParentDir = dstInfo.dir();
-  if (!dstParentDir.exists()) {
-    dstParentDir.mkpath(QStringLiteral("."));
+  QDir dstParentDir(QString::fromStdString(dstDir));
+  if (!dstParentDir.exists() && !dstParentDir.mkpath(QStringLiteral("."))) {
+    return {};
+  }
+  const auto pathForName = [&dstParentDir](const QString &name) {
+    // ./ 让 Qt 将冒号开头的 POSIX 文件名也当作相对路径。
+    return QDir::cleanPath(dstParentDir.absoluteFilePath(QStringLiteral("./") + name));
+  };
+
+  const QString fileName = components.takeLast();
+  // 用户选定的目录是落点。逐级检查其下的父目录，拒绝通过链接改写落点。
+  for (const auto &component : components) {
+    const QString childPath = pathForName(component);
+    QFileInfo child(childPath);
+    if (!child.exists()) {
+      dstParentDir.mkdir(childPath);
+      child.refresh();
+    }
+    if (child.isSymbolicLink() || child.isJunction() || !child.isDir()) {
+      return {};
+    }
+    dstParentDir.setPath(childPath);
   }
 
-  const QString fileName = dstInfo.fileName();
+  QString dstPath = pathForName(fileName);
   const qsizetype lastDot = fileName.lastIndexOf(QLatin1Char('.'));
   const bool hasExtension = lastDot > 0 && (lastDot + 1) < fileName.size();
   const QString baseName = hasExtension ? fileName.left(lastDot) : fileName;
   const QString suffix = hasExtension ? fileName.mid(lastDot + 1) : QString();
   int counter = 1;
-  while (QFileInfo::exists(dstPath) || QFileInfo(dstPath).isSymLink()) {
+  QFileInfo dstInfo(dstPath);
+  while (dstInfo.exists() || dstInfo.isSymLink() || dstInfo.isJunction()) {
     if (suffix.isEmpty()) {
-      dstPath = dstParentDir.filePath(QStringLiteral("%1 (%2)").arg(baseName).arg(counter));
+      dstPath = pathForName(QStringLiteral("%1 (%2)").arg(baseName).arg(counter));
     } else {
-      dstPath = dstParentDir.filePath(QStringLiteral("%1 (%2).%3").arg(baseName).arg(counter).arg(suffix));
+      dstPath = pathForName(QStringLiteral("%1 (%2).%3").arg(baseName).arg(counter).arg(suffix));
     }
+    dstInfo.setFile(dstPath);
     ++counter;
   }
   return dstPath.toStdString();
@@ -2810,6 +2836,12 @@ void InProcessDropExecutor::handleReceivedFileLine(const std::string &filePath)
   }
 
   const QString dstPath = QString::fromStdString(uniqueDestinationPath(targetDir, relPath.toStdString()));
+  if (dstPath.isEmpty()) {
+    LOG_WARN("FileDropBridge: cannot safely resolve destination for \"%s\" under \"%s\"; keeping in staging",
+             relPath.toStdString().c_str(), targetDir.c_str());
+    handleReceiveFileFailedLine();
+    return;
+  }
 
   bool placed = false;
   if (QFile::rename(srcInfo.absoluteFilePath(), dstPath)) {
