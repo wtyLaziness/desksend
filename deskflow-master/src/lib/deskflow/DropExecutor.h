@@ -13,6 +13,7 @@
 #include <QString>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -110,6 +111,7 @@ public:
     std::string targetIp;
     std::vector<std::string> files;
     std::string authToken;
+    std::chrono::steady_clock::time_point queuedAt;
   };
 
   struct DropTargetEntry
@@ -214,7 +216,6 @@ private:
   bool m_sendCancelRequested = false;
 
   std::string m_defaultDropFallbackDir;
-  std::string m_lastResolvedDropDir;
   std::deque<std::string> m_pendingReceiverAuthLines;
   ReceiverAuthCache m_cachedReceiverGrants;
   std::deque<DropTargetEntry> m_pendingDropTargets;

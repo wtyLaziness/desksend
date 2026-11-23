@@ -636,28 +636,33 @@ pub(super) async fn run_receive(
             }
             Some(event) = events_rx.recv() => {
                 if let AppEvent::ReceiveFileResult { session_id, file_id, result } = event {
+                    let Some(path) = file_paths.remove(&(session_id.clone(), file_id)) else {
+                        continue;
+                    };
                     let mut cancelled = false;
+                    let mut drained = false;
                     if let Some(state) = progress.get_mut(&session_id) {
                         cancelled = state.cancelled;
                         state.report(&session_id);
                         state.pending = state.pending.saturating_sub(1);
-                        if state.ended && state.pending == 0 {
-                            progress.remove(&session_id);
-                        }
+                        drained = state.ended && state.pending == 0;
                     }
-                    if let Some(path) = file_paths.remove(&(session_id, file_id))
-                        && !cancelled
-                    {
-                        match result {
-                            Ok(()) if received_paths_hex => {
-                                if let Some(path) = path.to_str() {
-                                    println!("RECEIVED_FILE_HEX:{}", util::encode_path_hex(path));
-                                } else {
-                                    println!("RECEIVE_FILE_FAILED:invalid UTF-8 path");
-                                }
+                    match result {
+                        Ok(()) if received_paths_hex => {
+                            if let Some(path) = path.to_str() {
+                                println!("RECEIVED_FILE_HEX:{}", util::encode_path_hex(path));
+                            } else {
+                                println!("RECEIVE_FILE_FAILED:invalid UTF-8 path");
                             }
-                            Ok(()) => println!("RECEIVED_FILE:{}", path.display()),
-                            Err(err) => println!("RECEIVE_FILE_FAILED:{}:{}", sanitize::single_line(&path.to_string_lossy()), sanitize::single_line(&err.to_string())),
+                        }
+                        Ok(()) => println!("RECEIVED_FILE:{}", path.display()),
+                        Err(err) if !cancelled => println!("RECEIVE_FILE_FAILED:{}:{}", sanitize::single_line(&path.to_string_lossy()), sanitize::single_line(&err.to_string())),
+                        Err(_) => {}
+                    }
+                    if drained {
+                        progress.remove(&session_id);
+                        if cancelled {
+                            println!("RECEIVE_SESSION_CANCELLED:{session_id}");
                         }
                     }
                 }
@@ -679,9 +684,12 @@ fn end_receive_session(
     if let Some(state) = progress.get_mut(session_id) {
         state.ended = true;
         if reason == SessionEndReasonV2::Cancelled {
-            // 已取消的旧会话可能还有写入任务在收尾，其结果不应计入下一批。
+            // 已写完的文件仍需交付。等在途结果全部输出后再通知上层关闭落点。
             state.cancelled = true;
             state.pending = file_paths.keys().filter(|(id, _)| id == session_id).count();
+            if state.pending > 0 {
+                return;
+            }
         }
         state.report(session_id);
         if state.pending == 0 {
@@ -696,7 +704,7 @@ fn end_receive_session(
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthCommand, ServerEventV2, SessionEndReasonV2, mpsc, next_receive_event, oneshot, parse_auth_command};
+    use super::{AuthCommand, ReceiveProgress, ServerEventV2, SessionEndReasonV2, end_receive_session, mpsc, next_receive_event, oneshot, parse_auth_command};
     use localsend::http::dto_v2::RegisterDtoV2;
     use localsend::http::server::PeerIp;
     use localsend::model::discovery::ProtocolType;
@@ -714,6 +722,25 @@ mod tests {
         assert_eq!(parse_auth_command("GRANT   "), None);
         assert_eq!(parse_auth_command("REVOKE"), None);
         assert_eq!(parse_auth_command("UNKNOWN abc"), None);
+    }
+
+    #[test]
+    fn cancelling_receive_waits_for_started_files_only() {
+        let mut progress = std::collections::HashMap::from([(
+            "first".into(),
+            ReceiveProgress { pending: 3, ..Default::default() },
+        )]);
+        let mut paths = std::collections::HashMap::from([
+            (("first".into(), "started".into()), "completed.txt".into()),
+        ]);
+
+        end_receive_session(&mut progress, &paths, "first", SessionEndReasonV2::Cancelled);
+        assert!(progress["first"].ended && progress["first"].cancelled);
+        assert_eq!(progress["first"].pending, 1);
+
+        paths.clear();
+        end_receive_session(&mut progress, &paths, "first", SessionEndReasonV2::Cancelled);
+        assert!(!progress.contains_key("first"));
     }
 
     #[tokio::test]

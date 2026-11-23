@@ -19,8 +19,8 @@ DeskSend 整合 Deskflow 键鼠共享与 LocalSend 局域网文件传输。各�
 ## 下载与使用
 
 1. **Windows x64**：下载完整便携包 `DeskSend-<版本>-windows-x64.zip` 完整解压到可写目录后运行 **`DeskSend.exe`**（不要只复制 EXE，也不要在压缩包预览中运行）；或下载安装版 `DeskSend-<版本>-windows-x64.msi`。
-2. **macOS arm64**：下载 `DeskSend-<版本>-macos-arm64.tar.gz`，解压获得 `DeskSend.app`（CI ad-hoc 签名；启用跨屏拖拽需在“辅助功能”中授权）。
-3. **Linux x64**：下载 `DeskSend-<版本>-linux-x64.tar.gz`（CI 归档；需系统具备匹配运行库，否则请按源码仓库构建文档自行编译）。 运行基线为 Ubuntu 24.04 x64 与 Qt 6.8，需安装匹配的 OpenSSL 3、libei、libportal 及 X11 运行库。归档不捆绑这些库，其他发行版建议从源码构建。
+2. **macOS arm64**：下载 `DeskSend-<版本>-macos-arm64.tar.gz`，解压获得 `DeskSend.app`。新 CI 归档以 macOS 15 为最低支持版本，使用 ad-hoc 签名。跨屏拖拽需要在“辅助功能”中授权。
+3. **Linux x64**：下载 `DeskSend-<版本>-linux-x64.tar.gz`，解压后运行 `bin/deskflow`。新 CI 归档以 Ubuntu 24.04 x64 为运行基线，随包提供 Qt 6.8、平台插件、libei 和 libportal，使用系统的 OpenSSL 3 和图形运行库。此前发布的 v1.1.0 Linux 包需要另行安装匹配的 Qt 6.8、libei 和 libportal。
 4. 主机共享实体键鼠并配置副机屏幕；副机填入主机局域网 IP。首次 TLS 连接时核对证书指纹。
 5. 防火墙允许主机入站 **TCP 24800**；使用文件传输时，**所有参与接收的主机和副机均需允许入站 TCP 53318**。
 

@@ -431,6 +431,35 @@ private Q_SLOTS:
     bridge.stopReceiver();
   }
 
+  void directSendUsesDefaultDirectoryAndClipboard()
+  {
+    QTemporaryDir previous, downloads;
+    QVERIFY(previous.isValid() && downloads.isValid());
+
+    deskflow::InProcessDropExecutor executor(false);
+    executor.m_defaultDropFallbackDir = previous.path().toStdString();
+    executor.handleDropTarget(1, 999999, 999999, "previous");
+    executor.m_defaultDropFallbackDir = downloads.path().toStdString();
+    executor.handleDropTarget(1, deskflow::kDirectSendDropCoord, deskflow::kDirectSendDropCoord, "direct");
+    executor.handleReceiveSessionStarted(1, "direct", "session");
+
+    QCOMPARE(executor.m_activeSessionTarget.dir, downloads.path().toStdString());
+    QVERIFY(executor.m_activeSessionTarget.copyToClipboard);
+  }
+
+  void expiredQueuedSendDoesNotStartLocalSend()
+  {
+    deskflow::InProcessDropExecutor executor(false);
+    executor.m_sendingInProgress = true;
+    executor.m_sendQueue.push_back({"127.0.0.1", {"example.txt"}, "expired-token",
+                                   std::chrono::steady_clock::now() - std::chrono::minutes(5)});
+
+    executor.processNextSendJob();
+
+    QVERIFY(executor.m_activeSendProcess == nullptr);
+    QVERIFY(!executor.hasActiveTransfers());
+  }
+
   void nonFileDragDoesNotSetPendingFiles()
   {
     QVERIFY(!deskflow::FileDropBridge::isSentinelCaptureSupportedFormat(false, true));

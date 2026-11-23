@@ -1841,7 +1841,6 @@ void InProcessDropExecutor::startReceiverInternal(const std::vector<std::string>
       m_pendingDropTargets.clear();
       m_activeSessionTarget = DropTargetEntry{};
       m_activeReceiveSessionId.clear();
-      m_lastResolvedDropDir.clear();
       m_activeReceiveSession = false;
       notifyActiveTransfersChangedLocked(shouldNotify, notifyActive);
     } else {
@@ -2167,7 +2166,6 @@ void InProcessDropExecutor::stopReceiver()
     m_activeSessionFailed = false;
     m_activeSessionCancelled = false;
     m_activeReceiveSession = false;
-    m_lastResolvedDropDir.clear();
     notifyActiveTransfersChangedLocked(shouldNotify, notifyActive);
     oldProc = m_receiverProcess;
     m_receiverProcess = nullptr;
@@ -2238,11 +2236,12 @@ void InProcessDropExecutor::handleDropTarget(uint32_t fileCount, int32_t x, int3
       }
       m_defaultDropFallbackDir = defaultDrop.toStdString();
     }
-    fallback = !m_lastResolvedDropDir.empty() ? m_lastResolvedDropDir : m_defaultDropFallbackDir;
+    fallback = m_defaultDropFallbackDir;
   }
 
-  bool isDirectFolder = true;
-  std::string resolved = resolveDropTargetDirectory(x, y, fallback, &isDirectFolder);
+  bool isDirectFolder = false;
+  const bool isDirectSend = x == kDirectSendDropCoord && y == kDirectSendDropCoord;
+  std::string resolved = isDirectSend ? fallback : resolveDropTargetDirectory(x, y, fallback, &isDirectFolder);
   {
     std::scoped_lock lock(m_mutex);
     const uint64_t now = nowMs();
@@ -2250,7 +2249,6 @@ void InProcessDropExecutor::handleDropTarget(uint32_t fileCount, int32_t x, int3
            (now - m_pendingDropTargets.front().timestampMs > 300000)) {
       m_pendingDropTargets.pop_front();
     }
-    m_lastResolvedDropDir = resolved;
     m_pendingDropTargets.push_back(DropTargetEntry{resolved, !isDirectFolder, now, tokenTag});
   }
   LOG_INFO(
@@ -2303,7 +2301,7 @@ void InProcessDropExecutor::sendFilesViaLocalSend(
   bool shouldStart = false;
   {
     std::scoped_lock lock(m_mutex);
-    m_sendQueue.push_back(SendJob{targetIp, files, authToken});
+    m_sendQueue.push_back(SendJob{targetIp, files, authToken, std::chrono::steady_clock::now()});
     if (!m_sendingInProgress) {
       m_sendingInProgress = true;
       shouldStart = true;
@@ -2354,9 +2352,16 @@ void InProcessDropExecutor::processNextSendJob()
     return;
   }
 
-  if (job.authToken.empty()) {
-    LOG_WARN("FileDropBridge: missing authorization token for send job to %s; aborting", job.targetIp.c_str());
-    m_senderOverlay.finish(false, QCoreApplication::translate("FileDropBridge", "Send failed: missing transfer authorization token"));
+  // 与 LocalSend 接收端一次性授权的有效期一致。
+  constexpr auto authLifetime = std::chrono::minutes(5);
+  const bool expired = std::chrono::steady_clock::now() - job.queuedAt >= authLifetime;
+  if (job.authToken.empty() || expired) {
+    const char *reason = expired ? "queued authorization expired" : "missing authorization token";
+    LOG_WARN("FileDropBridge: %s for send job to %s; aborting", reason, job.targetIp.c_str());
+    m_senderOverlay.finish(
+        false, expired ? QCoreApplication::translate("FileDropBridge", "Transfer authorization expired while waiting. Send the files again.")
+                       : QCoreApplication::translate("FileDropBridge", "Send failed: missing transfer authorization token")
+    );
     if (auto *host = m_host.load()) {
       host->onSendCompleted(job.targetIp, false);
     }

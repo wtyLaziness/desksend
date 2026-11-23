@@ -19,7 +19,9 @@ name: deskflow-macos
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-15
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
@@ -163,6 +165,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON -DSKIP_BUILD_TESTS=ON \
             -DBUILD_INSTALLER=ON \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
             -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
             -DDESKSEND_LOCALSEND_CLI="$GITHUB_WORKSPACE/localsend-main/target/release/localsend-cli"
       - name: Build DeskSend
@@ -180,6 +183,35 @@ jobs:
           test -f "$bundle/Resources/LocalSend-LICENSE.txt"
           test -f "$bundle/Resources/THIRD_PARTY_NOTICES.md"
           codesign --verify --deep --strict "$GITHUB_WORKSPACE/stage/DeskSend.app"
+          python3 - "$bundle" "$MACOSX_DEPLOYMENT_TARGET" <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          def version(value):
+              parts = [int(part) for part in value.split('.')]
+              return tuple((parts + [0, 0])[:3])
+
+          bundle = Path(sys.argv[1])
+          target = version(sys.argv[2])
+          checked = set()
+          for path in bundle.rglob('*'):
+              if path.is_symlink() or not path.is_file():
+                  continue
+              if 'Mach-O' not in subprocess.check_output(['file', '-b', path], text=True):
+                  continue
+              subprocess.run(['lipo', '-verify_arch', 'arm64', path], check=True)
+              commands = subprocess.check_output(['otool', '-arch', 'arm64', '-l', path], text=True)
+              minimum = re.search(r'\bLC_BUILD_VERSION\b[^\n]*\n\s*cmdsize \d+\n\s*platform (?:1|macos)\n\s*minos ([\d.]+)', commands, re.I)
+              if minimum is None:
+                  minimum = re.search(r'\bLC_VERSION_MIN_MACOSX\b[^\n]*\n\s*cmdsize \d+\n\s*version ([\d.]+)', commands)
+              if minimum is None or version(minimum[1]) > target:
+                  raise SystemExit(f'{path}: minimum macOS {minimum[1] if minimum else "unknown"}, expected {sys.argv[2]} or earlier')
+              checked.add(path.relative_to(bundle).as_posix())
+          if not {'MacOS/DeskSend', 'MacOS/deskflow-core', 'MacOS/localsend-cli'} <= checked:
+              raise SystemExit('A DeskSend executable is not an arm64 Mach-O file')
+          PY
       - name: Archive staged installation
         run: COPYFILE_DISABLE=1 tar -czf DeskSend-macos-arm64.tar.gz -C "$GITHUB_WORKSPACE/stage" DeskSend.app
       - name: Record macos artifact provenance

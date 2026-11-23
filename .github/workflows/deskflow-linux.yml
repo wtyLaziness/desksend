@@ -29,7 +29,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            ninja-build pkg-config meson python3-jinja2 python3-attr python3-yaml \
+            ninja-build pkg-config meson patchelf python3-jinja2 python3-attr python3-yaml \
             libevdev-dev libglib2.0-dev libsystemd-dev libx11-dev libxtst-dev \
             libxext-dev libxinerama-dev libxrandr-dev libxi-dev libxkbfile-dev \
             libxkbcommon-dev libxkbregistry-dev libice-dev libsm-dev libssl-dev \
@@ -64,6 +64,9 @@ jobs:
             -Dintrospection=false -Dbackend-qt6=disabled
           meson compile -C "$RUNNER_TEMP/libportal/build"
           meson install -C "$RUNNER_TEMP/libportal/build"
+          mkdir -p "$DEPS/licenses"
+          cp "$RUNNER_TEMP/libei/COPYING" "$DEPS/licenses/libei.txt"
+          cp "$RUNNER_TEMP/libportal/COPYING" "$DEPS/licenses/libportal.txt"
       - name: Install Rust toolchain
         working-directory: localsend-main
         run: rustup toolchain install
@@ -218,13 +221,56 @@ jobs:
         run: |
           cmake --install deskflow-master/build --prefix "$GITHUB_WORKSPACE/stage"
           stage="$GITHUB_WORKSPACE/stage"
-          for executable in deskflow deskflow-core localsend-cli; do
-            test -f "$stage/bin/$executable"
-            test -x "$stage/bin/$executable"
-            summary=$(LD_LIBRARY_PATH="$QT_ROOT_DIR/lib:${LD_LIBRARY_PATH:-}" ldd "$stage/bin/$executable")
-            printf '%s\n' "$summary"
-            if grep -q 'not found' <<< "$summary"; then exit 1; fi
+          deps="$RUNNER_TEMP/linux-deps"
+          runtime="$stage/lib/desksend"
+          mkdir -p "$runtime" "$stage/plugins/platforms"
+          cp "$QT_ROOT_DIR/plugins/platforms/libqxcb.so" "$stage/plugins/platforms/"
+          cp "$QT_ROOT_DIR"/plugins/platforms/libqwayland*.so "$stage/plugins/platforms/"
+          for group in xcbglintegrations wayland-graphics-integration-client wayland-shell-integration tls; do
+            if [ -d "$QT_ROOT_DIR/plugins/$group" ]; then
+              cp -r "$QT_ROOT_DIR/plugins/$group" "$stage/plugins/"
+            fi
           done
+          printf '[Paths]\nPrefix = ..\nPlugins = plugins\n' > "$stage/bin/qt.conf"
+
+          mapfile -d '' plugins < <(find "$stage/plugins" -type f -name '*.so' -print0)
+          executables=("$stage/bin/deskflow" "$stage/bin/deskflow-core" "$stage/bin/localsend-cli")
+          for file in "${executables[@]}"; do test -x "$file"; done
+          for file in "${executables[@]}" "${plugins[@]}"; do
+            summary=$(LD_LIBRARY_PATH="$QT_ROOT_DIR/lib:$deps/lib" ldd "$file")
+            while read -r soname arrow path rest; do
+              if [[ "$arrow" == '=>' && ( "$path" == "$QT_ROOT_DIR/lib/"* || "$path" == "$deps/lib/"* ) ]]; then
+                cp -L "$path" "$runtime/$soname"
+              fi
+            done <<< "$summary"
+          done
+          for file in "${executables[@]:0:2}"; do
+            patchelf --set-rpath '$ORIGIN/../lib/desksend' "$file"
+          done
+          for file in "${plugins[@]}"; do
+            patchelf --set-rpath '$ORIGIN/../../lib/desksend' "$file"
+          done
+          for file in "$runtime"/*.so*; do
+            patchelf --set-rpath '$ORIGIN' "$file"
+          done
+
+          license_dir="$stage/share/licenses/deskflow"
+          cp "$deps/licenses/"*.txt "$license_dir/"
+          cp /usr/share/common-licenses/{LGPL-3,GPL-3} "$license_dir/"
+          qt_version=$("$QT_ROOT_DIR/bin/qmake" -query QT_VERSION)
+          printf 'Qt %s: https://download.qt.io/archive/qt/%s/%s/submodules/\n' \
+            "$qt_version" "${qt_version%.*}" "$qt_version" > "$license_dir/Qt-sources.txt"
+
+          qt_root="$QT_ROOT_DIR"
+          unset LD_LIBRARY_PATH QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QTDIR QT_ROOT_DIR
+          for file in "${executables[@]}" "${plugins[@]}"; do
+            summary=$(ldd "$file")
+            printf '%s\n' "$summary"
+            if grep -Fq -e 'not found' -e "$deps/" -e "$qt_root/" <<< "$summary"; then exit 1; fi
+          done
+          "$stage/bin/deskflow-core" --version
+          "$stage/bin/localsend-cli" --version
+          QT_QPA_PLATFORM=xcb xvfb-run -a "$stage/bin/deskflow" --help
           test -f "$stage/share/licenses/deskflow/LocalSend-LICENSE.txt"
           test -f "$stage/share/licenses/deskflow/THIRD_PARTY_NOTICES.md"
       - name: Archive staged installation
