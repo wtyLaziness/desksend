@@ -293,19 +293,54 @@ fn render_progress(ui: &mut Ui, send: &mut Option<SendState>) {
 struct ReceiveProgress {
     total: u64,
     files: HashMap<String, Arc<AtomicU64>>,
-    pending: usize,
-    ended: bool,
-    cancelled: bool,
+    failures: HashMap<String, (PathBuf, String)>,
+    expected_files: usize,
+    received_files: usize,
+    in_flight: usize,
+    end: Option<SessionEndReasonV2>,
     sender: Option<SenderTarget>,
+}
+
+struct ReceiveFileResult {
+    file_id: String,
+    path: PathBuf,
+    bytes: Arc<AtomicU64>,
+    result: Result<(), String>,
 }
 
 impl ReceiveProgress {
     fn report(&self, session_id: &str) {
-        if self.cancelled {
+        if self.end == Some(SessionEndReasonV2::Cancelled) {
             return;
         }
         let done: u64 = self.files.values().map(|p| p.load(Ordering::Relaxed)).sum();
         println!("RECEIVE_PROGRESS:{}:{}:{}", session_id, done.min(self.total), self.total);
+    }
+
+    fn start_file(&mut self, file_id: String) -> Arc<AtomicU64> {
+        let bytes = Arc::new(AtomicU64::new(0));
+        self.failures.remove(&file_id);
+        self.files.insert(file_id, bytes.clone());
+        self.in_flight += 1;
+        bytes
+    }
+
+    fn complete_file(&mut self, file: ReceiveFileResult) -> Option<PathBuf> {
+        self.in_flight -= 1;
+        // 同一个文件的上一次保存结果可能晚于重传到达。
+        if !self.files.get(&file.file_id).is_some_and(|bytes| Arc::ptr_eq(bytes, &file.bytes)) {
+            return None;
+        }
+        match file.result {
+            Ok(()) => {
+                self.received_files += 1;
+                Some(file.path)
+            }
+            Err(error) => {
+                self.failures.insert(file.file_id, (file.path, error));
+                None
+            }
+        }
     }
 }
 
@@ -420,7 +455,7 @@ pub(super) async fn run_receive(
     };
     let limits = V2Limits { require_token: auth_stdin, max_session_bytes, ..V2Limits::default() };
     let identity = storage.identity.clone();
-    let (events_tx, mut events_rx) = mpsc::channel::<AppEvent>(64);
+    let (results_tx, mut results_rx) = mpsc::channel::<(String, ReceiveFileResult)>(64);
     let Network {
         server,
         server_stop_tx,
@@ -451,8 +486,6 @@ pub(super) async fn run_receive(
 
     println!("LOCALSEND_RECEIVER_READY port={} dest={}", server.port(), storage.destination.display());
 
-    let mut active_sessions: HashSet<String> = HashSet::new();
-    let mut file_paths: HashMap<(String, String), PathBuf> = HashMap::new();
     let mut progress: HashMap<String, ReceiveProgress> = HashMap::new();
     let mut queued_prepare = None;
     let mut tick = tokio::time::interval(Duration::from_millis(250));
@@ -474,10 +507,11 @@ pub(super) async fn run_receive(
                         server.revoke_v2_token(&token).await;
                     }
                     Some(AuthCommand::Cancel(session_id)) => {
-                        if active_sessions.contains(&session_id) && server.cancel_v2_session(&session_id).await {
+                        if progress.get(&session_id).is_some_and(|state| state.end.is_none())
+                            && server.cancel_v2_session(&session_id).await
+                        {
                             let sender = progress.get(&session_id).and_then(|state| state.sender.clone());
-                            active_sessions.remove(&session_id);
-                            end_receive_session(&mut progress, &file_paths, &session_id, SessionEndReasonV2::Cancelled);
+                            end_receive_session(&mut progress, &session_id, SessionEndReasonV2::Cancelled);
                             if let Some(sender) = sender {
                                 let identity = identity.clone();
                                 tokio::spawn(async move {
@@ -500,7 +534,7 @@ pub(super) async fn run_receive(
                 break Ok(());
             }
             // 先输出上一批的结束消息和文件结果，再接受下一批。已有文件结果格式不含会话 ID。
-            Some(event) = next_receive_event(&mut server_rx, &mut queued_prepare, !active_sessions.is_empty() || !file_paths.is_empty()) => {
+            Some(event) = next_receive_event(&mut server_rx, &mut queued_prepare, !progress.is_empty()) => {
                 match event {
                     ServerEventV2::Register { ip, info } => {
                         discovery::device_confirmed(
@@ -547,7 +581,7 @@ pub(super) async fn run_receive(
                                 }
                                 let state = ReceiveProgress {
                                     total,
-                                    pending: files.len(),
+                                    expected_files: files.len(),
                                     sender: auth_stdin.then(|| SenderTarget {
                                         host: ip_str,
                                         port: info.port,
@@ -557,8 +591,7 @@ pub(super) async fn run_receive(
                                     ..Default::default()
                                 };
                                 state.report(&session_id);
-                                progress.insert(session_id.clone(), state);
-                                active_sessions.insert(session_id);
+                                progress.insert(session_id, state);
                             }
                         } else {
                             let _ = decision_tx.send(PrepareUploadDecisionV2::Decline);
@@ -571,25 +604,19 @@ pub(super) async fn run_receive(
                         file,
                         target_tx,
                     } => {
-                        if !active_sessions.contains(&session_id) {
+                        let Some(state) = progress.get_mut(&session_id).filter(|state| state.end.is_none()) else {
                             continue;
-                        }
+                        };
                         let path = match util::unique_nested_path(&storage.destination, &file.file_name, received_paths_hex) {
                             Ok(path) => path,
                             Err(err) => {
-                                println!("RECEIVE_FILE_FAILED::{}", sanitize::single_line(&err.to_string()));
-                                if let Some(state) = progress.get_mut(&session_id) {
-                                    state.pending = state.pending.saturating_sub(1);
-                                }
+                                state.files.remove(&file_id);
+                                state.failures.insert(file_id, (PathBuf::new(), err.to_string()));
                                 continue;
                             }
                         };
-                        file_paths.insert((session_id.clone(), file_id.clone()), path.clone());
                         let (result_tx, result_rx) = oneshot::channel::<Result<(), String>>();
-                        let bytes = Arc::new(AtomicU64::new(0));
-                        if let Some(state) = progress.get_mut(&session_id) {
-                            state.files.insert(file_id.clone(), bytes.clone());
-                        }
+                        let bytes = state.start_file(file_id.clone());
                         let (progress_tx, mut progress_rx) = mpsc::channel::<u64>(16);
                         let final_bytes = bytes.clone();
                         let file_size = file.size;
@@ -598,7 +625,8 @@ pub(super) async fn run_receive(
                                 bytes.store(written, Ordering::Relaxed);
                             }
                         });
-                        let events_tx = events_tx.clone();
+                        let results_tx = results_tx.clone();
+                        let result_path = path.clone();
                         tokio::spawn(async move {
                             let result = match result_rx.await {
                                 Ok(r) => r,
@@ -609,63 +637,44 @@ pub(super) async fn run_receive(
                             if result.is_ok() {
                                 final_bytes.store(file_size, Ordering::Relaxed);
                             }
-                            let _ = events_tx
-                                .send(AppEvent::ReceiveFileResult {
-                                    session_id,
+                            let _ = results_tx
+                                .send((session_id, ReceiveFileResult {
                                     file_id,
+                                    path: result_path,
+                                    bytes: final_bytes,
                                     result,
-                                })
+                                }))
                                 .await;
                         });
                         let target = FileUploadTarget::StagedPath { path, result_tx, progress_tx: Some(progress_tx) };
                         let _ = target_tx.send(target);
                     }
                     ServerEventV2::SessionEnd { session_id, reason } => {
-                        if active_sessions.remove(&session_id) {
-                            end_receive_session(&mut progress, &file_paths, &session_id, reason);
-                        }
+                        end_receive_session(&mut progress, &session_id, reason);
                     }
                     ServerEventV2::PrepareUploadAborted { session_id } => {
-                        if active_sessions.remove(&session_id) {
-                            end_receive_session(&mut progress, &file_paths, &session_id, SessionEndReasonV2::Cancelled);
-                        }
+                        end_receive_session(&mut progress, &session_id, SessionEndReasonV2::Cancelled);
                     }
                     ServerEventV2::CancelReceived { .. } => {}
                     ServerEventV2::ListenerFailed { error } => break Err(anyhow::anyhow!("Receiver listener stopped: {error}")),
                 }
             }
-            Some(event) = events_rx.recv() => {
-                if let AppEvent::ReceiveFileResult { session_id, file_id, result } = event {
-                    let Some(path) = file_paths.remove(&(session_id.clone(), file_id)) else {
-                        continue;
-                    };
-                    let mut cancelled = false;
-                    let mut drained = false;
-                    if let Some(state) = progress.get_mut(&session_id) {
-                        cancelled = state.cancelled;
-                        state.report(&session_id);
-                        state.pending = state.pending.saturating_sub(1);
-                        drained = state.ended && state.pending == 0;
-                    }
-                    match result {
-                        Ok(()) if received_paths_hex => {
-                            if let Some(path) = path.to_str() {
-                                println!("RECEIVED_FILE_HEX:{}", util::encode_path_hex(path));
-                            } else {
-                                println!("RECEIVE_FILE_FAILED:invalid UTF-8 path");
-                            }
-                        }
-                        Ok(()) => println!("RECEIVED_FILE:{}", path.display()),
-                        Err(err) if !cancelled => println!("RECEIVE_FILE_FAILED:{}:{}", sanitize::single_line(&path.to_string_lossy()), sanitize::single_line(&err.to_string())),
-                        Err(_) => {}
-                    }
-                    if drained {
-                        progress.remove(&session_id);
-                        if cancelled {
-                            println!("RECEIVE_SESSION_CANCELLED:{session_id}");
-                        }
+            Some((session_id, file)) = results_rx.recv() => {
+                let Some(state) = progress.get_mut(&session_id) else {
+                    continue;
+                };
+                let path = state.complete_file(file);
+                state.report(&session_id);
+                if let Some(path) = path {
+                    if !received_paths_hex {
+                        println!("RECEIVED_FILE:{}", path.display());
+                    } else if let Some(path) = path.to_str() {
+                        println!("RECEIVED_FILE_HEX:{}", util::encode_path_hex(path));
+                    } else {
+                        println!("RECEIVE_FILE_FAILED:invalid UTF-8 path");
                     }
                 }
+                finish_receive_session_if_drained(&mut progress, &session_id);
             }
             Some(_disc) = discovery_rx.recv() => {}
         }
@@ -677,34 +686,42 @@ pub(super) async fn run_receive(
 
 fn end_receive_session(
     progress: &mut HashMap<String, ReceiveProgress>,
-    file_paths: &HashMap<(String, String), PathBuf>,
     session_id: &str,
     reason: SessionEndReasonV2,
 ) {
-    if let Some(state) = progress.get_mut(session_id) {
-        state.ended = true;
-        if reason == SessionEndReasonV2::Cancelled {
-            // 已写完的文件仍需交付。等在途结果全部输出后再通知上层关闭落点。
-            state.cancelled = true;
-            state.pending = file_paths.keys().filter(|(id, _)| id == session_id).count();
-            if state.pending > 0 {
-                return;
-            }
-        }
+    if let Some(state) = progress.get_mut(session_id).filter(|state| state.end.is_none()) {
+        state.end = Some(reason);
         state.report(session_id);
-        if state.pending == 0 {
-            progress.remove(session_id);
-        }
+        finish_receive_session_if_drained(progress, session_id);
     }
+}
+
+fn finish_receive_session_if_drained(progress: &mut HashMap<String, ReceiveProgress>, session_id: &str) {
+    let Some(state) = progress.get(session_id).filter(|state| state.in_flight == 0) else {
+        return;
+    };
+    let Some(reason) = state.end else {
+        return;
+    };
+    let state = progress.remove(session_id).unwrap();
     match reason {
-        SessionEndReasonV2::Finished => println!("RECEIVE_SESSION_FINISHED:{session_id}"),
+        SessionEndReasonV2::Finished => {
+            // 到会话结束时还存在的失败才是文件的最终结果。
+            for (path, error) in state.failures.values() {
+                println!("RECEIVE_FILE_FAILED:{}:{}", sanitize::single_line(&path.to_string_lossy()), sanitize::single_line(error));
+            }
+            for _ in (state.received_files + state.failures.len())..state.expected_files {
+                println!("RECEIVE_FILE_FAILED::Upload ended without a file result");
+            }
+            println!("RECEIVE_SESSION_FINISHED:{session_id}");
+        }
         SessionEndReasonV2::Cancelled => println!("RECEIVE_SESSION_CANCELLED:{session_id}"),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthCommand, ReceiveProgress, ServerEventV2, SessionEndReasonV2, end_receive_session, mpsc, next_receive_event, oneshot, parse_auth_command};
+    use super::{AuthCommand, ReceiveFileResult, ReceiveProgress, ServerEventV2, SessionEndReasonV2, end_receive_session, finish_receive_session_if_drained, mpsc, next_receive_event, oneshot, parse_auth_command};
     use localsend::http::dto_v2::RegisterDtoV2;
     use localsend::http::server::PeerIp;
     use localsend::model::discovery::ProtocolType;
@@ -726,21 +743,44 @@ mod tests {
 
     #[test]
     fn cancelling_receive_waits_for_started_files_only() {
-        let mut progress = std::collections::HashMap::from([(
-            "first".into(),
-            ReceiveProgress { pending: 3, ..Default::default() },
-        )]);
-        let mut paths = std::collections::HashMap::from([
-            (("first".into(), "started".into()), "completed.txt".into()),
-        ]);
+        let mut state = ReceiveProgress::default();
+        let bytes = state.start_file("started".into());
+        let mut progress = std::collections::HashMap::from([("first".into(), state)]);
 
-        end_receive_session(&mut progress, &paths, "first", SessionEndReasonV2::Cancelled);
-        assert!(progress["first"].ended && progress["first"].cancelled);
-        assert_eq!(progress["first"].pending, 1);
-
-        paths.clear();
-        end_receive_session(&mut progress, &paths, "first", SessionEndReasonV2::Cancelled);
+        end_receive_session(&mut progress, "first", SessionEndReasonV2::Cancelled);
+        assert_eq!(progress["first"].end, Some(SessionEndReasonV2::Cancelled));
+        let path = progress.get_mut("first").unwrap().complete_file(ReceiveFileResult {
+            file_id: "started".into(), path: "completed.txt".into(), bytes, result: Ok(()),
+        });
+        assert_eq!(path.unwrap(), std::path::Path::new("completed.txt"));
+        finish_receive_session_if_drained(&mut progress, "first");
         assert!(!progress.contains_key("first"));
+    }
+
+    #[test]
+    fn earlier_failed_attempt_does_not_override_successful_retry() {
+        for failure_arrives_first in [true, false] {
+            let mut state = ReceiveProgress::default();
+            let bytes = state.start_file("file".into());
+            let mut failed = Some(ReceiveFileResult {
+                file_id: "file".into(), path: "first-attempt.txt".into(), bytes,
+                result: Err("Checksum mismatch".into()),
+            });
+            if failure_arrives_first {
+                assert!(state.complete_file(failed.take().unwrap()).is_none());
+                assert_eq!(state.failures.len(), 1);
+            }
+            let bytes = state.start_file("file".into());
+            let path = state.complete_file(ReceiveFileResult {
+                file_id: "file".into(), path: "retry.txt".into(), bytes, result: Ok(()),
+            });
+            assert_eq!(path.unwrap(), std::path::Path::new("retry.txt"));
+            if let Some(failed) = failed {
+                assert!(state.complete_file(failed).is_none());
+            }
+            assert!(state.failures.is_empty());
+            assert_eq!(state.in_flight, 0);
+        }
     }
 
     #[tokio::test]

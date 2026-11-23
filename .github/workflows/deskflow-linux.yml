@@ -85,12 +85,16 @@ jobs:
         run: |
           python3 - <<'PY'
           import hashlib
+          import http.client
+          import json
           import os
           from pathlib import Path
           import re
+          import ssl
           import subprocess
           import tempfile
           import time
+          from urllib.parse import urlencode
 
           cli = "./target/release/localsend-cli"
 
@@ -105,7 +109,55 @@ jobs:
                   time.sleep(0.1)
               raise TimeoutError(f"Receiver condition not met within {timeout}s")
 
-          def transfer(root, files, authenticated=False, hex_paths=False):
+          def verify_checksum_retries(receiver, log, dest, port, identity):
+              context = ssl.create_default_context(cafile=str(identity))
+              context.check_hostname = False
+              context.load_cert_chain(identity)
+              payload = b"verified body"
+              wrong = b"modified body"
+
+              def post(path, body, content_type):
+                  conn = http.client.HTTPSConnection("127.0.0.1", port, context=context, timeout=10)
+                  try:
+                      conn.request("POST", "/api/localsend/v2/" + path, body, {"Content-Type": content_type})
+                      response = conn.getresponse()
+                      return response.status, response.read()
+                  finally:
+                      conn.close()
+
+              files = {
+                  file_id: {"id": file_id, "fileName": file_id + ".txt", "fileType": "text/plain",
+                            "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+                  for file_id in ("retried", "exhausted")
+              }
+              info = {"alias": "retry fixture", "version": "2.2", "fingerprint": "fixture",
+                      "port": port, "protocol": "https"}
+              status, body = post("prepare-upload", json.dumps({"info": info, "files": files}), "application/json")
+              assert status == 200, (status, body)
+              session = json.loads(body)
+
+              def upload(file_id, data):
+                  query = urlencode({"sessionId": session["sessionId"], "fileId": file_id,
+                                     "token": session["files"][file_id]})
+                  return post("upload?" + query, data, "application/octet-stream")[0]
+
+              assert upload("retried", wrong) == 422
+              assert upload("retried", payload) == 200
+              for _ in range(3):
+                  assert upload("exhausted", wrong) == 422
+
+              end = f"RECEIVE_SESSION_FINISHED:{session['sessionId']}"
+              output = wait_for(receiver, log, lambda output: output if end in output.splitlines() else None, 15)
+              records = output.splitlines()
+              success = f"RECEIVED_FILE_HEX:{str(dest / 'retried.txt').encode('utf-8').hex()}"
+              assert records.count(success) == 1, records
+              errors = [line for line in records if line.startswith("RECEIVE_FILE_FAILED:")]
+              assert len(errors) == 1 and "exhausted.txt" in errors[0], records
+              assert records.index(success) < records.index(end) and records.index(errors[0]) < records.index(end), records
+              assert (dest / "retried.txt").read_bytes() == payload
+              assert not (dest / "exhausted.txt").exists()
+
+          def transfer(root, files, authenticated=False, hex_paths=False, checksum_retry=False):
               root.mkdir()
               dest = root / "received"
               dest.mkdir()
@@ -115,6 +167,8 @@ jobs:
               tx_env = dict(os.environ, XDG_CONFIG_HOME=str(root / "tx-config"))
               rx_args = [cli, "--port", "0", "--destination", str(dest),
                          "receive", "--auto-accept-from", "127.0.0.1"]
+              if checksum_retry:
+                  rx_args.append("--received-paths-hex")
               tx_args = [cli, "--port", "0", "send"]
               sender_input = None
               token = "e2e-secret-token-1234"
@@ -143,6 +197,10 @@ jobs:
                           lambda log: re.search(r"^LOCALSEND_RECEIVER_READY port=([1-9]\d*) ", log, re.MULTILINE),
                           30,
                       )
+                      if checksum_retry:
+                          identity = root / "rx-config" / "localsend-cli" / "identity.pem"
+                          verify_checksum_retries(receiver, rx_log, dest, int(ready.group(1)), identity)
+                          return
                       tx_args[4:4] = ["--to", f"127.0.0.1:{ready.group(1)}"]
                       if authenticated:
                           receiver.stdin.write(f"GRANT {token}\n")
@@ -194,6 +252,7 @@ jobs:
               special = root / "line\r\nbreak.txt"
               special.write_bytes(b"line-break path")
               transfer(root / "hex-paths", [special], authenticated=True, hex_paths=True)
+              transfer(root / "checksum-retry", [], checksum_retry=True)
           PY
       - uses: jurplel/install-qt-action@v4
         with:

@@ -114,11 +114,12 @@ QString resolveLocalSendConfigDir(const char *envOverride, const QString &roleSu
 
 void cleanEmptySubdirsInStaging(const QString &dirPath, bool isRoot)
 {
-  QDir dir(dirPath);
-  if (!dir.exists()) {
+  const QFileInfo info(dirPath);
+  if (info.isSymbolicLink() || info.isJunction() || !info.isDir()) {
     return;
   }
-  const QFileInfoList subDirs = dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+  const QDir dir(dirPath);
+  const QFileInfoList subDirs = dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
   for (const QFileInfo &sub : subDirs) {
     cleanEmptySubdirsInStaging(sub.absoluteFilePath(), false);
   }

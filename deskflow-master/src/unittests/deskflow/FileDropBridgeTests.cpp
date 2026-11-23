@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <thread>
@@ -735,6 +736,36 @@ private Q_SLOTS:
     QVERIFY(QFileInfo::exists(QDir(target).filePath(QStringLiteral("second.txt"))));
     receive("first.txt", "first");
     QVERIFY(QFileInfo::exists(QDir(target).filePath(QStringLiteral("first.txt"))));
+  }
+
+  void stagingCleanupSkipsDirectoryLinks()
+  {
+    QTemporaryDir staging, outside;
+    QVERIFY(staging.isValid() && outside.isValid());
+    const auto ownEmptyDir = staging.filePath(QStringLiteral("empty"));
+    const auto outsideEmptyDir = outside.filePath(QStringLiteral("keep"));
+    QVERIFY(QDir().mkpath(ownEmptyDir));
+    QVERIFY(QDir().mkpath(outsideEmptyDir));
+    const auto link = staging.filePath(QStringLiteral("linked"));
+    std::error_code error;
+    std::filesystem::create_directory_symlink(
+        QFileInfo(outside.path()).filesystemAbsoluteFilePath(), QFileInfo(link).filesystemAbsoluteFilePath(), error
+    );
+#ifdef Q_OS_WIN
+    if (error) {
+      QSKIP("This Windows runner cannot create directory symbolic links.");
+    }
+#endif
+    QVERIFY2(!error, error.message().c_str());
+
+    deskflow::InProcessDropExecutor executor(false);
+    executor.m_stagingDir = staging.path().toStdString();
+    executor.handleReceiveSessionStarted(1, {}, "cleanup");
+    executor.handleReceiveSessionFinished(true, "cleanup");
+
+    QVERIFY(!QFileInfo::exists(ownEmptyDir));
+    QVERIFY(QFileInfo(link).isSymbolicLink());
+    QVERIFY(QFileInfo::exists(outsideEmptyDir));
   }
 
   void platformDropSupport_urlsAndClipboardPayloads()
