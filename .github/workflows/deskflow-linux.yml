@@ -268,7 +268,7 @@ jobs:
             printf '%s\n' "$summary"
             if grep -Fq -e 'not found' -e "$deps/" -e "$qt_root/" <<< "$summary"; then exit 1; fi
           done
-          "$stage/bin/deskflow-core" --version
+          QT_QPA_PLATFORM=xcb xvfb-run -a "$stage/bin/deskflow-core" --version
           "$stage/bin/localsend-cli" --version
           QT_QPA_PLATFORM=xcb xvfb-run -a "$stage/bin/deskflow" --help
           test -f "$stage/share/licenses/deskflow/LocalSend-LICENSE.txt"
