@@ -38,8 +38,8 @@ DeskSend 将 [Deskflow](https://github.com/deskflow/deskflow) 的键鼠共享与
 
 - **Windows x64 便携版**：`DeskSend-<版本>-windows-x64.zip`，完整解压到可写目录后运行 `DeskSend.exe`（不要在压缩包预览中直接运行，也不要只复制 EXE，需保留同目录中的 `deskflow-core.exe`、`localsend-cli.exe`、Qt DLL、插件和 `translations/`）。
 - **Windows x64 安装版**：`DeskSend-<版本>-windows-x64.msi`，需要在副机操作 UAC 弹窗或登录界面时安装并开启后台服务及系统身份运行。[UAC 设置步骤](docs/使用指南.md#副机的-uac-弹窗无法点击)
-- **macOS arm64（Apple Silicon）**：`DeskSend-<版本>-macos-arm64.tar.gz`，解压出 `DeskSend.app` 后放入“应用程序”或本地可写目录使用。新 CI 归档以 macOS 15 为最低支持版本，使用 ad-hoc 签名。跨屏拖拽需要在“系统设置 → 隐私与安全性 → 辅助功能”授权。
-- **Linux x64**：`DeskSend-<版本>-linux-x64.tar.gz`，解压后运行 `bin/deskflow`。新 CI 归档以 Ubuntu 24.04 x64 为运行基线，随包提供 Qt 6.8、平台插件、libei 和 libportal，使用系统提供的 OpenSSL 3 和图形运行库。此前发布的 v1.1.0 Linux 包需要另行准备匹配的 Qt 6.8、libei 和 libportal。其他发行版可按[构建与发布](docs/构建与发布.md)从源码构建。
+- **macOS arm64（Apple Silicon）**：`DeskSend-<版本>-macos-arm64.tar.gz`，解压出 `DeskSend.app` 后放入“应用程序”或本地可写目录使用。自 v1.1.1 起支持 macOS 15 或更新版本，使用 ad-hoc 签名。跨屏拖拽需要在“系统设置 → 隐私与安全性 → 辅助功能”授权。
+- **Linux x64**：`DeskSend-<版本>-linux-x64.tar.gz`，解压后运行 `bin/deskflow`。自 v1.1.1 起以 Ubuntu 24.04 x64 为运行基线，随包提供 Qt 6.8、平台插件、libei 和 libportal，使用系统提供的 OpenSSL 3 和图形运行库。其他发行版可按[构建与发布](docs/构建与发布.md)从源码构建。
 
 如果打开 Geek Uninstaller 等管理员程序后无法跨屏，请在出现问题的 Windows 电脑上以管理员身份启动 DeskSend。[排查步骤](docs/使用指南.md#打开管理员程序后无法跨屏)
 
