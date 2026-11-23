@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
 #include "common/VersionInfo.h"
 #include "common/Constants.h"
+#include "gui/ipc/CoreIpcClient.h"
 #include "gui/ipc/IpcClient.h"
 #include <QLocalServer>
 #include <QLocalSocket>
@@ -207,6 +208,14 @@ private Q_SLOTS:
     second->write(hello);
     second->flush();
     QTRY_COMPARE(connected.size(), 1);
+  }
+
+  void oversizedSendFilesReportsSpecificResult()
+  {
+    deskflow::gui::ipc::CoreIpcClient client;
+    const QString oversizedPath(kMaxIpcCommandBytes, QLatin1Char('a'));
+    QCOMPARE(client.sendFiles(QStringLiteral("peer"), {oversizedPath}), deskflow::gui::ipc::SendFilesResult::TooLarge);
+    QCOMPARE(client.sendFiles(QStringLiteral("peer"), {QStringLiteral("file.txt")}), deskflow::gui::ipc::SendFilesResult::Failed);
   }
 
   void ipcRejectsOversizedCommandWithoutDroppingConnection()

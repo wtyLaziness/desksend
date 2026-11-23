@@ -25,6 +25,7 @@ namespace deskflow::gui {
 namespace ipc {
 class CoreIpcClient;
 class DaemonIpcClient;
+enum class SendFilesResult;
 } // namespace ipc
 
 class CoreProcess : public QObject
@@ -54,7 +55,7 @@ public:
   void applyLogLevel();
   void clearSettings();
   void retryDaemon();
-  bool sendFiles(const QString &targetPeer, const QStringList &paths);
+  ipc::SendFilesResult sendFiles(const QString &targetPeer, const QStringList &paths);
 
   // getters
   Settings::CoreMode mode() const

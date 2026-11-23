@@ -1135,6 +1135,27 @@ async fn test_second_session_blocked_and_cancel() {
         .unwrap();
 }
 
+#[tokio::test]
+async fn busy_receiver_preserves_unused_token() {
+    let server = start_test_server(None, true, None).await;
+    server.handle.enable_v2_token_gate().await;
+    server.handle.grant_v2_token("first-token".into()).await;
+    server.handle.grant_v2_token("second-token".into()).await;
+    let client = LsHttpClientV2::try_new_without_cert().unwrap();
+    let prepare = |token| client.prepare_upload(
+        ProtocolType::Http, "127.0.0.1", server.port, None,
+        prepare_upload_request(&[file_dto("file-a", "a.txt", 5)]), Some(token), CancellationToken::new(),
+    );
+
+    let first = prepare("first-token").await.unwrap().response.unwrap();
+    assert_status(prepare("second-token").await, 409);
+    assert_status(prepare("first-token").await, 401);
+    client.cancel(ProtocolType::Http, "127.0.0.1", server.port, &first.session_id).await.unwrap();
+
+    assert!(prepare("second-token").await.unwrap().response.is_some());
+    assert_status(prepare("second-token").await, 401);
+}
+
 /// The sender aborts the prepare-upload request (drops the connection) while
 /// the receiving application is still deciding. The application must be told
 /// via [ServerEventV2::PrepareUploadAborted] and the session slot must be

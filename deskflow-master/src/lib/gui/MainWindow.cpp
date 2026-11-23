@@ -28,6 +28,7 @@
 #include "gui/Messages.h"
 #include "gui/TlsUtility.h"
 #include "gui/core/CoreProcess.h"
+#include "gui/ipc/CoreIpcClient.h"
 #include "gui/ipc/DaemonIpcClient.h"
 #include "gui/widgets/LogDock.h"
 #include "net/FingerprintDatabase.h"
@@ -1068,10 +1069,16 @@ void MainWindow::sendFilesToPeer(const QStringList &paths)
   }
 
   const auto peers = m_coreProcess.transferPeers();
-  if (peers.size() == 1) {
-    if (!m_coreProcess.sendFiles(peers.first(), paths)) {
+  const auto send = [this, &paths](const QString &peer) {
+    const auto result = m_coreProcess.sendFiles(peer, paths);
+    if (result == ipc::SendFilesResult::TooLarge) {
+      QMessageBox::information(this, kAppName, tr("The file list is too large. Select fewer items and send them in batches."));
+    } else if (result == ipc::SendFilesResult::Failed) {
       QMessageBox::information(this, kAppName, tr("Could not start sending files."));
     }
+  };
+  if (peers.size() == 1) {
+    send(peers.first());
     return;
   }
 
@@ -1085,8 +1092,8 @@ void MainWindow::sendFilesToPeer(const QStringList &paths)
       this, tr("Send Files"), tr("Choose destination computer:"), labels, 0, false, &ok
   );
   const auto index = labels.indexOf(choice);
-  if (ok && index >= 0 && !m_coreProcess.sendFiles(peers.at(index), paths)) {
-    QMessageBox::information(this, kAppName, tr("Could not start sending files."));
+  if (ok && index >= 0) {
+    send(peers.at(index));
   }
 }
 

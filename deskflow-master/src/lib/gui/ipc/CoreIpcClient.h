@@ -13,6 +13,8 @@
 
 namespace deskflow::gui::ipc {
 
+enum class SendFilesResult { Sent, TooLarge, Failed };
+
 class CoreIpcClient : public IpcClient
 {
   Q_OBJECT
@@ -22,7 +24,7 @@ public:
 
   void sendStop();
   void requestTransferPeers();
-  bool sendFiles(const QString &targetPeer, const QStringList &paths);
+  SendFilesResult sendFiles(const QString &targetPeer, const QStringList &paths);
 
 Q_SIGNALS:
   void commandReceived(const QString &command, const QString &args);

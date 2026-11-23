@@ -807,12 +807,12 @@ QPair<bool, QString> CoreProcess::persistServerConfig() const
   return {Settings::isServerConfigFileReadable(), configFile.fileName()};
 }
 
-bool CoreProcess::sendFiles(const QString &targetPeer, const QStringList &paths)
+ipc::SendFilesResult CoreProcess::sendFiles(const QString &targetPeer, const QStringList &paths)
 {
-  if (!m_coreIpcClient || m_connectionState != ConnectionState::Connected || paths.isEmpty()) {
-    return false;
+  if (!m_coreIpcClient || m_connectionState != ConnectionState::Connected || !m_transferPeers.contains(targetPeer)) {
+    return ipc::SendFilesResult::Failed;
   }
-  return m_transferPeers.contains(targetPeer) && m_coreIpcClient->sendFiles(targetPeer, paths);
+  return m_coreIpcClient->sendFiles(targetPeer, paths);
 }
 
 void CoreProcess::setTransferPeers(const QStringList &peers)

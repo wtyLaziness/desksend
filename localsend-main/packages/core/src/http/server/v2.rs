@@ -244,11 +244,13 @@ pub(crate) async fn prepare_upload(
     )
     .await?;
 
-    let token_authenticated = check_token_gate(
+    // 在读取请求体前校验授权，等成功占用会话时再消费。
+    check_token_gate(
         &v2.token_gate,
         &v2.pin_attempts,
         &query,
         client_info.ip.ip,
+        false,
     )
     .await?;
 
@@ -275,8 +277,7 @@ pub(crate) async fn prepare_upload(
     let session_id = Uuid::new_v4().to_string();
     let cancelled = CancellationToken::new();
 
-    // Claim the single session slot.
-    {
+    let token_authenticated = {
         let mut slot = v2.session.lock().await;
         if slot.is_some() {
             return Err(AppError::Message(
@@ -284,12 +285,22 @@ pub(crate) async fn prepare_upload(
                 "Blocked by another session".to_string(),
             ));
         }
+        // 在持有会话锁时重新校验，处理校验后令牌被撤销、过期或被其他请求消费的情况。
+        let authenticated = check_token_gate(
+            &v2.token_gate,
+            &v2.pin_attempts,
+            &query,
+            client_info.ip.ip,
+            true,
+        )
+        .await?;
         *slot = Some(SessionStateV2::Pending(PendingSessionV2 {
             session_id: session_id.clone(),
             sender_ip: client_info.ip,
             cancel: cancelled.clone(),
         }));
-    }
+        authenticated
+    };
 
     // Frees the slot again if this request is aborted before a session is created.
     let mut pending_guard = PendingSessionGuard::new(v2.clone(), session_id.clone());

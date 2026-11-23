@@ -32,7 +32,7 @@ void CoreIpcClient::requestTransferPeers()
   }
 }
 
-bool CoreIpcClient::sendFiles(const QString &targetPeer, const QStringList &paths)
+SendFilesResult CoreIpcClient::sendFiles(const QString &targetPeer, const QStringList &paths)
 {
   QStringList cleanedPaths;
   for (const auto &path : paths) {
@@ -40,15 +40,20 @@ bool CoreIpcClient::sendFiles(const QString &targetPeer, const QStringList &path
       cleanedPaths.append(path);
     }
   }
-  if (cleanedPaths.isEmpty() || !isConnected()) {
-    return false;
+  if (cleanedPaths.isEmpty()) {
+    return SendFilesResult::Failed;
   }
   const QJsonObject payload{
       {QStringLiteral("target"), targetPeer},
       {QStringLiteral("paths"), QJsonArray::fromStringList(cleanedPaths)},
   };
   const auto encoded = QJsonDocument(payload).toJson(QJsonDocument::Compact).toBase64();
-  return sendMessage(QStringLiteral("sendFiles=%1").arg(QString::fromLatin1(encoded)));
+  const auto command = QStringLiteral("sendFiles=%1").arg(QString::fromLatin1(encoded));
+  // 命令为 ASCII，长度加一个换行就是 IPC 帧的字节数。
+  if (command.size() + 1 > kMaxIpcCommandBytes) {
+    return SendFilesResult::TooLarge;
+  }
+  return isConnected() && sendMessage(command) ? SendFilesResult::Sent : SendFilesResult::Failed;
 }
 
 void CoreIpcClient::processCommand(const QString &command, const QStringList &parts)

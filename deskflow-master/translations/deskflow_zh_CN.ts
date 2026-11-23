@@ -960,6 +960,10 @@ Are you sure you want to continue?</source>
         <translation>无法开始发送文件。</translation>
     </message>
     <message>
+        <source>The file list is too large. Select fewer items and send them in batches.</source>
+        <translation>文件列表过大，请减少每次选择的项目并分批发送。</translation>
+    </message>
+    <message>
         <source>Connect to another computer before sending files.</source>
         <translation>请先连接到另一台电脑后再发送文件。</translation>
     </message>

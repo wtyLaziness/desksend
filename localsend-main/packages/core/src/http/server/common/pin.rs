@@ -55,10 +55,6 @@ impl TokenGate {
         self.revoke_at(token, Instant::now())
     }
 
-    pub(crate) fn verify_and_consume(&mut self, candidate: &str) -> bool {
-        self.verify_and_consume_at(candidate, Instant::now())
-    }
-
     fn grant_at(&mut self, token: String, now: Instant) {
         if token.is_empty() {
             return;
@@ -78,22 +74,10 @@ impl TokenGate {
     }
 
     fn revoke_at(&mut self, token: &str, now: Instant) -> bool {
-        self.purge_expired(now);
-        let mut matched: Option<String> = None;
-        for k in self.tokens.keys() {
-            if constant_time_eq(k.as_bytes(), token.as_bytes()) {
-                matched = Some(k.clone());
-            }
-        }
-        if let Some(k) = matched {
-            self.tokens.remove(&k);
-            true
-        } else {
-            false
-        }
+        self.verify_at(token, now, true)
     }
 
-    fn verify_and_consume_at(&mut self, candidate: &str, now: Instant) -> bool {
+    fn verify_at(&mut self, candidate: &str, now: Instant, consume: bool) -> bool {
         self.purge_expired(now);
         let mut matched: Option<String> = None;
         for k in self.tokens.keys() {
@@ -102,7 +86,9 @@ impl TokenGate {
             }
         }
         if let Some(k) = matched {
-            self.tokens.remove(&k);
+            if consume {
+                self.tokens.remove(&k);
+            }
             true
         } else {
             false
@@ -166,13 +152,13 @@ pub(crate) async fn check_pin(
     }
 }
 
-/// Checks and consumes a one-time authorization token from the `pin` query parameter
-/// when [TokenGate] is enabled.
+/// [TokenGate] 启用时校验 `pin`，并按调用方要求消费一次性授权。
 pub(crate) async fn check_token_gate(
     token_gate: &Mutex<TokenGate>,
     pin_attempts: &Mutex<LruCache<IpAddr, u32>>,
     query: &HashMap<String, String>,
     ip: IpAddr,
+    consume: bool,
 ) -> Result<bool, AppError> {
     {
         let gate = token_gate.lock().await;
@@ -197,7 +183,7 @@ pub(crate) async fn check_token_gate(
 
     let accepted = {
         let mut gate = token_gate.lock().await;
-        gate.verify_and_consume(provided_pin)
+        gate.verify_at(provided_pin, Instant::now(), consume)
     };
 
     if accepted {
@@ -230,10 +216,11 @@ mod tests {
         gate.enable();
         gate.grant_at("secret-token-1".to_string(), now);
 
-        assert!(!gate.verify_and_consume_at("wrong-token", now));
-        assert!(gate.verify_and_consume_at("secret-token-1", now));
+        assert!(!gate.verify_at("wrong-token", now, false));
+        assert!(gate.verify_at("secret-token-1", now, false));
+        assert!(gate.verify_at("secret-token-1", now, true));
         // Replay must fail because token was consumed on first use.
-        assert!(!gate.verify_and_consume_at("secret-token-1", now));
+        assert!(!gate.verify_at("secret-token-1", now, true));
     }
 
     #[test]
@@ -246,8 +233,8 @@ mod tests {
 
         assert!(gate.revoke_at("t1", now));
         assert!(!gate.revoke_at("t1", now));
-        assert!(!gate.verify_and_consume_at("t1", now));
+        assert!(!gate.verify_at("t1", now, true));
 
-        assert!(!gate.verify_and_consume_at("t2", now + TOKEN_TTL + Duration::from_secs(1)));
+        assert!(!gate.verify_at("t2", now + TOKEN_TTL + Duration::from_secs(1), true));
     }
 }

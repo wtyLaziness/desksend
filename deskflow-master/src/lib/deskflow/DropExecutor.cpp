@@ -680,6 +680,13 @@ std::vector<std::string> ReceiverAuthCache::unexpiredGrants(uint64_t timestampMs
   return out;
 }
 
+void ReceiverAuthCache::discardGrant(const std::string &tokenTag)
+{
+  std::erase_if(m_entries, [&tokenTag](const Entry &entry) {
+    return InProcessDropExecutor::computeTokenTag(entry.command.substr(6)) == tokenTag;
+  });
+}
+
 void ReceiverAuthCache::clear()
 {
   m_entries.clear();
@@ -2623,6 +2630,11 @@ void InProcessDropExecutor::handleReceiveSessionStarted(
     m_activeReceiveSession = true;
     notifyActiveTransfersChangedLocked(shouldNotify, notifyActive);
     if (!tokenTag.empty()) {
+      // CLI 已消费本次授权，重启时只补发尚未使用的授权。
+      m_cachedReceiverGrants.discardGrant(tokenTag);
+      std::erase_if(m_pendingReceiverAuthLines, [&tokenTag](const std::string &command) {
+        return command.starts_with("GRANT ") && computeTokenTag(command.substr(6)) == tokenTag;
+      });
       auto it = std::find_if(
           m_pendingDropTargets.begin(), m_pendingDropTargets.end(),
           [&tokenTag](const DropTargetEntry &entry) { return entry.tokenTag == tokenTag; }

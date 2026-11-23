@@ -1502,6 +1502,22 @@ private Q_SLOTS:
     QCOMPARE(bounded.back(), std::string("GRANT tok_69"));
   }
 
+  void usedReceiveAuthorizationIsNotReplayed()
+  {
+    deskflow::InProcessDropExecutor executor(false);
+    executor.m_cachedReceiverGrants.record("GRANT first-token", 1);
+    executor.m_cachedReceiverGrants.record("GRANT second-token", 1);
+    executor.m_pendingReceiverAuthLines = {"GRANT first-token", "GRANT second-token"};
+
+    executor.handleReceiveSessionStarted(1, deskflow::FileDropBridge::computeTokenTag("first-token"), "first");
+
+    const auto grants = executor.m_cachedReceiverGrants.unexpiredGrants(2);
+    QCOMPARE(grants.size(), size_t{1});
+    QCOMPARE(grants.front(), std::string("GRANT second-token"));
+    QCOMPARE(executor.m_pendingReceiverAuthLines.size(), size_t{1});
+    QCOMPARE(executor.m_pendingReceiverAuthLines.front(), std::string("GRANT second-token"));
+  }
+
   void inProcessDropExecutor_cancelledReceiveIgnoresStaleSessionResults()
   {
     deskflow::InProcessDropExecutor executor(false);

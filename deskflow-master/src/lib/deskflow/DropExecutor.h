@@ -63,6 +63,7 @@ public:
   static constexpr size_t kMaxEntries = 64;
 
   void record(const std::string &command, uint64_t timestampMs, uint64_t ttlMs = kDefaultTtlMs);
+  void discardGrant(const std::string &tokenTag);
   std::vector<std::string> unexpiredGrants(uint64_t timestampMs, uint64_t ttlMs = kDefaultTtlMs);
   void clear();
 
