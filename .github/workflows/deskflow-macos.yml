@@ -201,7 +201,7 @@ jobs:
                   continue
               if 'Mach-O' not in subprocess.check_output(['file', '-b', path], text=True):
                   continue
-              subprocess.run(['lipo', '-verify_arch', 'arm64', path], check=True)
+              subprocess.run(['lipo', path, '-verify_arch', 'arm64'], check=True)
               commands = subprocess.check_output(['otool', '-arch', 'arm64', '-l', path], text=True)
               minimum = re.search(r'\bLC_BUILD_VERSION\b[^\n]*\n\s*cmdsize \d+\n\s*platform (?:1|macos)\n\s*minos ([\d.]+)', commands, re.I)
               if minimum is None:
